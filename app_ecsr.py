@@ -203,71 +203,7 @@ def _numeric_bounds(df: pd.DataFrame, col: str) -> Optional[Tuple[float, float]]
     if vals.size == 0:
         return None
     return float(np.nanmin(vals)), float(np.nanmax(vals))
-with st.sidebar:
-    st.header("Įvestys")
 
-    # UI-driving controls OUTSIDE the form (so they react immediately)
-    data_source = st.radio(
-        "Duomenų šaltinis",
-        options=["Integruoti scenarijai", "Įkelti failus"],
-        index=0,
-        key="data_source",
-    )
-
-    uploads = []
-    if data_source == "Įkelti failus":
-        uploads = st.file_uploader(
-            "Scenarijų failai",
-            type=["csv", "txt"],
-            accept_multiple_files=True,
-            key="scenario_uploader",
-        )
-    else:
-        st.info("Naudojami integruoti scenarijai iš sistemos.")
-
-    mode = st.radio("Peržiūros režimas", ["Scenarijus", "Įvestis"], index=0, key="mode")
-
-    saving_custom_enabled = st.checkbox(
-        "Taikyti sutaupymo vertę (€/100NM)",
-        key="saving_custom_enabled",
-    )
-
-    # Submit-only controls INSIDE the form (prevents button shadowing)
-    with st.form("inputs_form", border=False):
-        fuel_price = st.number_input(
-            "Degalų kaina (€/kg)",
-            min_value=0.0,
-            value=float(cfg0.fuel_price_eur_per_kg),
-            step=0.01,
-            key="fuel_price",
-        )
-        tc_op = st.number_input(
-            "Laiko sąnaudos (€/h)",
-            min_value=0.0,
-            value=float(cfg0.time_cost_operational),
-            step=100.0,
-            key="tc_op",
-        )
-        epsilon_pct = st.number_input(
-            "ECSR epsilon (%)",
-            min_value=0.0,
-            value=float(cfg0.epsilon_break_even) * 100.0,
-            step=0.1,
-            key="epsilon_pct",
-        )
-
-        if saving_custom_enabled:
-            saving_custom = st.number_input(
-                "Sutaupymas (€/100NM)",
-                min_value=0.0,
-                value=float(st.session_state.get("saving_custom_value", 2.0)),
-                step=1.0,
-                key="saving_custom_value",
-            )
-        else:
-            saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
-
-        run_btn = st.form_submit_button("Generuoti", type="primary", use_container_width=True)
 
 def _fmt_bounds(lo: float, hi: float, unit: str) -> str:
     unit_txt = f" {unit}".strip()
@@ -430,7 +366,7 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
     safe_unit = (unit or "").strip()
 
     unit_html = (
-        f"<span style='font-size:12px;font-weight:800;color:inherit;margin-left:6px;line-height:1;opacity:0.9;'>{safe_unit}</span>"
+        f"<span style='font-size:12px;font-weight:800;color:#111;margin-left:6px;line-height:1;'>{safe_unit}</span>"
         if safe_unit
         else ""
     )
@@ -439,21 +375,21 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
 <div style="width:100%;display:flex;justify-content:center;">
   <div style="width:100%;max-width:{int(max_width_px)}px;">
     <div style="
-        border:1px solid rgba(128,128,128,0.35);
+        border:1px solid #d0d0d0;
         border-radius:10px;
         padding:4px 8px;
-        background: rgba(128,128,128,0.12);
-        color: inherit;
+        background:#f3f4f6;
+        color:#000;
         height:{int(box_height_px)}px;
         display:flex;
         justify-content:center;
         align-items:center;
         gap:4px;
     ">
-      <span style="font-size:22px;font-weight:900;line-height:1;color:inherit;">{value_html}</span>
+      <span style="font-size:22px;font-weight:900;line-height:1;">{value_html}</span>
       {unit_html}
     </div>
-    <div style="text-align:center;font-size:15px;color:inherit;opacity:0.75;margin-top:8px;">
+    <div style="text-align:center;font-size:15px;color:#555;margin-top:8px;">
       {caption}
     </div>
   </div>
@@ -1338,6 +1274,7 @@ def _clear_excel_download_artifacts() -> None:
     st.session_state.pop("excel_bytes", None)
     st.session_state.pop("excel_name", None)
 
+
 def _init_state() -> None:
     for k in ["fig_g1", "fig_g2", "fig_g3"]:
         st.session_state.setdefault(k, None)
@@ -1383,36 +1320,26 @@ def _init_state() -> None:
     st.session_state.setdefault("uploaded_names", [])
     st.session_state.setdefault("input_root_label", "uploaded_files")
 
+
 # ========================= UI =========================
 
 st.set_page_config(layout="wide")
 
-# --- REPLACE your current CSS block with this one (more robust) ---
 st.markdown(
     """
     <style>
-    /* --- File uploader translations (more robust across Streamlit versions) --- */
+    /* --- File uploader: translate built-in English strings (best-effort DOM hack) --- */
 
-    /* Replace uploader button label (e.g., "Browse files") */
-    [data-testid="stFileUploader"] button {
-        position: relative !important;
-    }
-    [data-testid="stFileUploader"] button * {
+    /* Replace "Browse files" */
+    [data-testid="stFileUploader"] button span {
         font-size: 0 !important;
     }
-    [data-testid="stFileUploader"] button::after {
+    [data-testid="stFileUploader"] button span::after {
         content: "Pasirinkti failus";
         font-size: 14px;
-        font-weight: 600;
-        position: absolute;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        pointer-events: none;
     }
 
-    /* Dropzone main line */
+    /* Replace "Drag and drop files here" */
     [data-testid="stFileUploaderDropzone"] span {
         font-size: 0 !important;
     }
@@ -1421,7 +1348,7 @@ st.markdown(
         font-size: 14px;
     }
 
-    /* Dropzone helper line */
+    /* Replace the "Limit ... per file" line */
     [data-testid="stFileUploaderDropzone"] small {
         font-size: 0 !important;
     }
@@ -1440,68 +1367,62 @@ _init_state()
 with st.sidebar:
     st.header("Įvestys")
 
-    # UI-driving controls OUTSIDE the form (so they react immediately)
     data_source = st.radio(
         "Duomenų šaltinis",
         options=["Integruoti scenarijai", "Įkelti failus"],
         index=0,
-        key="data_source",
+        help="Jeigu pasirinksite integruotus scenarijus, naudotojui nereikės įkelti failų.",
     )
 
     uploads = []
     if data_source == "Įkelti failus":
+        st.markdown("Įkelkite scenarijų failus")
         uploads = st.file_uploader(
             "Scenarijų failai",
             type=["csv", "txt"],
             accept_multiple_files=True,
-            key="scenario_uploader",
+            help="Pasirinkite *.csv / *.txt failus. Galite pažymėti kelis failus iš karto.",
         )
     else:
-        st.info("Naudojami integruoti scenarijai iš sistemos.")
+        st.markdown("Naudojami integruoti scenarijai iš sistemos.")
 
-    mode = st.radio("Peržiūros režimas", ["Scenarijus", "Įvestis"], index=0, key="mode")
+    mode = st.radio("Peržiūros režimas", options=["Scenarijus", "Įvestis"], index=0)
+
+    fuel_price = st.number_input(
+        "Degalų kaina (€/kg)",
+        min_value=0.0,
+        value=float(cfg0.fuel_price_eur_per_kg),
+        step=0.01,
+    )
+    tc_op = st.number_input(
+        "Laiko sąnaudos (€/h)",
+        min_value=0.0,
+        value=float(cfg0.time_cost_operational),
+        step=100.0,
+    )
+    epsilon_pct = st.number_input(
+        "ECSR epsilon (%)",
+        min_value=0.0,
+        value=float(cfg0.epsilon_break_even) * 100.0,
+        step=0.1,
+    )
 
     saving_custom_enabled = st.checkbox(
         "Taikyti sutaupymo vertę (€/100NM)",
+        value=bool(st.session_state.get("saving_custom_enabled", False)),
         key="saving_custom_enabled",
     )
-
-    # Submit-only controls INSIDE the form (prevents button shadowing)
-    with st.form("inputs_form", border=False):
-        fuel_price = st.number_input(
-            "Degalų kaina (€/kg)",
+    saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
+    if saving_custom_enabled:
+        saving_custom = st.number_input(
+            "Sutaupymas (€/100NM)",
             min_value=0.0,
-            value=float(cfg0.fuel_price_eur_per_kg),
-            step=0.01,
-            key="fuel_price",
-        )
-        tc_op = st.number_input(
-            "Laiko sąnaudos (€/h)",
-            min_value=0.0,
-            value=float(cfg0.time_cost_operational),
-            step=100.0,
-            key="tc_op",
-        )
-        epsilon_pct = st.number_input(
-            "ECSR epsilon (%)",
-            min_value=0.0,
-            value=float(cfg0.epsilon_break_even) * 100.0,
-            step=0.1,
-            key="epsilon_pct",
+            value=float(saving_custom),
+            step=1.0,
+            key="saving_custom_value",
         )
 
-        if saving_custom_enabled:
-            saving_custom = st.number_input(
-                "Sutaupymas (€/100NM)",
-                min_value=0.0,
-                value=float(st.session_state.get("saving_custom_value", 2.0)),
-                step=1.0,
-                key="saving_custom_value",
-            )
-        else:
-            saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
-
-        run_btn = st.form_submit_button("Generuoti", type="primary", use_container_width=True)
+    run_btn = st.button("Generuoti", type="primary")
 
 if run_btn:
     st.session_state["excel_written_msg"] = ""
@@ -1609,7 +1530,7 @@ if run_btn:
 
 if "summary_tbl" not in st.session_state:
     st.info("Pasirinkite duomenų šaltinį ir spauskite „Generuoti“.")
-    st.stop()
+    raise SystemExit(0)
 
 summary_tbl: pd.DataFrame = st.session_state["summary_tbl"]
 longform_tbl: pd.DataFrame = st.session_state["longform_tbl"]
@@ -1620,7 +1541,7 @@ cfg: Config = st.session_state.get("last_cfg", cfg0)
 scenario_names = sorted([sc.get("scenarioName", "") for sc in scenarios if sc.get("scenarioName")], key=_scenario_sort_key)
 if not scenario_names:
     st.warning("Nerasta scenarijų šiame įkeltų failų rinkinyje.")
-    st.stop()
+    raise SystemExit(0)
 
 # ========================= ECSR skaičiuoklė (SCENARIUS MODE ONLY) =========================
 if mode == "Scenarijus":

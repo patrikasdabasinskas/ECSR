@@ -203,7 +203,71 @@ def _numeric_bounds(df: pd.DataFrame, col: str) -> Optional[Tuple[float, float]]
     if vals.size == 0:
         return None
     return float(np.nanmin(vals)), float(np.nanmax(vals))
+with st.sidebar:
+    st.header("Įvestys")
 
+    # UI-driving controls OUTSIDE the form (so they react immediately)
+    data_source = st.radio(
+        "Duomenų šaltinis",
+        options=["Integruoti scenarijai", "Įkelti failus"],
+        index=0,
+        key="data_source",
+    )
+
+    uploads = []
+    if data_source == "Įkelti failus":
+        uploads = st.file_uploader(
+            "Scenarijų failai",
+            type=["csv", "txt"],
+            accept_multiple_files=True,
+            key="scenario_uploader",
+        )
+    else:
+        st.info("Naudojami integruoti scenarijai iš sistemos.")
+
+    mode = st.radio("Peržiūros režimas", ["Scenarijus", "Įvestis"], index=0, key="mode")
+
+    saving_custom_enabled = st.checkbox(
+        "Taikyti sutaupymo vertę (€/100NM)",
+        key="saving_custom_enabled",
+    )
+
+    # Submit-only controls INSIDE the form (prevents button shadowing)
+    with st.form("inputs_form", border=False):
+        fuel_price = st.number_input(
+            "Degalų kaina (€/kg)",
+            min_value=0.0,
+            value=float(cfg0.fuel_price_eur_per_kg),
+            step=0.01,
+            key="fuel_price",
+        )
+        tc_op = st.number_input(
+            "Laiko sąnaudos (€/h)",
+            min_value=0.0,
+            value=float(cfg0.time_cost_operational),
+            step=100.0,
+            key="tc_op",
+        )
+        epsilon_pct = st.number_input(
+            "ECSR epsilon (%)",
+            min_value=0.0,
+            value=float(cfg0.epsilon_break_even) * 100.0,
+            step=0.1,
+            key="epsilon_pct",
+        )
+
+        if saving_custom_enabled:
+            saving_custom = st.number_input(
+                "Sutaupymas (€/100NM)",
+                min_value=0.0,
+                value=float(st.session_state.get("saving_custom_value", 2.0)),
+                step=1.0,
+                key="saving_custom_value",
+            )
+        else:
+            saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
+
+        run_btn = st.form_submit_button("Generuoti", type="primary", use_container_width=True)
 
 def _fmt_bounds(lo: float, hi: float, unit: str) -> str:
     unit_txt = f" {unit}".strip()
@@ -1376,28 +1440,34 @@ _init_state()
 with st.sidebar:
     st.header("Įvestys")
 
-    # --- WRAP EVERYTHING in a FORM to prevent reruns on every toggle ---
-    with st.form("inputs_form", border=False):
-        data_source = st.radio(
-            "Duomenų šaltinis",
-            options=["Integruoti scenarijai", "Įkelti failus"],
-            index=0,
-            key="data_source",
+    # UI-driving controls OUTSIDE the form (so they react immediately)
+    data_source = st.radio(
+        "Duomenų šaltinis",
+        options=["Integruoti scenarijai", "Įkelti failus"],
+        index=0,
+        key="data_source",
+    )
+
+    uploads = []
+    if data_source == "Įkelti failus":
+        uploads = st.file_uploader(
+            "Scenarijų failai",
+            type=["csv", "txt"],
+            accept_multiple_files=True,
+            key="scenario_uploader",
         )
+    else:
+        st.info("Naudojami integruoti scenarijai iš sistemos.")
 
-        uploads = []
-        if data_source == "Įkelti failus":
-            uploads = st.file_uploader(
-                "Scenarijų failai",
-                type=["csv", "txt"],
-                accept_multiple_files=True,
-                key="scenario_uploader",
-            )
-        else:
-            st.info("Naudojami integruoti scenarijai iš sistemos.")
+    mode = st.radio("Peržiūros režimas", ["Scenarijus", "Įvestis"], index=0, key="mode")
 
-        mode = st.radio("Peržiūros režimas", ["Scenarijus", "Įvestis"], index=0, key="mode")
+    saving_custom_enabled = st.checkbox(
+        "Taikyti sutaupymo vertę (€/100NM)",
+        key="saving_custom_enabled",
+    )
 
+    # Submit-only controls INSIDE the form (prevents button shadowing)
+    with st.form("inputs_form", border=False):
         fuel_price = st.number_input(
             "Degalų kaina (€/kg)",
             min_value=0.0,
@@ -1420,11 +1490,6 @@ with st.sidebar:
             key="epsilon_pct",
         )
 
-        saving_custom_enabled = st.checkbox(
-            "Taikyti sutaupymo vertę (€/100NM)",
-            key="saving_custom_enabled",
-        )
-
         if saving_custom_enabled:
             saving_custom = st.number_input(
                 "Sutaupymas (€/100NM)",
@@ -1436,7 +1501,6 @@ with st.sidebar:
         else:
             saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
 
-        # --- IMPORTANT: use form_submit_button instead of st.button ---
         run_btn = st.form_submit_button("Generuoti", type="primary", use_container_width=True)
 
 if run_btn:

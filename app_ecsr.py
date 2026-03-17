@@ -1274,6 +1274,8 @@ def _clear_excel_download_artifacts() -> None:
     st.session_state.pop("excel_bytes", None)
     st.session_state.pop("excel_name", None)
 
+def _reset_run_button():
+    st.session_state.pop("run_btn", None)
 
 def _init_state() -> None:
     for k in ["fig_g1", "fig_g2", "fig_g3"]:
@@ -1327,27 +1329,28 @@ st.set_page_config(layout="wide")
 st.markdown(
     """
     <style>
-    /* --- File uploader: translate built-in English strings (best-effort DOM hack) --- */
+    /* --- File uploader translations (Streamlit DOM-safe-ish) --- */
 
-    /* Replace "Browse files" */
-    [data-testid="stFileUploader"] button * {
+    /* Button text: hide ALL existing text nodes inside the button */
+    [data-testid="stFileUploader"] button span {
         font-size: 0 !important;
     }
-    [data-testid="stFileUploader"] button::after {
+    [data-testid="stFileUploader"] button span::after {
         content: "Pasirinkti failus";
         font-size: 14px;
+        font-weight: 600;
     }
 
-    /* Replace "Drag and drop files here" */
-    [data-testid="stFileUploaderDropzone"] span {
-        font-size: 0 !important;
-    }
-    [data-testid="stFileUploaderDropzone"] span::after {
-        content: "Įkelkite failus čia (tempkite ir numeskite)";
-        font-size: 14px;
-    }
+        /* Dropzone main line */
+        [data-testid="stFileUploaderDropzone"] span {
+            font-size: 0 !important;
+        }
+        [data-testid="stFileUploaderDropzone"] span::after {
+            content: "Įkelkite failus čia (tempkite ir numeskite)";
+            font-size: 14px;
+        }
 
-    /* Replace the "Limit ... per file" line */
+    /* Dropzone small helper line */
     [data-testid="stFileUploaderDropzone"] small {
         font-size: 0 !important;
     }
@@ -1411,6 +1414,7 @@ with st.sidebar:
     saving_custom_enabled = st.checkbox(
         "Taikyti sutaupymo vertę (€/100NM)",
         key="saving_custom_enabled",
+        on_change=_reset_run_button,
     )
 
     if saving_custom_enabled:
@@ -1420,12 +1424,12 @@ with st.sidebar:
             value=float(st.session_state.get("saving_custom_value", 2.0)),
             step=1.0,
             key="saving_custom_value",
+            on_change=_reset_run_button,
         )
     else:
         saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
 
-    run_slot = st.empty()
-    run_btn = run_slot.button("Generuoti", type="primary", use_container_width=True, key="run_btn")
+    run_btn = st.button("Generuoti", type="primary", use_container_width=True, key="run_btn")
 
 if run_btn:
     st.session_state["excel_written_msg"] = ""

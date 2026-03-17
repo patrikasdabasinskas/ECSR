@@ -1367,29 +1367,36 @@ _init_state()
 with st.sidebar:
     st.header("Įvestys")
 
-    # ✅ Put sidebar controls into a form so the app doesn't rerun on every checkbox/number change.
-    with st.form("sidebar_inputs", clear_on_submit=False):
-        data_source = st.radio(
-            "Duomenų šaltinis",
-            options=["Integruoti scenarijai", "Įkelti failus"],
-            index=0,
-            help="Jeigu pasirinksite integruotus scenarijus, naudotojui nereikės įkelti failų.",
+    # --- These control layout, keep OUTSIDE the form so UI updates instantly ---
+    data_source = st.radio(
+        "Duomenų šaltinis",
+        options=["Integruoti scenarijai", "Įkelti failus"],
+        index=0,
+        help="Jeigu pasirinksite integruotus scenarijus, naudotojui nereikės įkelti failų.",
+    )
+
+    uploads = []
+    if data_source == "Įkelti failus":
+        st.markdown("Įkelkite scenarijų failus")
+        uploads = st.file_uploader(
+            "Scenarijų failai",
+            type=["csv", "txt"],
+            accept_multiple_files=True,
+            help="Pasirinkite *.csv / *.txt failus. Galite pažymėti kelis failus iš karto.",
         )
+    else:
+        st.markdown("Naudojami integruoti scenarijai iš sistemos.")
 
-        uploads = []
-        if data_source == "Įkelti failus":
-            st.markdown("Įkelkite scenarijų failus")
-            uploads = st.file_uploader(
-                "Scenarijų failai",
-                type=["csv", "txt"],
-                accept_multiple_files=True,
-                help="Pasirinkite *.csv / *.txt failus. Galite pažymėti kelis failus iš karto.",
-            )
-        else:
-            st.markdown("Naudojami integruoti scenarijai iš sistemos.")
+    mode = st.radio("Peržiūros režimas", options=["Scenarijus", "Įvestis"], index=0)
 
-        mode = st.radio("Peržiūros režimas", options=["Scenarijus", "Įvestis"], index=0)
+    saving_custom_enabled = st.checkbox(
+        "Taikyti sutaupymo vertę (€/100NM)",
+        value=bool(st.session_state.get("saving_custom_enabled", False)),
+        key="saving_custom_enabled",
+    )
 
+    # --- Stable inputs inside the form (no rerun/jumping until submit) ---
+    with st.form("sidebar_inputs", clear_on_submit=False):
         fuel_price = st.number_input(
             "Degalų kaina (€/kg)",
             min_value=0.0,
@@ -1409,12 +1416,6 @@ with st.sidebar:
             step=0.1,
         )
 
-        saving_custom_enabled = st.checkbox(
-            "Taikyti sutaupymo vertę (€/100NM)",
-            value=bool(st.session_state.get("saving_custom_enabled", False)),
-            key="saving_custom_enabled",
-        )
-
         saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
         if saving_custom_enabled:
             saving_custom = st.number_input(
@@ -1425,7 +1426,6 @@ with st.sidebar:
                 key="saving_custom_value",
             )
 
-        # ✅ This replaces st.button("Generuoti"...)
         run_btn = st.form_submit_button("Generuoti", type="primary", use_container_width=True)
         
 if run_btn:

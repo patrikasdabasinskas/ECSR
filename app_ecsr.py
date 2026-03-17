@@ -359,15 +359,7 @@ def _build_economical_scenarios_table(summary_tbl: pd.DataFrame, cfg: Config) ->
 
 # ------------------------- Result card -------------------------
 
-def _result_card_html(
-    value: str,
-    unit: str,
-    caption: str,
-    *,
-    max_width_px: int = 170,
-    box_height_px: int = 42,
-    dark: bool,
-) -> str:
+def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int = 170, box_height_px: int = 42) -> str:
     safe_value = (value or "").strip()
     value_html = safe_value if safe_value else "&nbsp;"
     safe_unit = (unit or "").strip()
@@ -378,38 +370,35 @@ def _result_card_html(
         else ""
     )
 
-    if dark:
-        border = "rgba(255,255,255,0.22)"
-        bg = "rgba(255,255,255,0.08)"
-        fg = "rgba(255,255,255,0.96)"
-        caption_fg = "rgba(255,255,255,0.78)"
-    else:
-        border = "rgba(0,0,0,0.18)"
-        bg = "rgba(0,0,0,0.04)"
-        fg = "rgba(0,0,0,0.95)"
-        caption_fg = "rgba(0,0,0,0.70)"
-
     html = f"""
 <style>
+  /* Use Streamlit theme variables (auto-adjust for dark/light) */
   .cc-card {{
-    border: 1px solid {border};
-    background: {bg};
-    color: {fg};
+    background: var(--secondary-background-color, rgba(0,0,0,0.04));
+    border: 1px solid rgba(128,128,128,0.35);
+    color: var(--text-color, #111);
   }}
-  .cc-caption {{
-    color: {caption_fg};
-  }}
-  .cc-unit {{
-    font-size: 12px;
-    font-weight: 800;
-    color: inherit;
-    opacity: 0.85;
-  }}
+
   .cc-value {{
     font-size: 22px;
     font-weight: 900;
     line-height: 1;
-    color: inherit;
+    color: var(--text-color, #111);
+  }}
+
+  .cc-unit {{
+    font-size: 12px;
+    font-weight: 800;
+    color: var(--text-color, #111);
+    opacity: 0.85;
+  }}
+
+  .cc-caption {{
+    font-size: 15px;
+    color: var(--text-color, #111);
+    opacity: 0.75;
+    text-align: center;
+    margin-top: 8px;
   }}
 </style>
 
@@ -427,9 +416,7 @@ def _result_card_html(
       <span class="cc-value">{value_html}</span>
       {unit_html}
     </div>
-    <div class="cc-caption" style="text-align:center;font-size:15px;margin-top:8px;">
-      {caption}
-    </div>
+    <div class="cc-caption">{caption}</div>
   </div>
 </div>
 """

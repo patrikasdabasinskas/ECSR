@@ -1367,63 +1367,67 @@ _init_state()
 with st.sidebar:
     st.header("Įvestys")
 
-    data_source = st.radio(
-        "Duomenų šaltinis",
-        options=["Integruoti scenarijai", "Įkelti failus"],
-        index=0,
-        help="Jeigu pasirinksite integruotus scenarijus, naudotojui nereikės įkelti failų.",
-    )
-
-    uploads = []
-    if data_source == "Įkelti failus":
-        st.markdown("Įkelkite scenarijų failus")
-        uploads = st.file_uploader(
-            "Scenarijų failai",
-            type=["csv", "txt"],
-            accept_multiple_files=True,
-            help="Pasirinkite *.csv / *.txt failus. Galite pažymėti kelis failus iš karto.",
+    # ✅ Put sidebar controls into a form so the app doesn't rerun on every checkbox/number change.
+    with st.form("sidebar_inputs", clear_on_submit=False):
+        data_source = st.radio(
+            "Duomenų šaltinis",
+            options=["Integruoti scenarijai", "Įkelti failus"],
+            index=0,
+            help="Jeigu pasirinksite integruotus scenarijus, naudotojui nereikės įkelti failų.",
         )
-    else:
-        st.markdown("Naudojami integruoti scenarijai iš sistemos.")
 
-    mode = st.radio("Peržiūros režimas", options=["Scenarijus", "Įvestis"], index=0)
+        uploads = []
+        if data_source == "Įkelti failus":
+            st.markdown("Įkelkite scenarijų failus")
+            uploads = st.file_uploader(
+                "Scenarijų failai",
+                type=["csv", "txt"],
+                accept_multiple_files=True,
+                help="Pasirinkite *.csv / *.txt failus. Galite pažymėti kelis failus iš karto.",
+            )
+        else:
+            st.markdown("Naudojami integruoti scenarijai iš sistemos.")
 
-    fuel_price = st.number_input(
-        "Degalų kaina (€/kg)",
-        min_value=0.0,
-        value=float(cfg0.fuel_price_eur_per_kg),
-        step=0.01,
-    )
-    tc_op = st.number_input(
-        "Laiko sąnaudos (€/h)",
-        min_value=0.0,
-        value=float(cfg0.time_cost_operational),
-        step=100.0,
-    )
-    epsilon_pct = st.number_input(
-        "ECSR epsilon (%)",
-        min_value=0.0,
-        value=float(cfg0.epsilon_break_even) * 100.0,
-        step=0.1,
-    )
+        mode = st.radio("Peržiūros režimas", options=["Scenarijus", "Įvestis"], index=0)
 
-    saving_custom_enabled = st.checkbox(
-        "Taikyti sutaupymo vertę (€/100NM)",
-        value=bool(st.session_state.get("saving_custom_enabled", False)),
-        key="saving_custom_enabled",
-    )
-    saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
-    if saving_custom_enabled:
-        saving_custom = st.number_input(
-            "Sutaupymas (€/100NM)",
+        fuel_price = st.number_input(
+            "Degalų kaina (€/kg)",
             min_value=0.0,
-            value=float(saving_custom),
-            step=1.0,
-            key="saving_custom_value",
+            value=float(cfg0.fuel_price_eur_per_kg),
+            step=0.01,
+        )
+        tc_op = st.number_input(
+            "Laiko sąnaudos (€/h)",
+            min_value=0.0,
+            value=float(cfg0.time_cost_operational),
+            step=100.0,
+        )
+        epsilon_pct = st.number_input(
+            "ECSR epsilon (%)",
+            min_value=0.0,
+            value=float(cfg0.epsilon_break_even) * 100.0,
+            step=0.1,
         )
 
-    run_btn = st.button("Generuoti", type="primary")
+        saving_custom_enabled = st.checkbox(
+            "Taikyti sutaupymo vertę (€/100NM)",
+            value=bool(st.session_state.get("saving_custom_enabled", False)),
+            key="saving_custom_enabled",
+        )
 
+        saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
+        if saving_custom_enabled:
+            saving_custom = st.number_input(
+                "Sutaupymas (€/100NM)",
+                min_value=0.0,
+                value=float(saving_custom),
+                step=1.0,
+                key="saving_custom_value",
+            )
+
+        # ✅ This replaces st.button("Generuoti"...)
+        run_btn = st.form_submit_button("Generuoti", type="primary", use_container_width=True)
+        
 if run_btn:
     st.session_state["excel_written_msg"] = ""
     _clear_excel_download_artifacts()
@@ -1530,7 +1534,7 @@ if run_btn:
 
 if "summary_tbl" not in st.session_state:
     st.info("Pasirinkite duomenų šaltinį ir spauskite „Generuoti“.")
-    raise SystemExit(0)
+    st.stop()
 
 summary_tbl: pd.DataFrame = st.session_state["summary_tbl"]
 longform_tbl: pd.DataFrame = st.session_state["longform_tbl"]
@@ -1541,7 +1545,7 @@ cfg: Config = st.session_state.get("last_cfg", cfg0)
 scenario_names = sorted([sc.get("scenarioName", "") for sc in scenarios if sc.get("scenarioName")], key=_scenario_sort_key)
 if not scenario_names:
     st.warning("Nerasta scenarijų šiame įkeltų failų rinkinyje.")
-    raise SystemExit(0)
+    st.stop()
 
 # ========================= ECSR skaičiuoklė (SCENARIUS MODE ONLY) =========================
 if mode == "Scenarijus":

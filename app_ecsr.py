@@ -372,27 +372,24 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
 
     html = f"""
 <style>
-  /* Use Streamlit theme variables (auto-adjust for dark/light) */
+  /* Uses Streamlit theme CSS variables, so it becomes white in dark mode automatically */
   .cc-card {{
     background: var(--secondary-background-color, rgba(0,0,0,0.04));
     border: 1px solid rgba(128,128,128,0.35);
     color: var(--text-color, #111);
   }}
-
   .cc-value {{
     font-size: 22px;
     font-weight: 900;
     line-height: 1;
     color: var(--text-color, #111);
   }}
-
   .cc-unit {{
     font-size: 12px;
     font-weight: 800;
     color: var(--text-color, #111);
     opacity: 0.85;
   }}
-
   .cc-caption {{
     font-size: 15px;
     color: var(--text-color, #111);
@@ -423,30 +420,13 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
     return textwrap.dedent(html).strip()
 
 
-def _render_result_card(
-    value: str,
-    unit: str,
-    caption: str,
-    *,
-    max_width_px: int = 170,
-    box_height_px: int = 42,
-) -> None:
-    theme_base = str(st.get_option("theme.base") or "").strip().lower()
-    is_dark = theme_base == "dark"
-
+def _render_result_card(value: str, unit: str, caption: str, *, max_width_px: int = 170, box_height_px: int = 42) -> None:
+    # IMPORTANT: call _result_card_html() with NO extra args (fixes your TypeError)
     components.html(
-        _result_card_html(
-            value,
-            unit,
-            caption,
-            max_width_px=max_width_px,
-            box_height_px=box_height_px,
-            dark=is_dark,
-        ),
+        _result_card_html(value, unit, caption, max_width_px=max_width_px, box_height_px=box_height_px),
         height=box_height_px + 52,
         scrolling=False,
     )
-
 # ------------------------- plotting helpers -------------------------
 
 

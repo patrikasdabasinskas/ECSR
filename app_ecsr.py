@@ -372,30 +372,38 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
 
     html = f"""
 <style>
-  /* Uses Streamlit theme CSS variables, so it becomes white in dark mode automatically */
+  /* Light mode defaults (iframe-local) */
   .cc-card {{
-    background: var(--secondary-background-color, rgba(0,0,0,0.04));
-    border: 1px solid rgba(128,128,128,0.35);
-    color: var(--text-color, #111);
+    border: 1px solid rgba(0,0,0,0.18);
+    background: rgba(0,0,0,0.04);
+    color: rgba(0,0,0,0.95);
+  }}
+  .cc-caption {{
+    color: rgba(0,0,0,0.70);
+  }}
+  .cc-unit {{
+    font-size: 12px;
+    font-weight: 800;
+    color: inherit;
+    opacity: 0.85;
   }}
   .cc-value {{
     font-size: 22px;
     font-weight: 900;
     line-height: 1;
-    color: var(--text-color, #111);
+    color: inherit;
   }}
-  .cc-unit {{
-    font-size: 12px;
-    font-weight: 800;
-    color: var(--text-color, #111);
-    opacity: 0.85;
-  }}
-  .cc-caption {{
-    font-size: 15px;
-    color: var(--text-color, #111);
-    opacity: 0.75;
-    text-align: center;
-    margin-top: 8px;
+
+  /* System dark mode (works inside iframe) */
+  @media (prefers-color-scheme: dark) {{
+    .cc-card {{
+      border: 1px solid rgba(255,255,255,0.22);
+      background: rgba(255,255,255,0.08);
+      color: rgba(255,255,255,0.96);
+    }}
+    .cc-caption {{
+      color: rgba(255,255,255,0.78);
+    }}
   }}
 </style>
 
@@ -413,7 +421,9 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
       <span class="cc-value">{value_html}</span>
       {unit_html}
     </div>
-    <div class="cc-caption">{caption}</div>
+    <div class="cc-caption" style="text-align:center;font-size:15px;margin-top:8px;">
+      {caption}
+    </div>
   </div>
 </div>
 """
@@ -421,7 +431,6 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
 
 
 def _render_result_card(value: str, unit: str, caption: str, *, max_width_px: int = 170, box_height_px: int = 42) -> None:
-    # IMPORTANT: call _result_card_html() with NO extra args (fixes your TypeError)
     components.html(
         _result_card_html(value, unit, caption, max_width_px=max_width_px, box_height_px=box_height_px),
         height=box_height_px + 52,

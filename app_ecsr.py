@@ -359,37 +359,75 @@ def _build_economical_scenarios_table(summary_tbl: pd.DataFrame, cfg: Config) ->
 
 # ------------------------- Result card -------------------------
 
-
-def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int = 170, box_height_px: int = 42) -> str:
+def _result_card_html(
+    value: str,
+    unit: str,
+    caption: str,
+    *,
+    max_width_px: int = 170,
+    box_height_px: int = 42,
+    dark: bool,
+) -> str:
     safe_value = (value or "").strip()
     value_html = safe_value if safe_value else "&nbsp;"
     safe_unit = (unit or "").strip()
 
     unit_html = (
-        f"<span style='font-size:12px;font-weight:800;color:#111;margin-left:6px;line-height:1;'>{safe_unit}</span>"
+        f"<span class='cc-unit' style='margin-left:6px;line-height:1;'>{safe_unit}</span>"
         if safe_unit
         else ""
     )
 
+    if dark:
+        border = "rgba(255,255,255,0.22)"
+        bg = "rgba(255,255,255,0.08)"
+        fg = "rgba(255,255,255,0.96)"
+        caption_fg = "rgba(255,255,255,0.78)"
+    else:
+        border = "rgba(0,0,0,0.18)"
+        bg = "rgba(0,0,0,0.04)"
+        fg = "rgba(0,0,0,0.95)"
+        caption_fg = "rgba(0,0,0,0.70)"
+
     html = f"""
+<style>
+  .cc-card {{
+    border: 1px solid {border};
+    background: {bg};
+    color: {fg};
+  }}
+  .cc-caption {{
+    color: {caption_fg};
+  }}
+  .cc-unit {{
+    font-size: 12px;
+    font-weight: 800;
+    color: inherit;
+    opacity: 0.85;
+  }}
+  .cc-value {{
+    font-size: 22px;
+    font-weight: 900;
+    line-height: 1;
+    color: inherit;
+  }}
+</style>
+
 <div style="width:100%;display:flex;justify-content:center;">
   <div style="width:100%;max-width:{int(max_width_px)}px;">
-    <div style="
-        border:1px solid #d0d0d0;
+    <div class="cc-card" style="
         border-radius:10px;
         padding:4px 8px;
-        background:#f3f4f6;
-        color:#000;
         height:{int(box_height_px)}px;
         display:flex;
         justify-content:center;
         align-items:center;
         gap:4px;
     ">
-      <span style="font-size:22px;font-weight:900;line-height:1;">{value_html}</span>
+      <span class="cc-value">{value_html}</span>
       {unit_html}
     </div>
-    <div style="text-align:center;font-size:15px;color:#555;margin-top:8px;">
+    <div class="cc-caption" style="text-align:center;font-size:15px;margin-top:8px;">
       {caption}
     </div>
   </div>
@@ -398,13 +436,29 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
     return textwrap.dedent(html).strip()
 
 
-def _render_result_card(value: str, unit: str, caption: str, *, max_width_px: int = 170, box_height_px: int = 42) -> None:
+def _render_result_card(
+    value: str,
+    unit: str,
+    caption: str,
+    *,
+    max_width_px: int = 170,
+    box_height_px: int = 42,
+) -> None:
+    theme_base = str(st.get_option("theme.base") or "").strip().lower()
+    is_dark = theme_base == "dark"
+
     components.html(
-        _result_card_html(value, unit, caption, max_width_px=max_width_px, box_height_px=box_height_px),
+        _result_card_html(
+            value,
+            unit,
+            caption,
+            max_width_px=max_width_px,
+            box_height_px=box_height_px,
+            dark=is_dark,
+        ),
         height=box_height_px + 52,
         scrolling=False,
     )
-
 
 # ------------------------- plotting helpers -------------------------
 
@@ -1367,7 +1421,6 @@ _init_state()
 with st.sidebar:
     st.header("Įvestys")
 
-    # --- These control layout, keep OUTSIDE the form so UI updates instantly ---
     data_source = st.radio(
         "Duomenų šaltinis",
         options=["Integruoti scenarijai", "Įkelti failus"],
@@ -1389,13 +1442,14 @@ with st.sidebar:
 
     mode = st.radio("Peržiūros režimas", options=["Scenarijus", "Įvestis"], index=0)
 
+    # ✅ Checkbox OUTSIDE form: instant UI update
     saving_custom_enabled = st.checkbox(
         "Taikyti sutaupymo vertę (€/100NM)",
         value=bool(st.session_state.get("saving_custom_enabled", False)),
         key="saving_custom_enabled",
     )
 
-    # --- Stable inputs inside the form (no rerun/jumping until submit) ---
+    # ✅ Inputs + button inside form: no jumping/shadow, submit on click
     with st.form("sidebar_inputs", clear_on_submit=False):
         fuel_price = st.number_input(
             "Degalų kaina (€/kg)",
@@ -1416,6 +1470,7 @@ with st.sidebar:
             step=0.1,
         )
 
+        # ✅ Extra field appears ONLY when checked
         saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
         if saving_custom_enabled:
             saving_custom = st.number_input(

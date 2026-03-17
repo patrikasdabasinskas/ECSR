@@ -1274,9 +1274,6 @@ def _clear_excel_download_artifacts() -> None:
     st.session_state.pop("excel_bytes", None)
     st.session_state.pop("excel_name", None)
 
-def _reset_run_button():
-    st.session_state.pop("run_btn", None)
-
 def _init_state() -> None:
     for k in ["fig_g1", "fig_g2", "fig_g3"]:
         st.session_state.setdefault(k, None)
@@ -1326,31 +1323,41 @@ def _init_state() -> None:
 
 st.set_page_config(layout="wide")
 
+# --- REPLACE your current CSS block with this one (more robust) ---
 st.markdown(
     """
     <style>
-    /* --- File uploader translations (Streamlit DOM-safe-ish) --- */
+    /* --- File uploader translations (more robust across Streamlit versions) --- */
 
-    /* Button text: hide ALL existing text nodes inside the button */
-    [data-testid="stFileUploader"] button span {
+    /* Replace uploader button label (e.g., "Browse files") */
+    [data-testid="stFileUploader"] button {
+        position: relative !important;
+    }
+    [data-testid="stFileUploader"] button * {
         font-size: 0 !important;
     }
-    [data-testid="stFileUploader"] button span::after {
+    [data-testid="stFileUploader"] button::after {
         content: "Pasirinkti failus";
         font-size: 14px;
         font-weight: 600;
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
     }
 
-        /* Dropzone main line */
-        [data-testid="stFileUploaderDropzone"] span {
-            font-size: 0 !important;
-        }
-        [data-testid="stFileUploaderDropzone"] span::after {
-            content: "Įkelkite failus čia (tempkite ir numeskite)";
-            font-size: 14px;
-        }
+    /* Dropzone main line */
+    [data-testid="stFileUploaderDropzone"] span {
+        font-size: 0 !important;
+    }
+    [data-testid="stFileUploaderDropzone"] span::after {
+        content: "Įkelkite failus čia (tempkite ir numeskite)";
+        font-size: 14px;
+    }
 
-    /* Dropzone small helper line */
+    /* Dropzone helper line */
     [data-testid="stFileUploaderDropzone"] small {
         font-size: 0 !important;
     }
@@ -1369,67 +1376,68 @@ _init_state()
 with st.sidebar:
     st.header("Įvestys")
 
-    data_source = st.radio(
-        "Duomenų šaltinis",
-        options=["Integruoti scenarijai", "Įkelti failus"],
-        index=0,
-        key="data_source",
-    )
-
-    uploads = []
-    if data_source == "Įkelti failus":
-        uploads = st.file_uploader(
-            "Scenarijų failai",
-            type=["csv", "txt"],
-            accept_multiple_files=True,
-            key="scenario_uploader",
+    # --- WRAP EVERYTHING in a FORM to prevent reruns on every toggle ---
+    with st.form("inputs_form", border=False):
+        data_source = st.radio(
+            "Duomenų šaltinis",
+            options=["Integruoti scenarijai", "Įkelti failus"],
+            index=0,
+            key="data_source",
         )
-    else:
-        st.info("Naudojami integruoti scenarijai iš sistemos.")
 
-    mode = st.radio("Peržiūros režimas", ["Scenarijus", "Įvestis"], index=0, key="mode")
+        uploads = []
+        if data_source == "Įkelti failus":
+            uploads = st.file_uploader(
+                "Scenarijų failai",
+                type=["csv", "txt"],
+                accept_multiple_files=True,
+                key="scenario_uploader",
+            )
+        else:
+            st.info("Naudojami integruoti scenarijai iš sistemos.")
 
-    fuel_price = st.number_input(
-        "Degalų kaina (€/kg)",
-        min_value=0.0,
-        value=float(cfg0.fuel_price_eur_per_kg),
-        step=0.01,
-        key="fuel_price",
-    )
-    tc_op = st.number_input(
-        "Laiko sąnaudos (€/h)",
-        min_value=0.0,
-        value=float(cfg0.time_cost_operational),
-        step=100.0,
-        key="tc_op",
-    )
-    epsilon_pct = st.number_input(
-        "ECSR epsilon (%)",
-        min_value=0.0,
-        value=float(cfg0.epsilon_break_even) * 100.0,
-        step=0.1,
-        key="epsilon_pct",
-    )
+        mode = st.radio("Peržiūros režimas", ["Scenarijus", "Įvestis"], index=0, key="mode")
 
-    saving_custom_enabled = st.checkbox(
-        "Taikyti sutaupymo vertę (€/100NM)",
-        key="saving_custom_enabled",
-        on_change=_reset_run_button,
-    )
-
-    if saving_custom_enabled:
-        saving_custom = st.number_input(
-            "Sutaupymas (€/100NM)",
+        fuel_price = st.number_input(
+            "Degalų kaina (€/kg)",
             min_value=0.0,
-            value=float(st.session_state.get("saving_custom_value", 2.0)),
-            step=1.0,
-            key="saving_custom_value",
-            on_change=_reset_run_button,
+            value=float(cfg0.fuel_price_eur_per_kg),
+            step=0.01,
+            key="fuel_price",
         )
-    else:
-        saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
+        tc_op = st.number_input(
+            "Laiko sąnaudos (€/h)",
+            min_value=0.0,
+            value=float(cfg0.time_cost_operational),
+            step=100.0,
+            key="tc_op",
+        )
+        epsilon_pct = st.number_input(
+            "ECSR epsilon (%)",
+            min_value=0.0,
+            value=float(cfg0.epsilon_break_even) * 100.0,
+            step=0.1,
+            key="epsilon_pct",
+        )
 
-    run_btn = st.button("Generuoti", type="primary", use_container_width=True, key="run_btn")
+        saving_custom_enabled = st.checkbox(
+            "Taikyti sutaupymo vertę (€/100NM)",
+            key="saving_custom_enabled",
+        )
+
+        if saving_custom_enabled:
+            saving_custom = st.number_input(
+                "Sutaupymas (€/100NM)",
+                min_value=0.0,
+                value=float(st.session_state.get("saving_custom_value", 2.0)),
+                step=1.0,
+                key="saving_custom_value",
+            )
+        else:
+            saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
+
+        # --- IMPORTANT: use form_submit_button instead of st.button ---
+        run_btn = st.form_submit_button("Generuoti", type="primary", use_container_width=True)
 
 if run_btn:
     st.session_state["excel_written_msg"] = ""
@@ -1537,7 +1545,7 @@ if run_btn:
 
 if "summary_tbl" not in st.session_state:
     st.info("Pasirinkite duomenų šaltinį ir spauskite „Generuoti“.")
-    raise SystemExit(0)
+    st.stop()
 
 summary_tbl: pd.DataFrame = st.session_state["summary_tbl"]
 longform_tbl: pd.DataFrame = st.session_state["longform_tbl"]
@@ -1548,7 +1556,7 @@ cfg: Config = st.session_state.get("last_cfg", cfg0)
 scenario_names = sorted([sc.get("scenarioName", "") for sc in scenarios if sc.get("scenarioName")], key=_scenario_sort_key)
 if not scenario_names:
     st.warning("Nerasta scenarijų šiame įkeltų failų rinkinyje.")
-    raise SystemExit(0)
+    st.stop()
 
 # ========================= ECSR skaičiuoklė (SCENARIUS MODE ONLY) =========================
 if mode == "Scenarijus":

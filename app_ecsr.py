@@ -359,7 +359,25 @@ def _build_economical_scenarios_table(summary_tbl: pd.DataFrame, cfg: Config) ->
 
 # ------------------------- Result card -------------------------
 
-def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int = 170, box_height_px: int = 42) -> str:
+def _is_dark_theme() -> bool:
+    """
+    Reliable theme detection for Streamlit (works better than prefers-color-scheme in components iframe).
+    """
+    try:
+        return str(st.get_option("theme.base") or "").lower() == "dark"
+    except Exception:
+        return False
+
+
+def _result_card_html(
+    value: str,
+    unit: str,
+    caption: str,
+    *,
+    max_width_px: int = 170,
+    box_height_px: int = 42,
+    dark: bool = False,
+) -> str:
     safe_value = (value or "").strip()
     value_html = safe_value if safe_value else "&nbsp;"
     safe_unit = (unit or "").strip()
@@ -370,16 +388,27 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
         else ""
     )
 
+    # Force colors based on Streamlit theme (do NOT rely on prefers-color-scheme inside iframe)
+    if dark:
+        card_border = "rgba(255,255,255,0.22)"
+        card_bg = "rgba(255,255,255,0.08)"
+        text_color = "rgba(255,255,255,0.96)"
+        caption_color = "rgba(255,255,255,0.78)"
+    else:
+        card_border = "rgba(0,0,0,0.18)"
+        card_bg = "rgba(0,0,0,0.04)"
+        text_color = "rgba(0,0,0,0.95)"
+        caption_color = "rgba(0,0,0,0.70)"
+
     html = f"""
 <style>
-  /* Light mode defaults (iframe-local) */
   .cc-card {{
-    border: 1px solid rgba(0,0,0,0.18);
-    background: rgba(0,0,0,0.04);
-    color: rgba(0,0,0,0.95);
+    border: 1px solid {card_border};
+    background: {card_bg};
+    color: {text_color};
   }}
   .cc-caption {{
-    color: rgba(0,0,0,0.70);
+    color: {caption_color};
   }}
   .cc-unit {{
     font-size: 12px;
@@ -392,18 +421,6 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
     font-weight: 900;
     line-height: 1;
     color: inherit;
-  }}
-
-  /* System dark mode (works inside iframe) */
-  @media (prefers-color-scheme: dark) {{
-    .cc-card {{
-      border: 1px solid rgba(255,255,255,0.22);
-      background: rgba(255,255,255,0.08);
-      color: rgba(255,255,255,0.96);
-    }}
-    .cc-caption {{
-      color: rgba(255,255,255,0.78);
-    }}
   }}
 </style>
 
@@ -430,9 +447,23 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
     return textwrap.dedent(html).strip()
 
 
-def _render_result_card(value: str, unit: str, caption: str, *, max_width_px: int = 170, box_height_px: int = 42) -> None:
+def _render_result_card(
+    value: str,
+    unit: str,
+    caption: str,
+    *,
+    max_width_px: int = 170,
+    box_height_px: int = 42,
+) -> None:
     components.html(
-        _result_card_html(value, unit, caption, max_width_px=max_width_px, box_height_px=box_height_px),
+        _result_card_html(
+            value,
+            unit,
+            caption,
+            max_width_px=max_width_px,
+            box_height_px=box_height_px,
+            dark=_is_dark_theme(),
+        ),
         height=box_height_px + 52,
         scrolling=False,
     )
@@ -1126,14 +1157,15 @@ def _label_points_with_overlap_avoidance(
     ys: np.ndarray,
     *,
     fmt: str,
-    y_offset_pts: int = 10,
-    fontsize: int = 8,
-    max_tries: int = 8,
+    base_offset_pts: int = 18,
+    series_phase: int = 0,
+    font_size: int = 10,
 ) -> None:
     """
-    Place value labels close to points, with minimal overlap.
-    Smaller font, tighter bbox, shorter/thinner leader line.
-    Tries multiple offsets (up/down + slight left/right jitter).
+    Place labels near points avoiding overlap by trying many candidate offsets.
+
+    - series_phase: use different phase per line/series to stagger initial offsets.
+    - base_offset_pts: base distance of the label from the point (bigger => longer leader lines).
     """
     xs = np.asarray(xs, float).reshape(-1)
     ys = np.asarray(ys, float).reshape(-1)
@@ -1143,68 +1175,91 @@ def _label_points_with_overlap_avoidance(
     fig = ax.figure
     fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
-    placed_bboxes = []
+    placed_bboxes: list = []
 
-    base = int(y_offset_pts)
-    offsets = [
-        (0, base),
-        (0, -base),
-        (10, base),
-        (-10, base),
-        (10, -base),
-        (-10, -base),
-        (18, 0),
-        (-18, 0),
-    ][: max(1, int(max_tries))]
+    # Candidate offsets (dx, dy) in points.
+    # Ordered: near -> far; above/below; left/right.
+    # Longer leader lines come from bigger offsets.
+    dy_levels = [base_offset_pts, base_offset_pts + 10, base_offset_pts + 20, base_offset_pts + 32]
+    dx_levels = [0, 26, -26, 44, -44, 62, -62]
+
+    candidates: list[tuple[int, int]] = []
+    # Stagger start direction per series to reduce collisions
+    sign_cycle = [1, -1, 1, -1]
+    start_sign = sign_cycle[series_phase % len(sign_cycle)]
+
+    for dy in dy_levels:
+        for dx in dx_levels:
+            candidates.append((dx, start_sign * dy))
+            candidates.append((dx, -start_sign * dy))
 
     def _place(x0: float, y0: float, dx: int, dy: int):
+        ha = "center" if dx == 0 else ("left" if dx > 0 else "right")
+        va = "bottom" if dy >= 0 else "top"
+
         ann = ax.annotate(
             fmt.format(y0),
-            (x0, y0),
-            textcoords="offset points",
+            xy=(x0, y0),
+            xycoords="data",
             xytext=(dx, dy),
-            ha="center" if dx == 0 else ("left" if dx > 0 else "right"),
-            va="bottom" if dy >= 0 else "top",
-            fontsize=int(fontsize),
+            textcoords="offset points",
+            ha=ha,
+            va=va,
+            fontsize=font_size,
             arrowprops={
                 "arrowstyle": "-",
-                "linewidth": 0.7,
+                "linewidth": 1.1,
                 "color": "black",
-                "shrinkA": 6,
-                "shrinkB": 10,
+                "shrinkA": 0,
+                "shrinkB": 0,  # longer visible leader line
             },
             bbox={
-                "boxstyle": "round,pad=0.10",
+                "boxstyle": "round,pad=0.18",
                 "facecolor": "white",
                 "edgecolor": "none",
-                "alpha": 0.88,
+                "alpha": 0.92,
             },
             clip_on=False,
             zorder=50,
         )
         fig.canvas.draw()
-        bb = ann.get_window_extent(renderer=renderer).expanded(1.02, 1.05)
+        bb = ann.get_window_extent(renderer=renderer).expanded(1.06, 1.18)
         return ann, bb
 
+    def _overlap_score(bb) -> float:
+        # 0 means no overlap, higher means worse. Cheap heuristic.
+        s = 0.0
+        for prev in placed_bboxes:
+            if bb.overlaps(prev):
+                # approximate penalty by intersection area (in pixels)
+                x0 = max(bb.x0, prev.x0)
+                y0 = max(bb.y0, prev.y0)
+                x1 = min(bb.x1, prev.x1)
+                y1 = min(bb.y1, prev.y1)
+                if x1 > x0 and y1 > y0:
+                    s += (x1 - x0) * (y1 - y0)
+        return s
+
     for x0, y0 in zip(xs.tolist(), ys.tolist()):
-        if not (np.isfinite(x0) and np.isfinite(y0)):
-            continue
+        best = None
 
-        best_bb = None
-
-        for dx, dy in offsets:
+        for dx, dy in candidates:
             ann, bb = _place(x0, y0, dx, dy)
-            if any(bb.overlaps(prev) for prev in placed_bboxes):
-                ann.remove()
-                continue
-            best_bb = bb
-            break
+            if not any(bb.overlaps(prev) for prev in placed_bboxes):
+                placed_bboxes.append(bb)
+                best = None
+                break
+            # keep best fallback (least overlap) then remove
+            score = _overlap_score(bb)
+            if best is None or score < best[0]:
+                best = (score, dx, dy, ann, bb)
+            ann.remove()
 
-        if best_bb is None:
-            ann, bb = _place(x0, y0, 0, base)
-            best_bb = bb
-
-        placed_bboxes.append(best_bb)
+        if best is not None:
+            _score, dx, dy, ann, bb = best
+            # re-add the best fallback annotation (it was removed)
+            ann2, bb2 = _place(x0, y0, dx, dy)
+            placed_bboxes.append(bb2)
 
 
 def _plot_breakpoint_vs_grouped(
@@ -1237,12 +1292,29 @@ def _plot_breakpoint_vs_grouped(
 
     if used_group:
         g = df.groupby([used_group, x_col], as_index=False)[y_col].median().rename(columns={y_col: "BE"})
-        for grp_val, sub in g.groupby(used_group, sort=True):
+        for idx, (grp_val, sub) in enumerate(g.groupby(used_group, sort=True)):
             sub = sub.sort_values(x_col)
             xs = sub[x_col].to_numpy(float)
             ys = sub["BE"].to_numpy(float)
-            ax.plot(xs, ys, linewidth=2.2, marker="o", markersize=4.8, label=_group_label(used_group, float(grp_val)))
-            _label_points_with_overlap_avoidance(ax, xs, ys, fmt=fmt, y_offset_pts=8, fontsize=8)
+
+            ax.plot(
+                xs,
+                ys,
+                linewidth=2.2,
+                marker="o",
+                markersize=4.8,
+                label=_group_label(used_group, float(grp_val)),
+            )
+
+            _label_points_with_overlap_avoidance(
+                ax,
+                xs,
+                ys,
+                fmt=fmt,
+                base_offset_pts=22,
+                series_phase=idx,
+                font_size=8,
+            )
         ax.legend(loc="best")
         y_for_limits = g["BE"].to_numpy(float)
     else:
@@ -1251,7 +1323,16 @@ def _plot_breakpoint_vs_grouped(
         ys = df[y_col].to_numpy(float)
         ax.plot(xs, ys, linewidth=2.2, color="darkred")
         ax.scatter(xs, ys, s=26, color="darkred")
-        _label_points_with_overlap_avoidance(ax, xs, ys, fmt=fmt, y_offset_pts=8, fontsize=8)
+
+        _label_points_with_overlap_avoidance(
+            ax,
+            xs,
+            ys,
+            fmt=fmt,
+            base_offset_pts=22,
+            series_phase=0,
+            font_size=8,
+        )
         y_for_limits = ys
 
     y_min = float(np.nanmin(y_for_limits))
@@ -1407,42 +1488,6 @@ def _init_state() -> None:
 
 st.set_page_config(layout="wide")
 
-st.markdown(
-    """
-    <style>
-    /* --- File uploader: translate built-in English strings (best-effort DOM hack) --- */
-
-    /* Replace "Browse files" */
-    [data-testid="stFileUploader"] button span {
-        font-size: 0 !important;
-    }
-    [data-testid="stFileUploader"] button span::after {
-        content: "Pasirinkti failus";
-        font-size: 14px;
-    }
-
-    /* Replace "Drag and drop files here" */
-    [data-testid="stFileUploaderDropzone"] span {
-        font-size: 0 !important;
-    }
-    [data-testid="stFileUploaderDropzone"] span::after {
-        content: "Įkelkite failus čia (tempkite ir numeskite)";
-        font-size: 14px;
-    }
-
-    /* Replace the "Limit ... per file" line */
-    [data-testid="stFileUploaderDropzone"] small {
-        font-size: 0 !important;
-    }
-    [data-testid="stFileUploaderDropzone"] small::after {
-        content: "Riba: 200 MB vienam failui • CSV, TXT";
-        font-size: 12px;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
 # ========================= UI (SIDEBAR) =========================
 
 cfg0 = default_config()
@@ -1451,37 +1496,37 @@ _init_state()
 with st.sidebar:
     st.header("Įvestys")
 
-    # --- layout-changing controls OUTSIDE form (instant updates) ---
     data_source = st.radio(
         "Duomenų šaltinis",
         options=["Scenarijai, jau esantys sistemoje", "Įkelti naujus scenarijus"],
         index=0,
         help="Jeigu pasirinksite jau sistemoje esančius scenarijus, naudotojui nereikės įkelti naujų ir bus galima iškart matyti rezultatus.",
+        key="data_source",
     )
 
-    uploads = []
+    uploads: List[Any] = []
     if data_source == "Įkelti naujus scenarijus":
-        st.markdown("Įkelkite scenarijų failus")
+        st.markdown("Įkelkite scenarijų failus (CSV arba TXT). Galite įkelti kelis failus iš karto.")
         uploads = st.file_uploader(
             "Scenarijų failai",
             type=["csv", "txt"],
             accept_multiple_files=True,
             help="Pasirinkite *.csv / *.txt failus. Galite pažymėti kelis failus iš karto.",
+            key="uploader_files",
         )
-    
+    else:
+        st.markdown("Naudojami integruoti scenarijai iš sistemos.")
+
     mode = st.radio("Peržiūros režimas", options=["Scenarijus", "Įvestis"], index=0)
 
-    # ✅ IMPORTANT: don't pass `value=` when using `key=` (prevents "reverting")
     saving_custom_enabled = st.checkbox(
         "Taikyti sutaupymo vertę (€/100NM)",
         key="saving_custom_enabled",
     )
 
-    # Optional: reset the custom value when unchecked (keeps state clean)
     if not bool(st.session_state.get("saving_custom_enabled", False)):
         st.session_state["saving_custom_value"] = float(st.session_state.get("saving_custom_value", 2.0) or 2.0)
 
-    # --- stable controls INSIDE form (no jitter/shadow; only submits on click) ---
     with st.form("sidebar_inputs", clear_on_submit=False):
         fuel_price = st.number_input(
             "Degalų kaina (€/kg)",
@@ -1502,7 +1547,6 @@ with st.sidebar:
             step=0.1,
         )
 
-        # ✅ show only when checked, read from session_state (bulletproof)
         saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
         if bool(st.session_state.get("saving_custom_enabled", False)):
             saving_custom = st.number_input(
@@ -1787,11 +1831,14 @@ if mode == "Scenarijus":
                     elif "€/kg" in pick_metric_label:
                         shown_value = f"{val:.2f}"
                         shown_unit = "€/kg"
+                    elif "EUR/NM" in pick_metric_label:
+                        shown_value = f"{val:.3f}"   # ✅ 2–3 decimals, e.g. 8.234
+                        shown_unit = "EUR/NM"
                     elif "EUR" in pick_metric_label:
-                        shown_value = f"{int(round(val))}"
+                        shown_value = f"{val:.0f}"
                         shown_unit = "EUR"
                     else:
-                        shown_value = f"{val:.1f}"
+                        shown_value = f"{val:.3f}"
 
     st.markdown("<div style='height: 26px'></div>", unsafe_allow_html=True)
 
@@ -1801,13 +1848,13 @@ if mode == "Scenarijus":
         if is_docmin_per_x:
             r1, r2, r3 = st.columns(3, gap="large")
             with r1:
-                v = "" if not np.isfinite(docmin_total) else f"{docmin_total:.0f}"
+                v = "" if not np.isfinite(docmin_total) else f"{docmin_total:.3f}"
                 _render_result_card(v, "EUR" if v else "", "DOCmin rezultatas", max_width_px=190)
             with r2:
-                v = "" if not np.isfinite(docnotch_total) else f"{docnotch_total:.0f}"
+                v = "" if not np.isfinite(docnotch_total) else f"{docnotch_total:.3f}"
                 _render_result_card(v, "EUR" if v else "", "DOCnotch rezultatas", max_width_px=190)
             with r3:
-                v = "" if not np.isfinite(diff_total) else f"{diff_total:.0f}"
+                v = "" if not np.isfinite(diff_total) else f"{diff_total:.3f}"
                 _render_result_card(v, "EUR" if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
         else:
             _show_result_card(shown_value, shown_unit)
@@ -1904,7 +1951,7 @@ else:
                         if unit == "kt":
                             shown_value = f"{int(round(float(val)))}"
                         elif unit == "EUR/NM":
-                            shown_value = f"{float(val):.1f}"
+                            shown_value = f"{float(val):.3f}"
                         else:
                             shown_value = f"{float(val):g}"
                         shown_unit = unit

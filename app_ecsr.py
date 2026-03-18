@@ -1172,7 +1172,7 @@ def _plot_econ_vs_fuel_price_input_knn(
     return fig
 
 
-# ------------------------- Breakpoint graphs helpers (unchanged) -------------------------
+# ------------------------- Breakpoint graphs helpers -------------------------
 
 
 def _unique_sorted(series: pd.Series) -> List[float]:
@@ -1239,8 +1239,8 @@ def _label_points_with_overlap_avoidance(
     ys: np.ndarray,
     *,
     fmt: str,
-    y_offset_pts: int = 6,   # closer to dot
-    fontsize: int = 7,       # smaller labels
+    y_offset_pts: int = 6,
+    fontsize: int = 7,
 ) -> None:
     """
     Simple/old style:
@@ -1283,6 +1283,86 @@ def _label_points_with_overlap_avoidance(
         )
 
 
+def _bbox_overlap_frac(a, b) -> float:
+    """Return overlap area / min(area(a), area(b)) in display (pixel) coordinates."""
+    x0 = max(a.x0, b.x0)
+    y0 = max(a.y0, b.y0)
+    x1 = min(a.x1, b.x1)
+    y1 = min(a.y1, b.y1)
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    inter = (x1 - x0) * (y1 - y0)
+    area_a = max((a.x1 - a.x0) * (a.y1 - a.y0), 1e-9)
+    area_b = max((b.x1 - b.x0) * (b.y1 - b.y0), 1e-9)
+    return float(inter / min(area_a, area_b))
+
+
+def _label_points_global_dedup(
+    ax,
+    candidates: List[Tuple[float, float, str]],
+    *,
+    overlap_frac: float = 0.80,
+    y_offset_pts: int = 6,
+    fontsize: int = 7,
+) -> None:
+    """
+    Place labels globally (across all plotted lines) and skip labels that would overlap
+    already-placed labels by >= overlap_frac.
+    """
+    if not candidates:
+        return
+
+    fig = ax.figure
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+
+    kept_bboxes = []
+
+    # Choose who "wins" when labels clash:
+    # current policy = higher y first. If you want "first group wins", we can change this.
+    candidates_sorted = sorted(
+        [(float(x), float(y), str(t)) for x, y, t in candidates if np.isfinite(x) and np.isfinite(y)],
+        key=lambda r: r[1],
+        reverse=True,
+    )
+
+    for x0, y0, txt in candidates_sorted:
+        ann = ax.annotate(
+            txt,
+            xy=(x0, y0),
+            xycoords="data",
+            xytext=(0, int(y_offset_pts)),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=int(fontsize),
+            arrowprops={
+                "arrowstyle": "-",
+                "linewidth": 0.6,
+                "color": "black",
+                "shrinkA": 6,
+                "shrinkB": 6,
+            },
+            bbox={
+                "boxstyle": "round,pad=0.08",
+                "facecolor": "white",
+                "edgecolor": "none",
+                "alpha": 0.80,
+            },
+            clip_on=False,
+            zorder=50,
+        )
+
+        fig.canvas.draw()
+        bb = ann.get_window_extent(renderer=renderer)
+
+        too_close = any(_bbox_overlap_frac(bb, bb2) >= float(overlap_frac) for bb2 in kept_bboxes)
+        if too_close:
+            ann.remove()
+        else:
+            kept_bboxes.append(bb)
+
+
 def _plot_breakpoint_vs_grouped(
     summary_tbl: pd.DataFrame,
     *,
@@ -1313,13 +1393,23 @@ def _plot_breakpoint_vs_grouped(
 
     if used_group:
         g = df.groupby([used_group, x_col], as_index=False)[y_col].median().rename(columns={y_col: "BE"})
+
+        # Plot all groups first + collect all label candidates
+        label_candidates: List[Tuple[float, float, str]] = []
+
         for grp_val, sub in g.groupby(used_group, sort=True):
             sub = sub.sort_values(x_col)
             xs = sub[x_col].to_numpy(float)
             ys = sub["BE"].to_numpy(float)
 
             ax.plot(xs, ys, linewidth=2.2, marker="o", markersize=4.8, label=_group_label(used_group, float(grp_val)))
-            _label_points_with_overlap_avoidance(ax, xs, ys, fmt=fmt, y_offset_pts=6, fontsize=7)
+
+            for x0, y0 in zip(xs.tolist(), ys.tolist()):
+                if np.isfinite(x0) and np.isfinite(y0):
+                    label_candidates.append((float(x0), float(y0), fmt.format(float(y0))))
+
+        # GLOBAL label placement with overlap dedup across groups
+        _label_points_global_dedup(ax, label_candidates, overlap_frac=0.80, y_offset_pts=6, fontsize=7)
 
         ax.legend(loc="best")
         y_for_limits = g["BE"].to_numpy(float)
@@ -1331,6 +1421,8 @@ def _plot_breakpoint_vs_grouped(
 
         ax.plot(xs, ys, linewidth=2.2, color="darkred")
         ax.scatter(xs, ys, s=26, color="darkred")
+
+        # Single series: old labeling is fine (or you can also use global_dedup)
         _label_points_with_overlap_avoidance(ax, xs, ys, fmt=fmt, y_offset_pts=6, fontsize=7)
 
         y_for_limits = ys

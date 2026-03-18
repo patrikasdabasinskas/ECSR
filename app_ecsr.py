@@ -637,7 +637,9 @@ def _plot_doc_vs_ias(sc: Dict[str, Any], cfg: Config, time_cost_eur_per_hr: floa
 
     econ_kt = int(round(float(cur["IAS_opt"])))
     notch_kt = int(round(float(cur["IAS_notch"])))
-    same = abs(econ_kt - notch_kt) < 1
+
+    # IMPORTANT: if ECON is >= IASnotch - 1 kt, we treat it as "same" (single black marker)
+    same = (float(cur["IAS_opt"]) >= (float(cur["IAS_notch"]) - 1.0))
 
     if same:
         econ_color = "black"
@@ -654,14 +656,42 @@ def _plot_doc_vs_ias(sc: Dict[str, Any], cfg: Config, time_cost_eur_per_hr: floa
     ax.autoscale_view()
 
     if same:
-        ax.scatter([cur["IAS_opt"]], [doc_opt_eur], s=95, marker="x", color=econ_color, label=f"ECON / IASnotch ({econ_kt} kt)")
-        _annotate_tiny_above(ax, float(cur["IAS_opt"]), doc_opt_eur, f"ECON = IASnotch = {econ_kt} kt", color=econ_color)
-    else:
-        ax.scatter([cur["IAS_opt"]], [doc_opt_eur], s=95, marker="x", color=econ_color, label=f"ECON ({econ_kt} kt)")
-        _annotate_tiny_above(ax, float(cur["IAS_opt"]), doc_opt_eur, f"ECON {econ_kt} kt", color=econ_color, dx_pts=-60, dy_pts=40)
+        # Show ONE point at IASnotch (black), like in scenario mode requirement
+        x_same = float(cur["IAS_notch"])
+        y_same = doc_notch_eur
 
-        ax.scatter([cur["IAS_notch"]], [doc_notch_eur], s=95, marker="x", color=notch_color, label=f"IASnotch ({notch_kt} kt)")
-        _annotate_tiny_above(ax, float(cur["IAS_notch"]), doc_notch_eur, f"IASnotch {notch_kt} kt", color=notch_color, dx_pts=14)
+        ax.scatter([x_same], [y_same], s=95, marker="x", color="black",
+                   label=f"ECON / IASnotch ({notch_kt} kt)")
+        _annotate_tiny_above(
+            ax,
+            x_same,
+            y_same,
+            f"ECON = IASnotch = {notch_kt} kt",
+            color="black",
+        )
+    else:
+        ax.scatter([float(cur["IAS_opt"])], [doc_opt_eur], s=95, marker="x", color=econ_color,
+                   label=f"ECON ({econ_kt} kt)")
+        _annotate_tiny_above(
+            ax,
+            float(cur["IAS_opt"]),
+            doc_opt_eur,
+            f"ECON {econ_kt} kt",
+            color=econ_color,
+            dx_pts=-60,
+            dy_pts=40,
+        )
+
+        ax.scatter([float(cur["IAS_notch"])], [doc_notch_eur], s=95, marker="x", color=notch_color,
+                   label=f"IASnotch ({notch_kt} kt)")
+        _annotate_tiny_above(
+            ax,
+            float(cur["IAS_notch"]),
+            doc_notch_eur,
+            f"IASnotch {notch_kt} kt",
+            color=notch_color,
+            dx_pts=14,
+        )
 
     ax.set_title(f"DOC priklausomybė nuo IAS — {sc['scenarioName']}")
     ax.set_xlabel("IAS (kt)")
@@ -835,35 +865,26 @@ def _plot_doc_vs_ias_input_knn(
     wind_kt: float,
     cfg: Config,
 ):
+    # Validate 4D inputs exactly like other input-graphs
     msg = _validate_interp_inputs(summary_tbl, fl_ft=fl_ft, weight_kg=wt_kg, isa_c=isa_c, wind_kt=wind_kt)
     if msg:
         raise ValueError(msg)
 
-    # Use the DOC vectors that were precomputed right after run_pipeline:
-    #   sc["docIASVec"] and sc["docVec"]
+    # Use precomputed per-scenario DOC(IAS) vectors (computed right after run_pipeline)
     usable = [
         sc for sc in scenarios
         if isinstance(sc.get("docIASVec"), np.ndarray) and isinstance(sc.get("docVec"), np.ndarray)
+        and sc.get("docIASVec").size >= 2 and sc.get("docVec").size >= 2
     ]
-    if len(usable) < 3:
-        raise ValueError("Nepakanka scenarijų DOC(KNN) interpolacijai (trūksta DOC vektorių).")
+    if len(usable) < 8:
+        raise ValueError("Nepakanka scenarijų DOC(KNN) interpolacijai (reikia bent 8 su DOC vektoriais).")
 
-    # IAS grid from available vectors (no extrapolation)
-    ias_los: List[float] = []
-    ias_his: List[float] = []
-    for sc in usable:
-        v = np.asarray(sc["docIASVec"], float)
-        v = v[np.isfinite(v)]
-        if v.size:
-            ias_los.append(float(v.min()))
-            ias_his.append(float(v.max()))
+    # Common IAS grid (no extrapolation outside available IAS ranges)
+    ias_lo = min(float(np.nanmin(sc["docIASVec"])) for sc in usable)
+    ias_hi = max(float(np.nanmax(sc["docIASVec"])) for sc in usable)
+    x_grid = np.linspace(ias_lo, ias_hi, 500, dtype=float)
 
-    if not ias_los or not ias_his:
-        raise ValueError("Nepavyko nustatyti IAS ribų DOC(KNN) grafiko braižymui.")
-
-    x_grid = np.linspace(min(ias_los), max(ias_his), 500, dtype=float)
-
-    # Make K adapt to available scenarios (prevents failures on small uploads)
+    # Same neighbor philosophy as Graph 2/3: nearest scenarios in (FL, WT, ISA, WIND)
     k_use = min(30, len(usable))
     min_nb = min(8, max(3, len(usable) // 2))
 
@@ -891,10 +912,12 @@ def _plot_doc_vs_ias_input_knn(
     x = x[ok]
     y = y[ok]
 
+    # ECON from DOC minimum on interpolated curve
     j = int(np.nanargmin(y))
     v_opt = float(x[j])
     doc_opt = float(y[j])
 
+    # IASnotch from interpolated quick metrics (same source as other input results)
     qres = compute_quick_metrics_interpolated(
         summary_tbl,
         fl_ft=float(fl_ft),
@@ -903,31 +926,36 @@ def _plot_doc_vs_ias_input_knn(
         wind_kt=float(wind_kt),
     )
     v_notch = float(qres.v_notch_kt)
-    doc_notch = float(np.interp(v_notch, x, y))
 
-    econ_kt = int(round(v_opt))
-    notch_kt = int(round(v_notch))
-    same = abs(econ_kt - notch_kt) < 1
-
-    if same:
-        econ_color = "black"
-        notch_color = "black"
-    else:
-        econ_color = "orange"
-        notch_color = "dodgerblue"
+    # Clamp display logic: if ECON is within 1 kt of IASnotch OR exceeds it -> show ONE black marker at IASnotch
+    same = (v_opt >= (v_notch - 1.0))
 
     fig, ax = _mpl_academic_fig()
     ax.plot(x, y, linewidth=2.2, color="darkred", label="DOC kreivė (KNN)")
 
-    if same:
-        ax.scatter([v_opt], [doc_opt], s=95, marker="x", color=econ_color, label=f"ECON / IASnotch ({econ_kt} kt)")
-        _annotate_tiny_above(ax, v_opt, doc_opt, f"ECON = IASnotch = {econ_kt} kt", color=econ_color)
-    else:
-        ax.scatter([v_opt], [doc_opt], s=95, marker="x", color=econ_color, label=f"ECON ({econ_kt} kt)")
-        _annotate_tiny_above(ax, v_opt, doc_opt, f"ECON {econ_kt} kt", color=econ_color, dx_pts=-60, dy_pts=40)
+    econ_kt = int(round(v_opt))
+    notch_kt = int(round(v_notch))
 
-        ax.scatter([v_notch], [doc_notch], s=95, marker="x", color=notch_color, label=f"IASnotch ({notch_kt} kt)")
-        _annotate_tiny_above(ax, v_notch, doc_notch, f"IASnotch {notch_kt} kt", color=notch_color, dx_pts=14)
+    if same:
+        # One black marker at IASnotch
+        y_notch = float(np.interp(v_notch, x, y))
+        ax.scatter([v_notch], [y_notch], s=95, marker="x", color="black",
+                   label=f"ECON / IASnotch ({notch_kt} kt)")
+        _annotate_tiny_above(ax, v_notch, y_notch,
+                             f"ECON = IASnotch = {notch_kt} kt",
+                             color="black")
+    else:
+        # Two markers (ECON orange, IASnotch blue)
+        ax.scatter([v_opt], [doc_opt], s=95, marker="x", color="orange",
+                   label=f"ECON ({econ_kt} kt)")
+        _annotate_tiny_above(ax, v_opt, doc_opt, f"ECON {econ_kt} kt",
+                             color="orange", dx_pts=-60, dy_pts=40)
+
+        y_notch = float(np.interp(v_notch, x, y))
+        ax.scatter([v_notch], [y_notch], s=95, marker="x", color="dodgerblue",
+                   label=f"IASnotch ({notch_kt} kt)")
+        _annotate_tiny_above(ax, v_notch, y_notch, f"IASnotch {notch_kt} kt",
+                             color="dodgerblue", dx_pts=14)
 
     ax.set_title("DOC priklausomybė nuo IAS — Įvestis (KNN)")
     ax.set_xlabel("IAS (kt)")
@@ -1577,6 +1605,9 @@ if run_btn:
     )
 
     with st.spinner("Skaičiuojama..."):
+        # -------------------------
+        # Load scenarios
+        # -------------------------
         if data_source == "Scenarijai, jau esantys sistemoje":
             root_dir = BUILTIN_SCENARIOS_DIR
             if not root_dir.exists() or not root_dir.is_dir():
@@ -1591,18 +1622,6 @@ if run_btn:
                 cfg=cfg,
                 return_scenarios=True,
             )
-            fuel_longform_tbl = build_longform_fuel_table(scenarios)
-
-            # Precompute per-scenario DOC(IAS) vectors for Graph 1 input-KNN (same philosophy as Graph 2 vectors).
-            for sc in scenarios:
-                try:
-                    cur = compute_doc_curve_pchip(sc, float(cfg.time_cost_operational), cfg, ngrid=400)
-                    sc["docIASVec"] = np.asarray(cur["IAS_grid"], float)
-                    sc["docVec"] = np.asarray(cur["DOC_grid_per_nm"], float)
-                except Exception:
-                    sc.pop("docIASVec", None)
-                    sc.pop("docVec", None)
-
             st.session_state["uploaded_names"] = []
             st.session_state["input_root_label"] = str(root_dir)
 
@@ -1622,24 +1641,30 @@ if run_btn:
                     cfg=cfg,
                     return_scenarios=True,
                 )
-                fuel_longform_tbl = build_longform_fuel_table(scenarios)
-
-                # Precompute per-scenario DOC(IAS) vectors for Graph 1 input-KNN
-                for sc in scenarios:
-                    try:
-                        cur = compute_doc_curve_pchip(sc, float(cfg.time_cost_operational), cfg, ngrid=400)
-                        sc["docIASVec"] = np.asarray(cur["IAS_grid"], float)
-                        sc["docVec"] = np.asarray(cur["DOC_grid_per_nm"], float)
-                    except Exception:
-                        sc.pop("docIASVec", None)
-                        sc.pop("docVec", None)
-
             finally:
                 tmp.cleanup()
 
             st.session_state["uploaded_names"] = saved_names
             st.session_state["input_root_label"] = "uploaded_files"
 
+        # -------------------------
+        # Post-processing (common)
+        # -------------------------
+        fuel_longform_tbl = build_longform_fuel_table(scenarios)
+
+        # Precompute per-scenario DOC(IAS) vectors for Graph 1 (Įvestis) kNN
+        for sc in scenarios:
+            try:
+                cur = compute_doc_curve_pchip(sc, float(cfg.time_cost_operational), cfg, ngrid=400)
+                sc["docIASVec"] = np.asarray(cur["IAS_grid"], float)
+                sc["docVec"] = np.asarray(cur["DOC_grid_per_nm"], float)
+            except Exception:
+                sc.pop("docIASVec", None)
+                sc.pop("docVec", None)
+
+    # -------------------------
+    # Save state (outside spinner)
+    # -------------------------
     st.session_state["last_cfg"] = cfg
     st.session_state["summary_tbl"] = summary_tbl
     st.session_state["longform_tbl"] = longform_tbl

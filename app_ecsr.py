@@ -359,25 +359,7 @@ def _build_economical_scenarios_table(summary_tbl: pd.DataFrame, cfg: Config) ->
 
 # ------------------------- Result card -------------------------
 
-def _is_dark_theme() -> bool:
-    """
-    Reliable theme detection for Streamlit (works better than prefers-color-scheme in components iframe).
-    """
-    try:
-        return str(st.get_option("theme.base") or "").lower() == "dark"
-    except Exception:
-        return False
-
-
-def _result_card_html(
-    value: str,
-    unit: str,
-    caption: str,
-    *,
-    max_width_px: int = 170,
-    box_height_px: int = 42,
-    dark: bool = False,
-) -> str:
+def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int = 170, box_height_px: int = 42) -> str:
     safe_value = (value or "").strip()
     value_html = safe_value if safe_value else "&nbsp;"
     safe_unit = (unit or "").strip()
@@ -388,27 +370,16 @@ def _result_card_html(
         else ""
     )
 
-    # Force colors based on Streamlit theme (do NOT rely on prefers-color-scheme inside iframe)
-    if dark:
-        card_border = "rgba(255,255,255,0.22)"
-        card_bg = "rgba(255,255,255,0.08)"
-        text_color = "rgba(255,255,255,0.96)"
-        caption_color = "rgba(255,255,255,0.78)"
-    else:
-        card_border = "rgba(0,0,0,0.18)"
-        card_bg = "rgba(0,0,0,0.04)"
-        text_color = "rgba(0,0,0,0.95)"
-        caption_color = "rgba(0,0,0,0.70)"
-
     html = f"""
 <style>
+  /* Light mode defaults (iframe-local) */
   .cc-card {{
-    border: 1px solid {card_border};
-    background: {card_bg};
-    color: {text_color};
+    border: 1px solid rgba(0,0,0,0.18);
+    background: rgba(0,0,0,0.04);
+    color: rgba(0,0,0,0.95);
   }}
   .cc-caption {{
-    color: {caption_color};
+    color: rgba(0,0,0,0.70);
   }}
   .cc-unit {{
     font-size: 12px;
@@ -421,6 +392,18 @@ def _result_card_html(
     font-weight: 900;
     line-height: 1;
     color: inherit;
+  }}
+
+  /* System dark mode (works inside iframe) */
+  @media (prefers-color-scheme: dark) {{
+    .cc-card {{
+      border: 1px solid rgba(255,255,255,0.22);
+      background: rgba(255,255,255,0.08);
+      color: rgba(255,255,255,0.96);
+    }}
+    .cc-caption {{
+      color: rgba(255,255,255,0.78);
+    }}
   }}
 </style>
 
@@ -447,23 +430,9 @@ def _result_card_html(
     return textwrap.dedent(html).strip()
 
 
-def _render_result_card(
-    value: str,
-    unit: str,
-    caption: str,
-    *,
-    max_width_px: int = 170,
-    box_height_px: int = 42,
-) -> None:
+def _render_result_card(value: str, unit: str, caption: str, *, max_width_px: int = 170, box_height_px: int = 42) -> None:
     components.html(
-        _result_card_html(
-            value,
-            unit,
-            caption,
-            max_width_px=max_width_px,
-            box_height_px=box_height_px,
-            dark=_is_dark_theme(),
-        ),
+        _result_card_html(value, unit, caption, max_width_px=max_width_px, box_height_px=box_height_px),
         height=box_height_px + 52,
         scrolling=False,
     )

@@ -88,6 +88,19 @@ def _save_uploads_to_tempdir(uploads: List[Any]) -> Tuple[tempfile.TemporaryDire
 
 # ------------------------- UI helpers -------------------------
 
+def _opt_float_text(label: str, *, key: str, placeholder: str = "", help: str = "") -> Optional[float]:
+    """
+    Text input that can be empty on first load.
+    Returns None if empty, else float (supports 0, comma decimals).
+    """
+    raw = st.text_input(label, key=key, placeholder=placeholder, help=help).strip()
+    if raw == "":
+        return None
+    try:
+        return float(raw.replace(",", "."))
+    except ValueError:
+        st.error(f"Neteisinga reikšmė: „{label}“")
+        return None
 
 def _scenario_sort_key(name: str) -> tuple[int, str]:
     m = re.search(r"(\d+)", str(name))
@@ -1348,15 +1361,23 @@ def _init_state() -> None:
     st.session_state.setdefault("saving_custom_enabled", False)
     st.session_state.setdefault("saving_custom_value", 2.0)
 
-    st.session_state.setdefault("ecsr_calc_fl", 15000.0)
-    st.session_state.setdefault("ecsr_calc_wt", 20000.0)
-    st.session_state.setdefault("ecsr_calc_isa", 0.0)
-    st.session_state.setdefault("ecsr_calc_wind", 0.0)
+    st.session_state.setdefault("ecsr_calc_fl_txt", "")
+    st.session_state.setdefault("ecsr_calc_wt_txt", "")
+    st.session_state.setdefault("ecsr_calc_isa_txt", "")
+    st.session_state.setdefault("ecsr_calc_wind_txt", "")
     st.session_state.setdefault("ecsr_calc_last", None)
     st.session_state.setdefault("ecsr_calc_err", "")
+    st.session_state.setdefault("ecsr_calc_fl", 0.0)
+    st.session_state.setdefault("ecsr_calc_wt", 0.0)
+    st.session_state.setdefault("ecsr_calc_isa", 0.0)
+    st.session_state.setdefault("ecsr_calc_wind", 0.0)
 
-    st.session_state.setdefault("in_fl", 15000.0)
-    st.session_state.setdefault("in_wt", 20000.0)
+    st.session_state.setdefault("in_fl_txt", "")
+    st.session_state.setdefault("in_wt_txt", "")
+    st.session_state.setdefault("in_isa_txt", "")
+    st.session_state.setdefault("in_wind_txt", "")
+    st.session_state.setdefault("in_fl", 0.0)
+    st.session_state.setdefault("in_wt", 0.0)
     st.session_state.setdefault("in_isa", 0.0)
     st.session_state.setdefault("in_wind", 0.0)
     st.session_state.setdefault("in_metric", "Pasirinkite...")
@@ -1415,23 +1436,20 @@ with st.sidebar:
         st.session_state["saving_custom_value"] = float(st.session_state.get("saving_custom_value", 2.0) or 2.0)
 
     with st.form("sidebar_inputs", clear_on_submit=False):
-        fuel_price = st.number_input(
+        fuel_price = _opt_float_text(
             "Degalų kaina (€/kg)",
-            min_value=0.0,
-            value=float(cfg0.fuel_price_eur_per_kg),
-            step=0.01,
+            key="fuel_price_txt",
+            placeholder="pvz. 1.20",
         )
-        tc_op = st.number_input(
+        tc_op = _opt_float_text(
             "Laiko sąnaudos (€/h)",
-            min_value=0.0,
-            value=float(cfg0.time_cost_operational),
-            step=100.0,
+            key="time_cost_txt",
+            placeholder="pvz. 500",
         )
-        epsilon_pct = st.number_input(
+        epsilon_pct = _opt_float_text(
             "ECSR epsilon (%)",
-            min_value=0.0,
-            value=float(cfg0.epsilon_break_even) * 100.0,
-            step=0.1,
+            key="epsilon_pct_txt",
+            placeholder="pvz. 1.0",
         )
 
         saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
@@ -1451,8 +1469,16 @@ if run_btn:
     _clear_excel_download_artifacts()
     st.session_state["outliers_tbl"] = pd.DataFrame()
 
+    if fuel_price is None or tc_op is None or epsilon_pct is None:
+        st.error("Prašome įvesti reikšmes: Degalų kaina, Laiko sąnaudos ir ECSR epsilon.")
+        st.stop()
+
     if float(fuel_price) <= 0.0 or float(tc_op) <= 0.0:
         st.error("Prašome įvesti teigiamas reikšmes: 'Degalų kaina' ir 'Laiko sąnaudos'.")
+        st.stop()
+
+    if float(epsilon_pct) < 0.0:
+        st.error("ECSR epsilon negali būti neigiamas.")
         st.stop()
 
     cfg = replace(
@@ -1571,22 +1597,29 @@ if mode == "Scenarijus":
 
     c1, c2, c3, c4, c5 = st.columns([1.2, 1.2, 1.2, 1.2, 1.0], gap="medium")
     with c1:
-        fl_ft = st.number_input("Aukštis (ft)", value=float(st.session_state["ecsr_calc_fl"]), step=500.0, key="ecsr_calc_fl")
+        fl_ft = st.number_input("Aukštis (ft)", step=500.0, key="ecsr_calc_fl")
     with c2:
-        wt_kg = st.number_input("Masė (kg)", value=float(st.session_state["ecsr_calc_wt"]), step=500.0, key="ecsr_calc_wt")
+        wt_kg = st.number_input("Masė (kg)", step=500.0, key="ecsr_calc_wt")
     with c3:
-        isa_c = st.number_input("ISA (°C)", value=float(st.session_state["ecsr_calc_isa"]), step=1.0, key="ecsr_calc_isa")
+        isa_c = st.number_input("ISA (°C)", step=1.0, key="ecsr_calc_isa")
     with c4:
-        wind_kt = st.number_input("Vėjas (kt)", value=float(st.session_state["ecsr_calc_wind"]), step=1.0, key="ecsr_calc_wind")
+        wind_kt = st.number_input("Vėjas (kt)", step=1.0, key="ecsr_calc_wind")
     with c5:
         st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
         calc_btn = st.button("Skaičiuoti", use_container_width=True, key="btn_ecsr_calc")
 
     if calc_btn:
         try:
-            msg = _validate_interp_inputs(summary_tbl, fl_ft=float(fl_ft), weight_kg=float(wt_kg), isa_c=float(isa_c), wind_kt=float(wind_kt))
+            msg = _validate_interp_inputs(
+                summary_tbl,
+                fl_ft=float(fl_ft),
+                weight_kg=float(wt_kg),
+                isa_c=float(isa_c),
+                wind_kt=float(wind_kt),
+            )
             if msg:
                 raise ValueError(msg)
+
             res = compute_ecsr_band_interpolated(
                 summary_tbl,
                 fl_ft=float(fl_ft),
@@ -1594,6 +1627,7 @@ if mode == "Scenarijus":
                 isa_c=float(isa_c),
                 wind_kt=float(wind_kt),
             )
+
             st.session_state["ecsr_calc_last"] = res
             st.session_state["ecsr_calc_err"] = ""
         except Exception as e:
@@ -2073,8 +2107,8 @@ def _bp_filter_ui_input(graph_id: str) -> Dict[str, Optional[float]]:
     cols = st.columns(3, gap="medium")
     other_cols = [c for c in _BP_OTHER_COLS if c != x_col]
     defaults = {
-        "ZP_ft": float(st.session_state.get("in_fl", 15000.0)),
-        "WEIGHT_kg": float(st.session_state.get("in_wt", 20000.0)),
+        "ZP_ft": float(st.session_state.get("in_fl", 0.0)),
+        "WEIGHT_kg": float(st.session_state.get("in_wt", 0.0)),
         "ISA_C": float(st.session_state.get("in_isa", 0.0)),
         "WIND_kt": float(st.session_state.get("in_wind", 0.0)),
     }

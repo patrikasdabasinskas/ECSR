@@ -839,65 +839,46 @@ def _plot_doc_vs_ias_input_knn(
     if msg:
         raise ValueError(msg)
 
-    # Build per-scenario DOC(IAS) vectors (fast; uses each scenario's own points)
-    x_key = "__IAS_VEC_DOC__"
-    y_key = "__DOC_VEC__"
+    # Use the DOC vectors that were precomputed right after run_pipeline:
+    #   sc["docIASVec"] and sc["docVec"]
+    usable = [
+        sc for sc in scenarios
+        if isinstance(sc.get("docIASVec"), np.ndarray) and isinstance(sc.get("docVec"), np.ndarray)
+    ]
+    if len(usable) < 3:
+        raise ValueError("Nepakanka scenarijų DOC(KNN) interpolacijai (trūksta DOC vektorių).")
 
-    enriched: List[Dict[str, Any]] = []
-    for sc in scenarios:
-        pt = sc.get("pointTable", None)
-        if not isinstance(pt, pd.DataFrame) or pt.empty:
-            continue
-        if not {"IAS", "Fuel_kg_per_NM", "Time_h_per_NM"}.issubset(pt.columns):
-            continue
+    # IAS grid from available vectors (no extrapolation)
+    ias_los: List[float] = []
+    ias_his: List[float] = []
+    for sc in usable:
+        v = np.asarray(sc["docIASVec"], float)
+        v = v[np.isfinite(v)]
+        if v.size:
+            ias_los.append(float(v.min()))
+            ias_his.append(float(v.max()))
 
-        ias = pd.to_numeric(pt["IAS"], errors="coerce").to_numpy(float)
-        fuel = pd.to_numeric(pt["Fuel_kg_per_NM"], errors="coerce").to_numpy(float)
-        time = pd.to_numeric(pt["Time_h_per_NM"], errors="coerce").to_numpy(float)
+    if not ias_los or not ias_his:
+        raise ValueError("Nepavyko nustatyti IAS ribų DOC(KNN) grafiko braižymui.")
 
-        ok = np.isfinite(ias) & np.isfinite(fuel) & np.isfinite(time)
-        ias, fuel, time = ias[ok], fuel[ok], time[ok]
-        if ias.size < 3:
-            continue
+    x_grid = np.linspace(min(ias_los), max(ias_his), 500, dtype=float)
 
-        order = np.argsort(ias, kind="mergesort")
-        ias, fuel, time = ias[order], fuel[order], time[order]
-
-        # Deduplicate IAS (keep first)
-        _, first_idx = np.unique(ias, return_index=True)
-        first_idx = np.sort(first_idx)
-        ias_u = ias[first_idx]
-        fuel_u = fuel[first_idx]
-        time_u = time[first_idx]
-        if ias_u.size < 3:
-            continue
-
-        doc_u = float(cfg.fuel_price_eur_per_kg) * fuel_u + float(cfg.time_cost_operational) * time_u
-
-        sc2 = dict(sc)
-        sc2[x_key] = np.asarray(ias_u, float)
-        sc2[y_key] = np.asarray(doc_u, float)
-        enriched.append(sc2)
-
-    if len(enriched) < 8:
-        raise ValueError("Nepakanka scenarijų DOC(KNN) interpolacijai (reikia daugiau scenarijų su Fuel/Time).")
-
-    ias_lo = min(float(np.nanmin(sc2[x_key])) for sc2 in enriched)
-    ias_hi = max(float(np.nanmax(sc2[x_key])) for sc2 in enriched)
-    x_grid = np.linspace(ias_lo, ias_hi, 500, dtype=float)
+    # Make K adapt to available scenarios (prevents failures on small uploads)
+    k_use = min(30, len(usable))
+    min_nb = min(8, max(3, len(usable) // 2))
 
     y_grid, _diag = interpolate_curve_knn_from_scenarios(
-        enriched,
+        usable,
         fl_ft=float(fl_ft),
         weight_kg=float(wt_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
         x_grid=x_grid,
-        x_vec_key=x_key,
-        y_vec_key=y_key,
-        k=30,
+        x_vec_key="docIASVec",
+        y_vec_key="docVec",
+        k=k_use,
         power=2.0,
-        min_neighbors=8,
+        min_neighbors=min_nb,
     )
 
     x = np.asarray(x_grid, float)
@@ -1001,9 +982,9 @@ def _plot_econ_vs_time_cost_input_knn(
         x_grid=x_grid,
         x_vec_key="timeCostVec",
         y_vec_key="IAS_opt_kt",
-        k=30,
+        k=min(30, len(scenarios)),
+        min_neighbors=min(8, max(3, len(scenarios) // 2)),
         power=2.0,
-        min_neighbors=8,
     )
 
     x = x_grid
@@ -1104,9 +1085,9 @@ def _plot_econ_vs_fuel_price_input_knn(
         x_grid=x_grid,
         x_vec_key="fuelPriceVec",
         y_vec_key="IAS_opt_kt_fp",
-        k=30,
+        k=min(30, len(scenarios)),
+        min_neighbors=min(8, max(3, len(scenarios) // 2)),
         power=2.0,
-        min_neighbors=8,
     )
 
     x = x_grid
@@ -1612,6 +1593,16 @@ if run_btn:
             )
             fuel_longform_tbl = build_longform_fuel_table(scenarios)
 
+            # Precompute per-scenario DOC(IAS) vectors for Graph 1 input-KNN (same philosophy as Graph 2 vectors).
+            for sc in scenarios:
+                try:
+                    cur = compute_doc_curve_pchip(sc, float(cfg.time_cost_operational), cfg, ngrid=400)
+                    sc["docIASVec"] = np.asarray(cur["IAS_grid"], float)
+                    sc["docVec"] = np.asarray(cur["DOC_grid_per_nm"], float)
+                except Exception:
+                    sc.pop("docIASVec", None)
+                    sc.pop("docVec", None)
+
             st.session_state["uploaded_names"] = []
             st.session_state["input_root_label"] = str(root_dir)
 
@@ -1632,6 +1623,17 @@ if run_btn:
                     return_scenarios=True,
                 )
                 fuel_longform_tbl = build_longform_fuel_table(scenarios)
+
+                # Precompute per-scenario DOC(IAS) vectors for Graph 1 input-KNN
+                for sc in scenarios:
+                    try:
+                        cur = compute_doc_curve_pchip(sc, float(cfg.time_cost_operational), cfg, ngrid=400)
+                        sc["docIASVec"] = np.asarray(cur["IAS_grid"], float)
+                        sc["docVec"] = np.asarray(cur["DOC_grid_per_nm"], float)
+                    except Exception:
+                        sc.pop("docIASVec", None)
+                        sc.pop("docVec", None)
+
             finally:
                 tmp.cleanup()
 

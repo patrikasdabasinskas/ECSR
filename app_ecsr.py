@@ -53,7 +53,7 @@ _GROUP_META: Dict[str, Tuple[str, str]] = {
 
 # Breakpoint graphs meta
 _BP_GRAPHS: Dict[str, Dict[str, Any]] = {
-    "g4": {"x_col": "WIND_kt", "x_name_lt": "vėjo", "x_label": "Vėjas (kt)"},
+    "g4": {"x_col": "WIND_kt", "x_name_lt": "vėjo", "x_label": "Vėjo greitis skrydžio kryptimi (kt)"},
     "g5": {"x_col": "WEIGHT_kg", "x_name_lt": "masės", "x_label": "Masė (kg)"},
     "g6": {"x_col": "ZP_ft", "x_name_lt": "skrydžio aukščio", "x_label": "Skrydžio aukštis (ft)"},
     "g7": {"x_col": "ISA_C", "x_name_lt": "ISA nuokrypio", "x_label": "ISA nuokrypis (°C)"},
@@ -1643,9 +1643,9 @@ if mode == "Scenarijus":
     with c2:
         wt_kg = st.number_input("Masė (kg)", step=500.0, key="ecsr_calc_wt")
     with c3:
-        isa_c = st.number_input("ISA (°C)", step=1.0, key="ecsr_calc_isa")
+        isa_c = st.number_input("ISA nuokrypis (°C)", step=1.0, key="ecsr_calc_isa")
     with c4:
-        wind_kt = st.number_input("Vėjas (kt)", step=1.0, key="ecsr_calc_wind")
+        wind_kt = st.number_input("Vėjo greitis skrydžio kryptimi (kt)", step=1.0, key="ecsr_calc_wind")
     with c5:
         st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
         calc_btn = st.button("Skaičiuoti", use_container_width=True, key="btn_ecsr_calc")
@@ -1837,9 +1837,9 @@ else:
     with c2:
         in_wt = st.number_input("Masė (kg)", step=500.0, key="in_wt")
     with c3:
-        in_isa = st.number_input("ISA (°C)", step=1.0, key="in_isa")
+        in_isa = st.number_input("ISA nuokrypis (°C)", step=1.0, key="in_isa")
     with c4:
-        in_wind = st.number_input("Vėjas (kt)", step=1.0, key="in_wind")
+        in_wind = st.number_input("Vėjo greitis skrydžio kryptimi (kt)", step=1.0, key="in_wind")
 
     pick_metric_label = st.selectbox("Pasirinkite rodiklį", list(metric_map.keys()), index=0, key="in_metric")
     col_key = metric_map[pick_metric_label]
@@ -2036,9 +2036,9 @@ else:
         with c2:
             wt = st.number_input("Masė (kg)", value=float(st.session_state["in_wt"]), step=500.0, key="g1i_wt")
         with c3:
-            isa = st.number_input("ISA (°C)", value=float(st.session_state["in_isa"]), step=1.0, key="g1i_isa")
+            isa = st.number_input("ISA nuokrypis (°C)", value=float(st.session_state["in_isa"]), step=1.0, key="g1i_isa")
         with c4:
-            wind = st.number_input("Vėjas (kt)", value=float(st.session_state["in_wind"]), step=1.0, key="g1i_wind")
+            wind = st.number_input("Vėjo greitis skrydžio kryptimi (kt)", value=float(st.session_state["in_wind"]), step=1.0, key="g1i_wind")
         with c5:
             st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
             if st.button("Generuoti grafiką", key="btn_g1i", use_container_width=True):
@@ -2062,9 +2062,9 @@ else:
         with c2:
             wt = st.number_input("Masė (kg)", value=float(st.session_state["in_wt"]), step=500.0, key="g2i_wt")
         with c3:
-            isa = st.number_input("ISA (°C)", value=float(st.session_state["in_isa"]), step=1.0, key="g2i_isa")
+            isa = st.number_input("ISA nuokrypis (°C)", value=float(st.session_state["in_isa"]), step=1.0, key="g2i_isa")
         with c4:
-            wind = st.number_input("Vėjas (kt)", value=float(st.session_state["in_wind"]), step=1.0, key="g2i_wind")
+            wind = st.number_input("Vėjo greitis skrydžio kryptimi (kt)", value=float(st.session_state["in_wind"]), step=1.0, key="g2i_wind")
         with c5:
             st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
             if st.button("Generuoti grafiką", key="btn_g2i", use_container_width=True):
@@ -2096,9 +2096,9 @@ else:
         with c2:
             wt = st.number_input("Masė (kg)", value=float(st.session_state["in_wt"]), step=500.0, key="g3i_wt")
         with c3:
-            isa = st.number_input("ISA (°C)", value=float(st.session_state["in_isa"]), step=1.0, key="g3i_isa")
+            isa = st.number_input("ISA nuokrypis (°C)", value=float(st.session_state["in_isa"]), step=1.0, key="g3i_isa")
         with c4:
-            wind = st.number_input("Vėjas (kt)", value=float(st.session_state["in_wind"]), step=1.0, key="g3i_wind")
+            wind = st.number_input("Vėjo greitis skrydžio kryptimi (kt)", value=float(st.session_state["in_wind"]), step=1.0, key="g3i_wind")
         with c5:
             st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
             if st.button("Generuoti grafiką", key="btn_g3i", use_container_width=True):
@@ -2192,7 +2192,7 @@ for gid, meta in _BP_GRAPHS.items():
     x_label = meta["x_label"]
     x_name_lt = meta["x_name_lt"]
 
-    exp_title = f"Grafikas {gid[-1]} — Lūžio taškai pagal {x_label}"
+    exp_title = f"Grafikas {gid[-1]} — Lūžio taškų priklausomybė nuo „{x_label}“"
     open_key = f"open_{gid}"
     fig_key_time = f"fig_{gid}_time"
     fig_key_fuel = f"fig_{gid}_fuel"
@@ -2411,15 +2411,16 @@ if st.session_state["show_glossary"]:
             """
 **IAS** – nurodomasis oro greitis, **kt**  
 **TAS** – tikrasis oro greitis, **kt**  
-**WIND** – vėjas (teigiamas – pavėjis, neigiamas – priešinis vėjas), **kt**
+**WIND** – vėjo greitis skrydžio kryptimi (teigiamas – pavėjis, neigiamas – priešinis vėjas), **kt**
 
-**DOC** – tiesioginės eksploatacinės sąnaudos, **EUR**  
+**DOC** – tiesioginės eksploatacinės sąnaudos, **EUR** / Gali būti matuojamos ir 1 jūrmylei - tuomet **EUR/NM**  
 **DOCmin_perNM** – minimalios DOC sąnaudos per **1 jūrmylią**, **EUR/NM**  
-**DOCnotch_perNM** – DOC sąnaudos per **1 jūrmylią**, skaičiuojant ties **IASnotch**, **EUR/NM**  
+**DOCnotch_perNM** – DOC sąnaudos per **1 jūrmylią**, kai galios svirtis yra fiksuotoje padėtyje (angl. notch) arba kai lėktuvas skrenda **IASnotch** greičiu, **EUR/NM**  
 **DOCmin_perX** – minimalios DOC sąnaudos per **X jūrmylių**, **EUR**
 
+**EPSILON** - nedidelė procentinė tolerancija, kurios dydis priklauso nuo oro linijų prioritetų ir kuri nusako, kokiu mastu sąnaudos gali padidėti virš **DOCmin**, **%**
 **ECON** – ekonominis greitis, **kt**  
-**IASnotch** – maksimalus greitis, **kt**  
-**ECSR** – ekonominis diapazonas, **kt**
+**IASnotch** – maksimalus kreiserinis greitis arba greitis prie tam tikrų sąlygų, kai galios svirtis yra fiksuotoje padėtyje, **kt**  
+**ECSR** – ekonominis greičio diapazonas, gautas pritaikius epsilon įvertį **kt**
             """
         )

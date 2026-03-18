@@ -1126,109 +1126,48 @@ def _label_points_with_overlap_avoidance(
     ys: np.ndarray,
     *,
     fmt: str,
-    base_offset_pts: int = 18,
-    series_phase: int = 0,
-    font_size: int = 10,
+    y_offset_pts: int = 6,   # closer to dot
+    fontsize: int = 7,       # smaller labels
 ) -> None:
     """
-    Place labels near points avoiding overlap by trying many candidate offsets.
-
-    - series_phase: use different phase per line/series to stagger initial offsets.
-    - base_offset_pts: base distance of the label from the point (bigger => longer leader lines).
+    Simple/old style:
+    Put every label above its dot with a short connector line.
+    No overlap-avoidance logic (stable, predictable).
     """
     xs = np.asarray(xs, float).reshape(-1)
     ys = np.asarray(ys, float).reshape(-1)
     if xs.size == 0:
         return
 
-    fig = ax.figure
-    fig.canvas.draw()
-    renderer = fig.canvas.get_renderer()
-    placed_bboxes: list = []
+    for x0, y0 in zip(xs.tolist(), ys.tolist()):
+        if not (np.isfinite(x0) and np.isfinite(y0)):
+            continue
 
-    # Candidate offsets (dx, dy) in points.
-    # Ordered: near -> far; above/below; left/right.
-    # Longer leader lines come from bigger offsets.
-    dy_levels = [base_offset_pts, base_offset_pts + 10, base_offset_pts + 20, base_offset_pts + 32]
-    dx_levels = [0, 26, -26, 44, -44, 62, -62]
-
-    candidates: list[tuple[int, int]] = []
-    # Stagger start direction per series to reduce collisions
-    sign_cycle = [1, -1, 1, -1]
-    start_sign = sign_cycle[series_phase % len(sign_cycle)]
-
-    for dy in dy_levels:
-        for dx in dx_levels:
-            candidates.append((dx, start_sign * dy))
-            candidates.append((dx, -start_sign * dy))
-
-    def _place(x0: float, y0: float, dx: int, dy: int):
-        ha = "center" if dx == 0 else ("left" if dx > 0 else "right")
-        va = "bottom" if dy >= 0 else "top"
-
-        ann = ax.annotate(
+        ax.annotate(
             fmt.format(y0),
             xy=(x0, y0),
             xycoords="data",
-            xytext=(dx, dy),
+            xytext=(0, int(y_offset_pts)),
             textcoords="offset points",
-            ha=ha,
-            va=va,
-            fontsize=font_size,
+            ha="center",
+            va="bottom",
+            fontsize=int(fontsize),
             arrowprops={
                 "arrowstyle": "-",
-                "linewidth": 1.1,
+                "linewidth": 0.6,
                 "color": "black",
-                "shrinkA": 0,
-                "shrinkB": 0,  # longer visible leader line
+                "shrinkA": 6,
+                "shrinkB": 6,
             },
             bbox={
-                "boxstyle": "round,pad=0.18",
+                "boxstyle": "round,pad=0.08",
                 "facecolor": "white",
                 "edgecolor": "none",
-                "alpha": 0.92,
+                "alpha": 0.80,
             },
             clip_on=False,
             zorder=50,
         )
-        fig.canvas.draw()
-        bb = ann.get_window_extent(renderer=renderer).expanded(1.06, 1.18)
-        return ann, bb
-
-    def _overlap_score(bb) -> float:
-        # 0 means no overlap, higher means worse. Cheap heuristic.
-        s = 0.0
-        for prev in placed_bboxes:
-            if bb.overlaps(prev):
-                # approximate penalty by intersection area (in pixels)
-                x0 = max(bb.x0, prev.x0)
-                y0 = max(bb.y0, prev.y0)
-                x1 = min(bb.x1, prev.x1)
-                y1 = min(bb.y1, prev.y1)
-                if x1 > x0 and y1 > y0:
-                    s += (x1 - x0) * (y1 - y0)
-        return s
-
-    for x0, y0 in zip(xs.tolist(), ys.tolist()):
-        best = None
-
-        for dx, dy in candidates:
-            ann, bb = _place(x0, y0, dx, dy)
-            if not any(bb.overlaps(prev) for prev in placed_bboxes):
-                placed_bboxes.append(bb)
-                best = None
-                break
-            # keep best fallback (least overlap) then remove
-            score = _overlap_score(bb)
-            if best is None or score < best[0]:
-                best = (score, dx, dy, ann, bb)
-            ann.remove()
-
-        if best is not None:
-            _score, dx, dy, ann, bb = best
-            # re-add the best fallback annotation (it was removed)
-            ann2, bb2 = _place(x0, y0, dx, dy)
-            placed_bboxes.append(bb2)
 
 
 def _plot_breakpoint_vs_grouped(
@@ -1261,47 +1200,26 @@ def _plot_breakpoint_vs_grouped(
 
     if used_group:
         g = df.groupby([used_group, x_col], as_index=False)[y_col].median().rename(columns={y_col: "BE"})
-        for idx, (grp_val, sub) in enumerate(g.groupby(used_group, sort=True)):
+        for grp_val, sub in g.groupby(used_group, sort=True):
             sub = sub.sort_values(x_col)
             xs = sub[x_col].to_numpy(float)
             ys = sub["BE"].to_numpy(float)
 
-            ax.plot(
-                xs,
-                ys,
-                linewidth=2.2,
-                marker="o",
-                markersize=4.8,
-                label=_group_label(used_group, float(grp_val)),
-            )
+            ax.plot(xs, ys, linewidth=2.2, marker="o", markersize=4.8, label=_group_label(used_group, float(grp_val)))
+            _label_points_with_overlap_avoidance(ax, xs, ys, fmt=fmt, y_offset_pts=6, fontsize=7)
 
-            _label_points_with_overlap_avoidance(
-                ax,
-                xs,
-                ys,
-                fmt=fmt,
-                base_offset_pts=22,
-                series_phase=idx,
-                font_size=8,
-            )
         ax.legend(loc="best")
         y_for_limits = g["BE"].to_numpy(float)
+
     else:
         df = df.sort_values(x_col)
         xs = df[x_col].to_numpy(float)
         ys = df[y_col].to_numpy(float)
+
         ax.plot(xs, ys, linewidth=2.2, color="darkred")
         ax.scatter(xs, ys, s=26, color="darkred")
+        _label_points_with_overlap_avoidance(ax, xs, ys, fmt=fmt, y_offset_pts=6, fontsize=7)
 
-        _label_points_with_overlap_avoidance(
-            ax,
-            xs,
-            ys,
-            fmt=fmt,
-            base_offset_pts=22,
-            series_phase=0,
-            font_size=8,
-        )
         y_for_limits = ys
 
     y_min = float(np.nanmin(y_for_limits))
@@ -1817,13 +1735,13 @@ if mode == "Scenarijus":
         if is_docmin_per_x:
             r1, r2, r3 = st.columns(3, gap="large")
             with r1:
-                v = "" if not np.isfinite(docmin_total) else f"{docmin_total:.3f}"
+                v = "" if not np.isfinite(docmin_total) else f"{docmin_total:.0f}"
                 _render_result_card(v, "EUR" if v else "", "DOCmin rezultatas", max_width_px=190)
             with r2:
-                v = "" if not np.isfinite(docnotch_total) else f"{docnotch_total:.3f}"
+                v = "" if not np.isfinite(docnotch_total) else f"{docnotch_total:.0f}"
                 _render_result_card(v, "EUR" if v else "", "DOCnotch rezultatas", max_width_px=190)
             with r3:
-                v = "" if not np.isfinite(diff_total) else f"{diff_total:.3f}"
+                v = "" if not np.isfinite(diff_total) else f"{diff_total:.0f}"
                 _render_result_card(v, "EUR" if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
         else:
             _show_result_card(shown_value, shown_unit)

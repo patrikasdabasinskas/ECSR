@@ -19,9 +19,7 @@ from ecsr_core import (
     Config,
     EcsrInterpResult,
     InterpQuickResult,
-    build_global_point_cloud,
     build_longform_fuel_table,
-    compute_doc_curve_interpolated_from_cloud,
     compute_doc_curve_pchip,
     compute_ecsr_band_interpolated,
     compute_quick_metrics_interpolated,
@@ -673,80 +671,6 @@ def _plot_doc_vs_ias(sc: Dict[str, Any], cfg: Config, time_cost_eur_per_hr: floa
     fig.tight_layout()
     return fig
 
-
-def _plot_doc_vs_ias_input(
-    cloud: pd.DataFrame,
-    summary_tbl: pd.DataFrame,
-    *,
-    fl_ft: float,
-    wt_kg: float,
-    isa_c: float,
-    wind_kt: float,
-    cfg: Config,
-):
-    msg = _validate_interp_inputs(summary_tbl, fl_ft=fl_ft, weight_kg=wt_kg, isa_c=isa_c, wind_kt=wind_kt)
-    if msg:
-        raise ValueError(msg)
-
-    cur = compute_doc_curve_interpolated_from_cloud(
-        cloud,
-        fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
-        isa_c=float(isa_c),
-        wind_kt=float(wind_kt),
-        time_cost_eur_per_hr=float(cfg.time_cost_operational),
-        fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
-        ngrid=700,
-        min_valid_grid_points=60,
-    )
-
-    qres: InterpQuickResult = compute_quick_metrics_interpolated(
-        summary_tbl,
-        fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
-        isa_c=float(isa_c),
-        wind_kt=float(wind_kt),
-    )
-    v_notch = float(qres.v_notch_kt)
-
-    econ_kt = int(round(float(cur["IAS_opt"])))
-    notch_kt = int(round(v_notch))
-    same = abs(econ_kt - notch_kt) < 1
-
-    if same:
-        econ_color = "black"
-        notch_color = "black"
-    else:
-        econ_color = "orange"
-        notch_color = "dodgerblue"
-
-    fig, ax = _mpl_academic_fig()
-    ax.plot(cur["IAS_grid"], cur["DOC_grid_per_nm"], linewidth=2.2, color="darkred", label="DOC kreivė")
-
-    ias_grid = np.asarray(cur["IAS_grid"], float)
-    doc_grid = np.asarray(cur["DOC_grid_per_nm"], float)
-
-    doc_opt = float(cur["DOC_opt_per_nm"])
-    if same:
-        ax.scatter([cur["IAS_opt"]], [doc_opt], s=95, marker="x", color=econ_color, label=f"ECON / IASnotch ({econ_kt} kt)")
-        _annotate_tiny_above(ax, float(cur["IAS_opt"]), doc_opt, f"ECON = IASnotch = {econ_kt} kt", color=econ_color)
-    else:
-        ax.scatter([cur["IAS_opt"]], [doc_opt], s=95, marker="x", color=econ_color, label=f"ECON ({econ_kt} kt)")
-        _annotate_tiny_above(ax, float(cur["IAS_opt"]), doc_opt, f"ECON {econ_kt} kt", color=econ_color, dx_pts=-60, dy_pts=40)
-
-        doc_notch = float(np.interp(float(v_notch), ias_grid, doc_grid))
-        ax.scatter([v_notch], [doc_notch], s=95, marker="x", color=notch_color, label=f"IASnotch ({notch_kt} kt)")
-        _annotate_tiny_above(ax, float(v_notch), doc_notch, f"IASnotch {notch_kt} kt", color=notch_color, dx_pts=14)
-
-    ax.set_title("DOC priklausomybė nuo IAS")
-    ax.set_xlabel("IAS (kt)")
-    ax.set_ylabel("DOC (EUR/NM)")
-    _add_axis_arrows(ax)
-    ax.legend(loc="best")
-    fig.tight_layout()
-    return fig
-
-
 # ------------------------- Graph 2/3 helpers (unchanged) -------------------------
 
 
@@ -899,6 +823,137 @@ def _plot_econ_vs_fuel_price(
     _add_axis_arrows(ax)
     ax.legend(loc="best")
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+    return fig
+
+def _plot_doc_vs_ias_input_knn(
+    scenarios: List[Dict[str, Any]],
+    summary_tbl: pd.DataFrame,
+    *,
+    fl_ft: float,
+    wt_kg: float,
+    isa_c: float,
+    wind_kt: float,
+    cfg: Config,
+):
+    msg = _validate_interp_inputs(summary_tbl, fl_ft=fl_ft, weight_kg=wt_kg, isa_c=isa_c, wind_kt=wind_kt)
+    if msg:
+        raise ValueError(msg)
+
+    # Build per-scenario DOC(IAS) vectors (fast; uses each scenario's own points)
+    x_key = "__IAS_VEC_DOC__"
+    y_key = "__DOC_VEC__"
+
+    enriched: List[Dict[str, Any]] = []
+    for sc in scenarios:
+        pt = sc.get("pointTable", None)
+        if not isinstance(pt, pd.DataFrame) or pt.empty:
+            continue
+        if not {"IAS", "Fuel_kg_per_NM", "Time_h_per_NM"}.issubset(pt.columns):
+            continue
+
+        ias = pd.to_numeric(pt["IAS"], errors="coerce").to_numpy(float)
+        fuel = pd.to_numeric(pt["Fuel_kg_per_NM"], errors="coerce").to_numpy(float)
+        time = pd.to_numeric(pt["Time_h_per_NM"], errors="coerce").to_numpy(float)
+
+        ok = np.isfinite(ias) & np.isfinite(fuel) & np.isfinite(time)
+        ias, fuel, time = ias[ok], fuel[ok], time[ok]
+        if ias.size < 3:
+            continue
+
+        order = np.argsort(ias, kind="mergesort")
+        ias, fuel, time = ias[order], fuel[order], time[order]
+
+        # Deduplicate IAS (keep first)
+        _, first_idx = np.unique(ias, return_index=True)
+        first_idx = np.sort(first_idx)
+        ias_u = ias[first_idx]
+        fuel_u = fuel[first_idx]
+        time_u = time[first_idx]
+        if ias_u.size < 3:
+            continue
+
+        doc_u = float(cfg.fuel_price_eur_per_kg) * fuel_u + float(cfg.time_cost_operational) * time_u
+
+        sc2 = dict(sc)
+        sc2[x_key] = np.asarray(ias_u, float)
+        sc2[y_key] = np.asarray(doc_u, float)
+        enriched.append(sc2)
+
+    if len(enriched) < 8:
+        raise ValueError("Nepakanka scenarijų DOC(KNN) interpolacijai (reikia daugiau scenarijų su Fuel/Time).")
+
+    ias_lo = min(float(np.nanmin(sc2[x_key])) for sc2 in enriched)
+    ias_hi = max(float(np.nanmax(sc2[x_key])) for sc2 in enriched)
+    x_grid = np.linspace(ias_lo, ias_hi, 500, dtype=float)
+
+    y_grid, _diag = interpolate_curve_knn_from_scenarios(
+        enriched,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+        x_grid=x_grid,
+        x_vec_key=x_key,
+        y_vec_key=y_key,
+        k=30,
+        power=2.0,
+        min_neighbors=8,
+    )
+
+    x = np.asarray(x_grid, float)
+    y = np.asarray(y_grid, float)
+
+    ok = np.isfinite(x) & np.isfinite(y)
+    if int(ok.sum()) < 50:
+        raise ValueError("Nepakanka duomenų DOC kreivei nubraižyti (KNN).")
+
+    x = x[ok]
+    y = y[ok]
+
+    j = int(np.nanargmin(y))
+    v_opt = float(x[j])
+    doc_opt = float(y[j])
+
+    qres = compute_quick_metrics_interpolated(
+        summary_tbl,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+    )
+    v_notch = float(qres.v_notch_kt)
+    doc_notch = float(np.interp(v_notch, x, y))
+
+    econ_kt = int(round(v_opt))
+    notch_kt = int(round(v_notch))
+    same = abs(econ_kt - notch_kt) < 1
+
+    if same:
+        econ_color = "black"
+        notch_color = "black"
+    else:
+        econ_color = "orange"
+        notch_color = "dodgerblue"
+
+    fig, ax = _mpl_academic_fig()
+    ax.plot(x, y, linewidth=2.2, color="darkred", label="DOC kreivė (KNN)")
+
+    if same:
+        ax.scatter([v_opt], [doc_opt], s=95, marker="x", color=econ_color, label=f"ECON / IASnotch ({econ_kt} kt)")
+        _annotate_tiny_above(ax, v_opt, doc_opt, f"ECON = IASnotch = {econ_kt} kt", color=econ_color)
+    else:
+        ax.scatter([v_opt], [doc_opt], s=95, marker="x", color=econ_color, label=f"ECON ({econ_kt} kt)")
+        _annotate_tiny_above(ax, v_opt, doc_opt, f"ECON {econ_kt} kt", color=econ_color, dx_pts=-60, dy_pts=40)
+
+        ax.scatter([v_notch], [doc_notch], s=95, marker="x", color=notch_color, label=f"IASnotch ({notch_kt} kt)")
+        _annotate_tiny_above(ax, v_notch, doc_notch, f"IASnotch {notch_kt} kt", color=notch_color, dx_pts=14)
+
+    ax.set_title("DOC priklausomybė nuo IAS — Įvestis (KNN)")
+    ax.set_xlabel("IAS (kt)")
+    ax.set_ylabel("DOC (EUR/NM)")
+    _add_axis_arrows(ax)
+    ax.legend(loc="best")
+    fig.tight_layout()
     return fig
 
 
@@ -1555,7 +1610,6 @@ if run_btn:
                 cfg=cfg,
                 return_scenarios=True,
             )
-            cloud_tbl = build_global_point_cloud(scenarios)
             fuel_longform_tbl = build_longform_fuel_table(scenarios)
 
             st.session_state["uploaded_names"] = []
@@ -1577,7 +1631,6 @@ if run_btn:
                     cfg=cfg,
                     return_scenarios=True,
                 )
-                cloud_tbl = build_global_point_cloud(scenarios)
                 fuel_longform_tbl = build_longform_fuel_table(scenarios)
             finally:
                 tmp.cleanup()
@@ -1589,7 +1642,6 @@ if run_btn:
     st.session_state["summary_tbl"] = summary_tbl
     st.session_state["longform_tbl"] = longform_tbl
     st.session_state["fuel_longform_tbl"] = fuel_longform_tbl
-    st.session_state["cloud_tbl"] = cloud_tbl
     st.session_state["scenarios"] = scenarios
     st.session_state["generated_out_dir"] = str(out_dir)
     st.session_state["excel_written_msg"] = ""
@@ -1624,7 +1676,6 @@ if "summary_tbl" not in st.session_state:
 
 summary_tbl: pd.DataFrame = st.session_state["summary_tbl"]
 longform_tbl: pd.DataFrame = st.session_state["longform_tbl"]
-cloud_tbl: pd.DataFrame = st.session_state["cloud_tbl"]
 scenarios: List[Dict[str, Any]] = st.session_state.get("scenarios", [])
 cfg: Config = st.session_state.get("last_cfg", cfg0)
 
@@ -2044,7 +2095,15 @@ else:
             if st.button("Generuoti grafiką", key="btn_g1i", use_container_width=True):
                 st.session_state["open_g1"] = True
                 try:
-                    st.session_state["fig_g1"] = _plot_doc_vs_ias_input(cloud_tbl, summary_tbl, fl_ft=fl, wt_kg=wt, isa_c=isa, wind_kt=wind, cfg=cfg)
+                    st.session_state["fig_g1"] = _plot_doc_vs_ias_input_knn(
+                        scenarios,
+                        summary_tbl,
+                        fl_ft=fl,
+                        wt_kg=wt,
+                        isa_c=isa,
+                        wind_kt=wind,
+                        cfg=cfg,
+                    )
                     st.session_state["err_g1"] = ""
                 except Exception as e:
                     st.session_state["fig_g1"] = None

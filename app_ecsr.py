@@ -1477,25 +1477,28 @@ with st.sidebar:
         st.session_state["saving_custom_value"] = float(st.session_state.get("saving_custom_value", 2.0) or 2.0)
 
     # ---- NO FORM HERE (buttons inside forms cause crashes) ----
-    fuel_price = _text_with_stepper(
+    fuel_price = st.number_input(
         "Degalų kaina (€/kg)",
-        key="fuel_price",
+        min_value=0.0,
         step=0.01,
-        placeholder="pvz. 1.20",
+        format="%.2f",
+        key="fuel_price_val",
     )
 
-    tc_op = _text_with_stepper(
+    tc_op = st.number_input(
         "Laiko sąnaudos (€/h)",
-        key="time_cost",
+        min_value=0.0,
         step=10.0,
-        placeholder="pvz. 500",
+        format="%.0f",
+        key="time_cost_val",
     )
 
-    epsilon_pct = _text_with_stepper(
+    epsilon_pct = st.number_input(
         "ECSR epsilon (%)",
-        key="epsilon_pct",
+        min_value=0.0,
         step=0.1,
-        placeholder="pvz. 1.0",
+        format="%.1f",
+        key="epsilon_pct_val",
     )
 
     saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
@@ -1513,10 +1516,6 @@ if run_btn:
     st.session_state["excel_written_msg"] = ""
     _clear_excel_download_artifacts()
     st.session_state["outliers_tbl"] = pd.DataFrame()
-
-    if fuel_price is None or tc_op is None or epsilon_pct is None:
-        st.error("Prašome įvesti reikšmes: Degalų kaina, Laiko sąnaudos ir ECSR epsilon.")
-        st.stop()
 
     if float(fuel_price) <= 0.0 or float(tc_op) <= 0.0:
         st.error("Prašome įvesti teigiamas reikšmes: 'Degalų kaina' ir 'Laiko sąnaudos'.")

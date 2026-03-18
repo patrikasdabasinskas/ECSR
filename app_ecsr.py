@@ -1460,7 +1460,7 @@ with st.sidebar:
     )
 
     uploads = []
-    if data_source == "Įkelti failus":
+    if data_source == "Įkelti naujus scenarijus":
         st.markdown("Įkelkite scenarijų failus")
         uploads = st.file_uploader(
             "Scenarijų failai",
@@ -1468,9 +1468,7 @@ with st.sidebar:
             accept_multiple_files=True,
             help="Pasirinkite *.csv / *.txt failus. Galite pažymėti kelis failus iš karto.",
         )
-    else:
-        st.markdown("Naudojami scenarijai esantys sistemoje.")
-
+    
     mode = st.radio("Peržiūros režimas", options=["Scenarijus", "Įvestis"], index=0)
 
     # ✅ IMPORTANT: don't pass `value=` when using `key=` (prevents "reverting")
@@ -1544,12 +1542,12 @@ if run_btn:
     )
 
     with st.spinner("Skaičiuojama..."):
-        if data_source == "Integruoti scenarijai":
+        if data_source == "Scenarijai, jau esantys sistemoje":
             root_dir = BUILTIN_SCENARIOS_DIR
             if not root_dir.exists() or not root_dir.is_dir():
                 st.error(
-                    "Integruotų scenarijų aplankas nerastas. "
-                    "Įsitikinkite, kad GitHub repozitorijoje yra 'data/scenarios/' su scenarijų failais."
+                    "Rinkmenoje scenarijų nerasta. "
+                    "Įsitikinkite, kad sistemoje yra įkeltų scenarijų."
                 )
                 st.stop()
 

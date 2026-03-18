@@ -2192,7 +2192,7 @@ for gid, meta in _BP_GRAPHS.items():
     x_label = meta["x_label"]
     x_name_lt = meta["x_name_lt"]
 
-    exp_title = f"Grafikas {gid[-1]} — Lūžio taškų priklausomybė nuo „{x_label}“"
+    exp_title = f"Grafikas {gid[-1]} — Lūžio taškai vs {x_label}"
     open_key = f"open_{gid}"
     fig_key_time = f"fig_{gid}_time"
     fig_key_fuel = f"fig_{gid}_fuel"
@@ -2419,6 +2419,7 @@ if st.session_state["show_glossary"]:
 **DOCmin_perX** – minimalios DOC sąnaudos per **X jūrmylių**, **EUR**
 
 **EPSILON** - nedidelė procentinė tolerancija, kurios dydis priklauso nuo oro linijų prioritetų ir kuri nusako, kokiu mastu sąnaudos gali padidėti virš **DOCmin**, **%**
+
 **ECON** – ekonominis greitis, **kt**  
 **IASnotch** – maksimalus kreiserinis greitis arba greitis prie tam tikrų sąlygų, kai galios svirtis yra fiksuotoje padėtyje, **kt**  
 **ECSR** – ekonominis greičio diapazonas, gautas pritaikius epsilon įvertį **kt**

@@ -1458,8 +1458,6 @@ with st.sidebar:
             help="Pasirinkite *.csv / *.txt failus. Galite pažymėti kelis failus iš karto.",
             key="uploader_files",
         )
-    else:
-        st.markdown("Naudojami integruoti scenarijai iš sistemos.")
 
     mode = st.radio(
         "Peržiūros režimas",
@@ -1480,7 +1478,7 @@ with st.sidebar:
     fuel_price = st.number_input(
         "Degalų kaina (€/kg)",
         min_value=0.0,
-        step=0.01,
+        step=0.05,
         format="%.2f",
         key="fuel_price_val",
     )
@@ -1488,7 +1486,7 @@ with st.sidebar:
     tc_op = st.number_input(
         "Laiko sąnaudos (€/h)",
         min_value=0.0,
-        step=10.0,
+        step=100.0,
         format="%.0f",
         key="time_cost_val",
     )

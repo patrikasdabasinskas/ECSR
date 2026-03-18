@@ -88,6 +88,42 @@ def _save_uploads_to_tempdir(uploads: List[Any]) -> Tuple[tempfile.TemporaryDire
 
 # ------------------------- UI helpers -------------------------
 
+def _text_with_stepper(label: str, *, key: str, step: float, placeholder: str = "") -> Optional[float]:
+    """
+    Text input that supports +/- step buttons safely.
+    - Uses a separate internal widget key (key__txt)
+    - Uses on_click callbacks to update state (safe for rapid clicks)
+    Returns: None if empty, else float
+    """
+    txt_key = f"{key}__txt"
+
+    def _parse(s: str) -> Optional[float]:
+        s = (s or "").strip()
+        if s == "":
+            return None
+        try:
+            return float(s.replace(",", "."))
+        except ValueError:
+            return None
+
+    def _bump(delta: float) -> None:
+        cur = _parse(st.session_state.get(txt_key, ""))
+        v = 0.0 if cur is None else float(cur)
+        st.session_state[txt_key] = f"{v + delta:g}"
+
+    c1, c2, c3 = st.columns([8, 1, 1], gap="small")
+
+    with c1:
+        st.text_input(label, key=txt_key, placeholder=placeholder)
+
+    with c2:
+        st.button("−", key=f"{key}_minus", on_click=_bump, args=(-float(step),))
+
+    with c3:
+        st.button("+", key=f"{key}_plus", on_click=_bump, args=(+float(step),))
+
+    return _parse(st.session_state.get(txt_key, ""))
+
 def _opt_float_text(label: str, *, key: str, placeholder: str = "", help: str = "") -> Optional[float]:
     """
     Text input that can be empty on first load.
@@ -1382,6 +1418,8 @@ def _init_state() -> None:
     st.session_state.setdefault("in_wind", 0.0)
     st.session_state.setdefault("in_metric", "Pasirinkite...")
     st.session_state.setdefault("in_dist_nm", 100.0)
+    st.session_state.setdefault("quick_doc_dist_nm", 100.0)
+    st.session_state.setdefault("mode", "Scenarijus") 
     st.session_state.setdefault("in_last_res", None)
     st.session_state.setdefault("in_err", "")
 
@@ -1393,14 +1431,12 @@ def _init_state() -> None:
 
 
 # ========================= UI =========================
-
 st.set_page_config(layout="wide")
-
-# ========================= UI (SIDEBAR) =========================
 
 cfg0 = default_config()
 _init_state()
 
+# ========================= UI (SIDEBAR) =========================
 with st.sidebar:
     st.header("Įvestys")
 
@@ -1425,7 +1461,12 @@ with st.sidebar:
     else:
         st.markdown("Naudojami integruoti scenarijai iš sistemos.")
 
-    mode = st.radio("Peržiūros režimas", options=["Scenarijus", "Įvestis"], index=0)
+    mode = st.radio(
+        "Peržiūros režimas",
+        options=["Scenarijus", "Įvestis"],
+        index=0,
+        key="mode",  # keep selection across reruns
+    )
 
     saving_custom_enabled = st.checkbox(
         "Taikyti sutaupymo vertę (€/100NM)",
@@ -1435,34 +1476,38 @@ with st.sidebar:
     if not bool(st.session_state.get("saving_custom_enabled", False)):
         st.session_state["saving_custom_value"] = float(st.session_state.get("saving_custom_value", 2.0) or 2.0)
 
-    with st.form("sidebar_inputs", clear_on_submit=False):
-        fuel_price = _opt_float_text(
-            "Degalų kaina (€/kg)",
-            key="fuel_price_txt",
-            placeholder="pvz. 1.20",
-        )
-        tc_op = _opt_float_text(
-            "Laiko sąnaudos (€/h)",
-            key="time_cost_txt",
-            placeholder="pvz. 500",
-        )
-        epsilon_pct = _opt_float_text(
-            "ECSR epsilon (%)",
-            key="epsilon_pct_txt",
-            placeholder="pvz. 1.0",
+    # ---- NO FORM HERE (buttons inside forms cause crashes) ----
+    fuel_price = _text_with_stepper(
+        "Degalų kaina (€/kg)",
+        key="fuel_price",
+        step=0.01,
+        placeholder="pvz. 1.20",
+    )
+
+    tc_op = _text_with_stepper(
+        "Laiko sąnaudos (€/h)",
+        key="time_cost",
+        step=10.0,
+        placeholder="pvz. 500",
+    )
+
+    epsilon_pct = _text_with_stepper(
+        "ECSR epsilon (%)",
+        key="epsilon_pct",
+        step=0.1,
+        placeholder="pvz. 1.0",
+    )
+
+    saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
+    if bool(st.session_state.get("saving_custom_enabled", False)):
+        saving_custom = st.number_input(
+            "Sutaupymas (€/100NM)",
+            min_value=0.0,
+            step=1.0,
+            key="saving_custom_value",
         )
 
-        saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
-        if bool(st.session_state.get("saving_custom_enabled", False)):
-            saving_custom = st.number_input(
-                "Sutaupymas (€/100NM)",
-                min_value=0.0,
-                value=float(st.session_state.get("saving_custom_value", 2.0)),
-                step=1.0,
-                key="saving_custom_value",
-            )
-
-        run_btn = st.form_submit_button("Generuoti", type="primary", use_container_width=True)
+    run_btn = st.button("Generuoti", type="primary", use_container_width=True)
         
 if run_btn:
     st.session_state["excel_written_msg"] = ""
@@ -1697,7 +1742,12 @@ if mode == "Scenarijus":
         st.markdown("<div style='height: 6px'></div>", unsafe_allow_html=True)
         _, mid, _ = st.columns([2.2, 1.2, 2.2], gap="large")
         with mid:
-            distance_nm = st.number_input("Atstumas (NM)", min_value=0.0, value=float(st.session_state.get("quick_doc_dist_nm", 100.0)), step=10.0, key="quick_doc_dist_nm")
+            distance_nm = st.number_input(
+                "Atstumas (NM)",
+                min_value=0.0,
+                step=10.0,
+                key="quick_doc_dist_nm",
+            )
 
     shown_value = ""
     shown_unit = ""
@@ -1786,13 +1836,13 @@ if mode == "Scenarijus":
 else:
     c1, c2, c3, c4 = st.columns(4, gap="medium")
     with c1:
-        in_fl = st.number_input("Aukštis (ft)", value=float(st.session_state["in_fl"]), step=500.0, key="in_fl")
+        in_fl = st.number_input("Aukštis (ft)", step=500.0, key="in_fl")
     with c2:
-        in_wt = st.number_input("Masė (kg)", value=float(st.session_state["in_wt"]), step=500.0, key="in_wt")
+        in_wt = st.number_input("Masė (kg)", step=500.0, key="in_wt")
     with c3:
-        in_isa = st.number_input("ISA (°C)", value=float(st.session_state["in_isa"]), step=1.0, key="in_isa")
+        in_isa = st.number_input("ISA (°C)", step=1.0, key="in_isa")
     with c4:
-        in_wind = st.number_input("Vėjas (kt)", value=float(st.session_state["in_wind"]), step=1.0, key="in_wind")
+        in_wind = st.number_input("Vėjas (kt)", step=1.0, key="in_wind")
 
     pick_metric_label = st.selectbox("Pasirinkite rodiklį", list(metric_map.keys()), index=0, key="in_metric")
     col_key = metric_map[pick_metric_label]
@@ -1800,7 +1850,12 @@ else:
 
     distance_nm = float(st.session_state.get("in_dist_nm", 100.0))
     if not show_placeholder and col_key == "__DOCMIN_PER_X__":
-        distance_nm = st.number_input("Atstumas (NM)", min_value=0.0, value=float(distance_nm), step=10.0, key="in_dist_nm")
+        distance_nm = st.number_input(
+            "Atstumas (NM)",
+            min_value=0.0,
+            step=10.0,
+            key="in_dist_nm",
+        )
 
     st.markdown("<div style='height: 6px'></div>", unsafe_allow_html=True)
     btn = st.button("Skaičiuoti", type="primary")

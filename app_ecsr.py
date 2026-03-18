@@ -1120,7 +1120,21 @@ def _validate_breakpoint_request(filtered: pd.DataFrame, *, x_col: str, candidat
     return False, None, msg
 
 
-def _label_points_with_overlap_avoidance(ax, xs: np.ndarray, ys: np.ndarray, *, fmt: str, y_offset_pts: int = 16) -> None:
+def _label_points_with_overlap_avoidance(
+    ax,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    *,
+    fmt: str,
+    y_offset_pts: int = 10,
+    fontsize: int = 8,
+    max_tries: int = 8,
+) -> None:
+    """
+    Place value labels close to points, with minimal overlap.
+    Smaller font, tighter bbox, shorter/thinner leader line.
+    Tries multiple offsets (up/down + slight left/right jitter).
+    """
     xs = np.asarray(xs, float).reshape(-1)
     ys = np.asarray(ys, float).reshape(-1)
     if xs.size == 0:
@@ -1131,28 +1145,66 @@ def _label_points_with_overlap_avoidance(ax, xs: np.ndarray, ys: np.ndarray, *, 
     renderer = fig.canvas.get_renderer()
     placed_bboxes = []
 
-    def _place(x0: float, y0: float, dy: int):
+    base = int(y_offset_pts)
+    offsets = [
+        (0, base),
+        (0, -base),
+        (10, base),
+        (-10, base),
+        (10, -base),
+        (-10, -base),
+        (18, 0),
+        (-18, 0),
+    ][: max(1, int(max_tries))]
+
+    def _place(x0: float, y0: float, dx: int, dy: int):
         ann = ax.annotate(
             fmt.format(y0),
             (x0, y0),
             textcoords="offset points",
-            xytext=(0, dy),
-            ha="center",
+            xytext=(dx, dy),
+            ha="center" if dx == 0 else ("left" if dx > 0 else "right"),
             va="bottom" if dy >= 0 else "top",
-            arrowprops={"arrowstyle": "-", "linewidth": 1.0, "color": "black", "shrinkA": 0, "shrinkB": 0},
-            bbox={"boxstyle": "round,pad=0.15", "facecolor": "white", "edgecolor": "none", "alpha": 0.9},
+            fontsize=int(fontsize),
+            arrowprops={
+                "arrowstyle": "-",
+                "linewidth": 0.7,
+                "color": "black",
+                "shrinkA": 6,
+                "shrinkB": 10,
+            },
+            bbox={
+                "boxstyle": "round,pad=0.10",
+                "facecolor": "white",
+                "edgecolor": "none",
+                "alpha": 0.88,
+            },
             clip_on=False,
+            zorder=50,
         )
         fig.canvas.draw()
-        bb = ann.get_window_extent(renderer=renderer).expanded(1.05, 1.10)
+        bb = ann.get_window_extent(renderer=renderer).expanded(1.02, 1.05)
         return ann, bb
 
     for x0, y0 in zip(xs.tolist(), ys.tolist()):
-        ann, bb = _place(x0, y0, y_offset_pts)
-        if any(bb.overlaps(prev) for prev in placed_bboxes):
-            ann.remove()
-            ann, bb = _place(x0, y0, -y_offset_pts)
-        placed_bboxes.append(bb)
+        if not (np.isfinite(x0) and np.isfinite(y0)):
+            continue
+
+        best_bb = None
+
+        for dx, dy in offsets:
+            ann, bb = _place(x0, y0, dx, dy)
+            if any(bb.overlaps(prev) for prev in placed_bboxes):
+                ann.remove()
+                continue
+            best_bb = bb
+            break
+
+        if best_bb is None:
+            ann, bb = _place(x0, y0, 0, base)
+            best_bb = bb
+
+        placed_bboxes.append(best_bb)
 
 
 def _plot_breakpoint_vs_grouped(
@@ -1190,7 +1242,7 @@ def _plot_breakpoint_vs_grouped(
             xs = sub[x_col].to_numpy(float)
             ys = sub["BE"].to_numpy(float)
             ax.plot(xs, ys, linewidth=2.2, marker="o", markersize=4.8, label=_group_label(used_group, float(grp_val)))
-            _label_points_with_overlap_avoidance(ax, xs, ys, fmt=fmt, y_offset_pts=16)
+            _label_points_with_overlap_avoidance(ax, xs, ys, fmt=fmt, y_offset_pts=8, fontsize=8)
         ax.legend(loc="best")
         y_for_limits = g["BE"].to_numpy(float)
     else:
@@ -1199,7 +1251,7 @@ def _plot_breakpoint_vs_grouped(
         ys = df[y_col].to_numpy(float)
         ax.plot(xs, ys, linewidth=2.2, color="darkred")
         ax.scatter(xs, ys, s=26, color="darkred")
-        _label_points_with_overlap_avoidance(ax, xs, ys, fmt=fmt, y_offset_pts=16)
+        _label_points_with_overlap_avoidance(ax, xs, ys, fmt=fmt, y_offset_pts=8, fontsize=8)
         y_for_limits = ys
 
     y_min = float(np.nanmin(y_for_limits))
@@ -1402,9 +1454,9 @@ with st.sidebar:
     # --- layout-changing controls OUTSIDE form (instant updates) ---
     data_source = st.radio(
         "Duomenų šaltinis",
-        options=["Integruoti scenarijai", "Įkelti failus"],
+        options=["Scenarijai, jau esantys sistemoje", "Įkelti naujus scenarijus"],
         index=0,
-        help="Jeigu pasirinksite integruotus scenarijus, naudotojui nereikės įkelti failų.",
+        help="Jeigu pasirinksite jau sistemoje esančius scenarijus, naudotojui nereikės įkelti naujų ir bus galima iškart matyti rezultatus.",
     )
 
     uploads = []
@@ -1417,7 +1469,7 @@ with st.sidebar:
             help="Pasirinkite *.csv / *.txt failus. Galite pažymėti kelis failus iš karto.",
         )
     else:
-        st.markdown("Naudojami integruoti scenarijai iš sistemos.")
+        st.markdown("Naudojami scenarijai esantys sistemoje.")
 
     mode = st.radio("Peržiūros režimas", options=["Scenarijus", "Įvestis"], index=0)
 
@@ -1741,7 +1793,7 @@ if mode == "Scenarijus":
                         shown_value = f"{int(round(val))}"
                         shown_unit = "EUR"
                     else:
-                        shown_value = f"{val:.3f}"
+                        shown_value = f"{val:.1f}"
 
     st.markdown("<div style='height: 26px'></div>", unsafe_allow_html=True)
 
@@ -1749,7 +1801,7 @@ if mode == "Scenarijus":
         _show_result_card("", "")
     else:
         if is_docmin_per_x:
-            r1, r2, r3 = st.columns(3, gap="xxlarge")
+            r1, r2, r3 = st.columns(3, gap="large")
             with r1:
                 v = "" if not np.isfinite(docmin_total) else f"{docmin_total:.0f}"
                 _render_result_card(v, "EUR" if v else "", "DOCmin rezultatas", max_width_px=190)
@@ -1854,7 +1906,7 @@ else:
                         if unit == "kt":
                             shown_value = f"{int(round(float(val)))}"
                         elif unit == "EUR/NM":
-                            shown_value = f"{float(val):.3f}"
+                            shown_value = f"{float(val):.1f}"
                         else:
                             shown_value = f"{float(val):g}"
                         shown_unit = unit
@@ -1865,7 +1917,7 @@ else:
         _show_result_card("", "")
     else:
         if col_key == "__DOCMIN_PER_X__":
-            r1, r2, r3 = st.columns(3, gap="xxlarge")
+            r1, r2, r3 = st.columns(3, gap="large")
             with r1:
                 v = "" if not np.isfinite(docmin_total) else f"{docmin_total:.0f}"
                 _render_result_card(v, "EUR" if v else "", "DOCmin rezultatas", max_width_px=190)

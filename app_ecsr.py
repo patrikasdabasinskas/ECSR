@@ -172,6 +172,15 @@ def _fmt_num(v: float) -> str:
         return str(int(round(v)))
     return f"{v:g}"
 
+def _fmt_eur(v: float, *, decimals: int = 1) -> str:
+    """
+    Format EUR with comma decimals for LT UI.
+    Example: 986.5 -> "986,5"
+    """
+    if not np.isfinite(v):
+        return ""
+    return f"{float(v):.{int(decimals)}f}".replace(".", ",")
+
 
 def _group_label(group_col: str, group_val: float) -> str:
     name, unit = _GROUP_META.get(group_col, (group_col, ""))
@@ -1956,7 +1965,8 @@ if mode == "Scenarijus":
                 if np.isfinite(v_notch_per_nm) and np.isfinite(dist):
                     docnotch_total = float(v_notch_per_nm) * dist
                 if np.isfinite(docmin_total) and np.isfinite(docnotch_total):
-                    diff_total = docnotch_total - docmin_total
+                    diff_total = float(docnotch_total) - float(docmin_total)
+                    diff_total = round(diff_total, 1)  
             else:
                 val = float(pd.to_numeric(row.get(col_key, np.nan), errors="coerce"))
                 if np.isfinite(val):
@@ -1970,7 +1980,7 @@ if mode == "Scenarijus":
                         shown_value = f"{val:.2f}"
                         shown_unit = "€/kg"
                     elif "EUR/NM" in pick_metric_label:
-                        shown_value = f"{val:.3f}"   # ✅ 2–3 decimals, e.g. 8.234
+                        shown_value = f"{val:.3f}"   
                         shown_unit = "EUR/NM"
                     elif "EUR" in pick_metric_label:
                         shown_value = f"{val:.0f}"
@@ -1986,13 +1996,13 @@ if mode == "Scenarijus":
         if is_docmin_per_x:
             r1, r2, r3 = st.columns(3, gap="large")
             with r1:
-                v = "" if not np.isfinite(docmin_total) else f"{docmin_total:.0f}"
+                v = _fmt_eur(docmin_total, decimals=1) if np.isfinite(docmin_total) else ""
                 _render_result_card(v, "EUR" if v else "", "DOCmin rezultatas", max_width_px=190)
             with r2:
-                v = "" if not np.isfinite(docnotch_total) else f"{docnotch_total:.0f}"
+                v = _fmt_eur(docnotch_total, decimals=1) if np.isfinite(docnotch_total) else ""
                 _render_result_card(v, "EUR" if v else "", "DOCnotch rezultatas", max_width_px=190)
             with r3:
-                v = "" if not np.isfinite(diff_total) else f"{diff_total:.0f}"
+                v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else ""
                 _render_result_card(v, "EUR" if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
         else:
             _show_result_card(shown_value, shown_unit)
@@ -2080,7 +2090,11 @@ else:
                 dist = float(distance_nm)
                 docmin_total = float(res_in.docmin_eur_per_nm) * dist if np.isfinite(res_in.docmin_eur_per_nm) else float("nan")
                 docnotch_total = float(res_in.docnotch_eur_per_nm) * dist if np.isfinite(res_in.docnotch_eur_per_nm) else float("nan")
-                diff_total = docnotch_total - docmin_total if (np.isfinite(docmin_total) and np.isfinite(docnotch_total)) else float("nan")
+                if np.isfinite(docmin_total) and np.isfinite(docnotch_total):
+                    diff_total = float(docnotch_total) - float(docmin_total)
+                    diff_total = round(diff_total, 1)
+                else:
+                    diff_total = float("nan")
             else:
                 mapping = {
                     "V_ECSR_kt": (res_in.v_ecsr_kt, "kt"),
@@ -2107,13 +2121,13 @@ else:
         if col_key == "__DOCMIN_PER_X__":
             r1, r2, r3 = st.columns(3, gap="large")
             with r1:
-                v = "" if not np.isfinite(docmin_total) else f"{docmin_total:.0f}"
+                v = _fmt_eur(docmin_total, decimals=1) if np.isfinite(docmin_total) else ""
                 _render_result_card(v, "EUR" if v else "", "DOCmin rezultatas", max_width_px=190)
             with r2:
-                v = "" if not np.isfinite(docnotch_total) else f"{docnotch_total:.0f}"
+                v = _fmt_eur(docnotch_total, decimals=1) if np.isfinite(docnotch_total) else ""
                 _render_result_card(v, "EUR" if v else "", "DOCnotch rezultatas", max_width_px=190)
             with r3:
-                v = "" if not np.isfinite(diff_total) else f"{diff_total:.0f}"
+                v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else ""
                 _render_result_card(v, "EUR" if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
         else:
             _show_result_card(shown_value, shown_unit)

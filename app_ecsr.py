@@ -428,14 +428,20 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
 
     html = f"""
 <style>
-  /* Light mode defaults (iframe-local) */
+  :root {{
+    --cc-border: rgba(0,0,0,0.18);
+    --cc-bg: rgba(0,0,0,0.04);
+    --cc-text: rgba(0,0,0,0.95);
+    --cc-caption: rgba(0,0,0,0.70);
+  }}
+
   .cc-card {{
-    border: 1px solid rgba(0,0,0,0.18);
-    background: rgba(0,0,0,0.04);
-    color: rgba(0,0,0,0.95);
+    border: 1px solid var(--cc-border);
+    background: var(--cc-bg);
+    color: var(--cc-text);
   }}
   .cc-caption {{
-    color: rgba(0,0,0,0.70);
+    color: var(--cc-caption);
   }}
   .cc-unit {{
     font-size: 12px;
@@ -449,19 +455,55 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
     line-height: 1;
     color: inherit;
   }}
-
-  /* System dark mode (works inside iframe) */
-  @media (prefers-color-scheme: dark) {{
-    .cc-card {{
-      border: 1px solid rgba(255,255,255,0.22);
-      background: rgba(255,255,255,0.08);
-      color: rgba(255,255,255,0.96);
-    }}
-    .cc-caption {{
-      color: rgba(255,255,255,0.78);
-    }}
-  }}
 </style>
+
+<script>
+(function() {{
+  function parseRgb(s) {{
+    // "rgb(r,g,b)" or "rgba(r,g,b,a)"
+    const m = (s || "").match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/i);
+    if (!m) return null;
+    return [parseInt(m[1],10), parseInt(m[2],10), parseInt(m[3],10)];
+  }}
+
+  function luminance(rgb) {{
+    const [r,g,b] = rgb.map(v => v/255);
+    // perceived luminance
+    return 0.2126*r + 0.7152*g + 0.0722*b;
+  }}
+
+  function pickTheme() {{
+    try {{
+      const pdoc = window.parent && window.parent.document ? window.parent.document : document;
+      const body = pdoc.body;
+      const bg = pdoc.defaultView.getComputedStyle(body).backgroundColor;
+      const rgb = parseRgb(bg);
+      if (!rgb) return;
+
+      const lum = luminance(rgb);
+      const isDark = lum < 0.5;
+
+      const root = document.documentElement;
+      if (isDark) {{
+        root.style.setProperty("--cc-border", "rgba(255,255,255,0.22)");
+        root.style.setProperty("--cc-bg", "rgba(255,255,255,0.08)");
+        root.style.setProperty("--cc-text", "rgba(255,255,255,0.96)");
+        root.style.setProperty("--cc-caption", "rgba(255,255,255,0.78)");
+      }} else {{
+        root.style.setProperty("--cc-border", "rgba(0,0,0,0.18)");
+        root.style.setProperty("--cc-bg", "rgba(0,0,0,0.04)");
+        root.style.setProperty("--cc-text", "rgba(0,0,0,0.95)");
+        root.style.setProperty("--cc-caption", "rgba(0,0,0,0.70)");
+      }}
+    }} catch(e) {{}}
+  }}
+
+  pickTheme();
+  // In case Streamlit toggles theme without full reload:
+  setTimeout(pickTheme, 50);
+  setTimeout(pickTheme, 250);
+}})();
+</script>
 
 <div style="width:100%;display:flex;justify-content:center;">
   <div style="width:100%;max-width:{int(max_width_px)}px;">

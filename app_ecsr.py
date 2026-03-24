@@ -1657,7 +1657,6 @@ with st.sidebar:
 
     uploads: List[Any] = []
     if data_source == "Įkelti naujus scenarijus":
-        st.markdown("Įkelkite scenarijų failus (CSV arba TXT). Galite įkelti kelis failus iš karto.")
         uploads = st.file_uploader(
             "Scenarijų failai",
             type=["csv", "txt"],

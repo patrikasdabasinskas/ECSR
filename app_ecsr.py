@@ -51,7 +51,7 @@ _GROUP_META: Dict[str, Tuple[str, str]] = {
 
 # Breakpoint graphs meta
 _BP_GRAPHS: Dict[str, Dict[str, Any]] = {
-    "g4": {"x_col": "WIND_kt", "x_name_lt": "vėjo", "x_label": "Vėjo greitis skrydžio kryptimi (kt)"},
+    "g4": {"x_col": "WIND_kt", "x_name_lt": "vėjo", "x_label": "Vėjo komponentė (kt)"},
     "g5": {"x_col": "WEIGHT_kg", "x_name_lt": "masės", "x_label": "Masė (kg)"},
     "g6": {"x_col": "ZP_ft", "x_name_lt": "skrydžio aukščio", "x_label": "Skrydžio aukštis (ft)"},
     "g7": {"x_col": "ISA_C", "x_name_lt": "ISA nuokrypio", "x_label": "ISA nuokrypis (°C)"},
@@ -1657,6 +1657,7 @@ with st.sidebar:
 
     uploads: List[Any] = []
     if data_source == "Įkelti naujus scenarijus":
+        st.markdown("Įkelkite scenarijų failus (CSV arba TXT). Galite įkelti kelis failus iš karto.")
         uploads = st.file_uploader(
             "Scenarijų failai",
             type=["csv", "txt"],
@@ -2565,25 +2566,107 @@ else:
 st.divider()
 st.header("Bendra rezultatų lentelė")
 
+d# ------------------------- Bendra rezultatų lentelė (renamed + reordered) -------------------------
+
 display_tbl = summary_tbl.copy()
+
+# 1) Sort + scenario label
 display_tbl = display_tbl.sort_values(by="ScenarioName", key=lambda s: s.map(_scenario_sort_key)).reset_index(drop=True)
 display_tbl["ScenarioName"] = display_tbl["ScenarioName"].map(_scenario_trial_label)
-display_tbl = display_tbl.rename(columns={"ScenarioName": "Bandymas"})
 
-display_tbl["Laiko sąnaudų lūžio taškas (€/h)"] = _format_break_even_for_app_time(
+# 2) Create ECSR interval column (IASlow–IAShigh)
+e_lo = pd.to_numeric(display_tbl.get("ECSR_low_kt", np.nan), errors="coerce")
+e_hi = pd.to_numeric(display_tbl.get("ECSR_high_kt", np.nan), errors="coerce")
+
+def _fmt_interval(lo: float, hi: float) -> str:
+    if not (np.isfinite(lo) and np.isfinite(hi)):
+        return ""
+    lo_i = int(round(float(min(lo, hi))))
+    hi_i = int(round(float(max(lo, hi))))
+    return f"{lo_i}" if lo_i == hi_i else f"{lo_i}–{hi_i}"
+
+display_tbl["ECSR, kt"] = [_fmt_interval(lo, hi) for lo, hi in zip(e_lo.tolist(), e_hi.tolist())]
+
+# 3) Add UI-friendly break-even strings (keep numeric cols for possible downstream use, then drop)
+display_tbl["Laiko sąnaudų lūžio taškas, eur/h"] = _format_break_even_for_app_time(
     summary_tbl=summary_tbl,
     sweep_min=SWEEP_MIN_APP,
     sweep_max=SWEEP_MAX_APP,
 )
-display_tbl["Degalų sąnaudų lūžio taškas (€/kg)"] = _format_break_even_for_app_fuel(
+display_tbl["Degalų sąnaudų lūžio taškas, eur/kg"] = _format_break_even_for_app_fuel(
     summary_tbl=summary_tbl,
     ceiling=float(cfg.break_search.fuel_ceiling_eur_per_kg),
 )
 
+# 4) Rename columns
+rename_map = {
+    "ScenarioName": "Bandymas",
+
+    "ZP_ft": "Aukštis, ft",
+    "WEIGHT_kg": "Masė, kg",
+    "ISA_C": "ISA, °C",
+    "WIND_kt": "Vėjo komponentė, kt",
+
+    "FuelPrice_EurPerKg": "Degalų kaina, eur/kg",
+    "TIME_COST_Operational_EurPerHr": "Laiko sąnaudos, eur/h",
+
+    "V_notch_kt": "IASnotch, kt",
+    "V_ECSR_kt": "ECON, kt",
+    "ECSR_low_kt": "IASlow, kt",
+    "ECSR_high_kt": "IAShigh, kt",
+
+    "DOCmin_EurPerNM": "DOCmin, eur/nm",
+    "DOCnotch_EurPerNM": "DOCnotch, eur/nm",
+}
+
+# Rename distance DOC columns (DOCmin_100NM_EUR -> DOCmin_100nm, eur)
+for d in cfg.distances_nm:
+    rename_map[f"DOCmin_{d}NM_EUR"] = f"DOCmin_{d}nm, eur"
+    rename_map[f"DOCnotch_{d}NM_EUR"] = f"DOCnotch_{d}nm, eur"
+
+display_tbl = display_tbl.rename(columns=rename_map)
+
+# 5) Drop old numeric break-even columns (units are now in the new string columns)
 display_tbl = display_tbl.drop(
     columns=["BreakEven_TIME_COST_EurPerHr", "BreakEven_FUEL_PRICE_EurPerKg"],
     errors="ignore",
 )
+
+# 6) Reorder columns: meta -> costs -> speeds/ECSR -> break-evens -> DOC per NM -> DOC per distance
+ordered_cols = [
+    "Bandymas",
+    "Aukštis, ft",
+    "Masė, kg",
+    "ISA, °C",
+    "Vėjo komponentė, kt",
+
+    "Degalų kaina, eur/kg",
+    "Laiko sąnaudos, eur/h",
+
+    "IASnotch, kt",
+    "ECON, kt",
+    "IASlow, kt",
+    "IAShigh, kt",
+    "ECSR, kt",
+
+    "Laiko sąnaudų lūžio taškas, eur/h",
+    "Degalų sąnaudų lūžio taškas, eur/kg",
+
+    "DOCmin, eur/nm",
+    "DOCnotch, eur/nm",
+]
+
+# Add distance columns next
+for d in cfg.distances_nm:
+    ordered_cols.append(f"DOCmin_{d}nm, eur")
+    ordered_cols.append(f"DOCnotch_{d}nm, eur")
+
+# Keep only columns that exist (safe if config changes)
+ordered_cols = [c for c in ordered_cols if c in display_tbl.columns]
+
+# Append any remaining columns at end (optional: keep nothing extra)
+remaining = [c for c in display_tbl.columns if c not in ordered_cols]
+display_tbl = display_tbl[ordered_cols + remaining]
 
 st.dataframe(display_tbl, use_container_width=True)
 
@@ -2644,7 +2727,7 @@ if st.session_state["show_glossary"]:
             """
 **IAS** – nurodomasis oro greitis, **kt**  
 **TAS** – tikrasis oro greitis, **kt**  
-**WIND** – vėjo greitis skrydžio kryptimi (teigiamas – pavėjis, neigiamas – priešinis vėjas), **kt**
+**WIND** – vėjo komponentė skrydžio kryptimi (teigiamas – pavejui, neigiamas – priešinis vėjas), **kt**
 
 **DOC** – tiesioginės eksploatacinės sąnaudos, **EUR** / Gali būti matuojamos ir 1 jūrmylei - tuomet **EUR/NM**  
 **DOCmin_perNM** – minimalios DOC sąnaudos per **1 jūrmylią**, **EUR/NM**  

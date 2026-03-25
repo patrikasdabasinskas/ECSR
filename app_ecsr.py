@@ -2566,7 +2566,7 @@ else:
 st.divider()
 st.header("Bendra rezultatų lentelė")
 
-d# ------------------------- Bendra rezultatų lentelė (renamed + reordered) -------------------------
+# ------------------------- Bendra rezultatų lentelė (renamed + reordered) -------------------------
 
 display_tbl = summary_tbl.copy()
 

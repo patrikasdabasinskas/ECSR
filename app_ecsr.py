@@ -29,19 +29,6 @@ from ecsr_core import (
     write_excel_results,
 )
 
-# ---- time sweep in app ----
-SWEEP_MIN_APP = 100.0
-SWEEP_MAX_APP = 5000.0
-SWEEP_STEP_APP = 10.0
-
-# ---- fuel sweep in app ----
-FUEL_SWEEP_MIN_APP = 0.20
-FUEL_SWEEP_MAX_APP = 3.00
-FUEL_SWEEP_STEP_APP = 0.02
-
-_BREAKPOINT_SPEED_TOL_KT = 1.0
-_BREAKPOINT_DISTANCE_NM = 100.0
-
 _GROUP_META: Dict[str, Tuple[str, str]] = {
     "ISA_C": ("ISA", "°C"),
     "WIND_kt": ("Vėjas", "kt"),
@@ -379,7 +366,7 @@ def _build_economical_scenarios_table(summary_tbl: pd.DataFrame, cfg: Config) ->
     for col in need[1:]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    tol_kt = float(getattr(cfg, "breakpoint_speed_tol_kt", _BREAKPOINT_SPEED_TOL_KT))
+    tol_kt = float(cfg.breakpoint_speed_tol_kt)
     df = df.loc[np.isfinite(df["V_ECSR_kt"]) & np.isfinite(df["V_notch_kt"])].copy()
     if df.empty:
         return pd.DataFrame()
@@ -1033,8 +1020,8 @@ def _plot_econ_vs_time_cost_input_knn(
 
     tc_msg = _validate_sweep_input(
         float(cfg.time_cost_operational),
-        lo=SWEEP_MIN_APP,
-        hi=SWEEP_MAX_APP,
+        lo=float(cfg.time_cost_min),
+        hi=float(cfg.time_cost_max),
         label="Laiko sąnaudos",
         unit="€/h",
     )
@@ -1050,7 +1037,12 @@ def _plot_econ_vs_time_cost_input_knn(
     )
 
     fig, ax = _mpl_academic_fig(figsize=(9.0, 4.8))
-    x_grid = np.arange(SWEEP_MIN_APP, SWEEP_MAX_APP + 1e-9, SWEEP_STEP_APP, dtype=float)
+    x_grid = np.arange(
+        float(cfg.time_cost_min),
+        float(cfg.time_cost_max) + 1e-9,
+        float(cfg.time_cost_step),
+        dtype=float,
+    )
 
     y_grid, _diag = interpolate_curve_knn_from_scenarios(
         scenarios,
@@ -1136,8 +1128,8 @@ def _plot_econ_vs_fuel_price_input_knn(
 
     fp_msg = _validate_sweep_input(
         float(cfg.fuel_price_eur_per_kg),
-        lo=FUEL_SWEEP_MIN_APP,
-        hi=FUEL_SWEEP_MAX_APP,
+        lo=float(cfg.fuel_price_min),
+        hi=float(cfg.fuel_price_max),
         label="Degalų kaina",
         unit="€/kg",
     )
@@ -1153,7 +1145,12 @@ def _plot_econ_vs_fuel_price_input_knn(
     )
 
     fig, ax = _mpl_academic_fig(figsize=(9.0, 4.8))
-    x_grid = np.arange(FUEL_SWEEP_MIN_APP, FUEL_SWEEP_MAX_APP + 1e-12, FUEL_SWEEP_STEP_APP, dtype=float)
+    x_grid = np.arange(
+        float(cfg.fuel_price_min),
+        float(cfg.fuel_price_max) + 1e-12,
+        float(cfg.fuel_price_step),
+        dtype=float,
+    )
 
     y_grid, _diag = interpolate_curve_knn_from_scenarios(
         scenarios,
@@ -1735,14 +1732,6 @@ if run_btn:
         fuel_price_eur_per_kg=float(fuel_price),
         time_cost_operational=float(tc_op),
         epsilon_break_even=float(float(epsilon_pct) / 100.0),
-        time_cost_min=SWEEP_MIN_APP,
-        time_cost_max=SWEEP_MAX_APP,
-        time_cost_step=SWEEP_STEP_APP,
-        fuel_price_min=FUEL_SWEEP_MIN_APP,
-        fuel_price_max=FUEL_SWEEP_MAX_APP,
-        fuel_price_step=FUEL_SWEEP_STEP_APP,
-        breakpoint_speed_tol_kt=_BREAKPOINT_SPEED_TOL_KT,
-        breakpoint_distance_nm=_BREAKPOINT_DISTANCE_NM,
         breakpoint_saving_mode=("custom" if saving_custom_enabled else "default"),
         breakpoint_saving_eur=float(saving_custom),
     )
@@ -1848,6 +1837,7 @@ summary_tbl: pd.DataFrame = st.session_state["summary_tbl"]
 longform_tbl: pd.DataFrame = st.session_state["longform_tbl"]
 scenarios: List[Dict[str, Any]] = st.session_state.get("scenarios", [])
 cfg: Config = st.session_state.get("last_cfg", cfg0)
+fuel_ceiling = float(getattr(getattr(cfg, "break_search", None), "fuel_ceiling_eur_per_kg", float("inf")))
 
 scenario_names = sorted([sc.get("scenarioName", "") for sc in scenarios if sc.get("scenarioName")], key=_scenario_sort_key)
 if not scenario_names:
@@ -1989,12 +1979,16 @@ if mode == "Scenarijus":
                 shown_unit = "kt" if shown_value else ""
 
             elif col_key == "__BREAK_TIME__":
-                be_str = _format_break_even_for_app_time(summary_tbl=row_df, sweep_min=SWEEP_MIN_APP, sweep_max=SWEEP_MAX_APP)
+                be_str = _format_break_even_for_app_time(
+                    summary_tbl=row_df,
+                    sweep_min=float(cfg.time_cost_min),
+                    sweep_max=float(cfg.time_cost_max),
+                )
                 shown_value = str(be_str.iloc[0]) if len(be_str) else ""
                 shown_unit = "€/h" if (shown_value and shown_value != "Nėra lūžio taško") else ""
 
             elif col_key == "__BREAK_FUEL__":
-                be_str = _format_break_even_for_app_fuel(summary_tbl=row_df, ceiling=float(cfg.break_search.fuel_ceiling_eur_per_kg))
+                be_str = _format_break_even_for_app_fuel(summary_tbl=row_df, ceiling=fuel_ceiling)
                 shown_value = str(be_str.iloc[0]) if len(be_str) else ""
                 shown_unit = "€/kg" if (shown_value and shown_value != "Nėra lūžio taško") else ""
 
@@ -2116,14 +2110,15 @@ else:
                 shown_unit = "kt" if shown_value else ""
             elif col_key == "__BREAK_TIME__":
                 v = float(res_in.be_time_cost_eur_per_hr)
-                if np.isfinite(v) and (SWEEP_MIN_APP - 1e-9 <= v <= SWEEP_MAX_APP + 1e-9):
+                if np.isfinite(v) and (float(cfg.time_cost_min) - 1e-9 <= v <= float(cfg.time_cost_max) + 1e-9):
                     shown_value = f"{int(round(v))}"
                     shown_unit = "€/h"
                 else:
                     shown_value = "Nėra lūžio taško"
+                    shown_unit = ""
             elif col_key == "__BREAK_FUEL__":
                 v = float(res_in.be_fuel_price_eur_per_kg)
-                if np.isfinite(v) and v <= float(cfg.break_search.fuel_ceiling_eur_per_kg) + 1e-12:
+                if np.isfinite(v) and v <= float(fuel_ceiling) + 1e-12:
                     shown_value = f"{v:.2f}"
                     shown_unit = "€/kg"
                 else:
@@ -2590,12 +2585,13 @@ display_tbl["ECSR, kt"] = [_fmt_interval(lo, hi) for lo, hi in zip(e_lo.tolist()
 # 3) Add UI-friendly break-even strings (keep numeric cols for possible downstream use, then drop)
 display_tbl["Laiko sąnaudų lūžio taškas, eur/h"] = _format_break_even_for_app_time(
     summary_tbl=summary_tbl,
-    sweep_min=SWEEP_MIN_APP,
-    sweep_max=SWEEP_MAX_APP,
+    sweep_min=float(cfg.time_cost_min),
+    sweep_max=float(cfg.time_cost_max),
 )
+
 display_tbl["Degalų sąnaudų lūžio taškas, eur/kg"] = _format_break_even_for_app_fuel(
     summary_tbl=summary_tbl,
-    ceiling=float(cfg.break_search.fuel_ceiling_eur_per_kg),
+    ceiling=fuel_ceiling,
 )
 
 # 4) Rename columns

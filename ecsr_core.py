@@ -58,12 +58,12 @@ class BreakSearchCfg:
 class Config:
     fuel_price_eur_per_kg: float = 0.575
 
-    time_cost_min: float = 600
-    time_cost_max: float = 2000
-    time_cost_step: float = 50
+    time_cost_min = 100
+    time_cost_max: float = 5000
+    time_cost_step: float = 10
 
     fuel_price_min: float = 0.20
-    fuel_price_max: float = 2.00
+    fuel_price_max: float = 3.00
     fuel_price_step: float = 0.02
 
     time_cost_operational: float = 1300.0

@@ -43,6 +43,14 @@ _BP_GRAPHS: Dict[str, Dict[str, Any]] = {
     "g6": {"x_col": "ZP_ft", "x_name_lt": "skrydžio aukščio", "x_label": "Skrydžio aukštis (ft)"},
     "g7": {"x_col": "ISA_C", "x_name_lt": "ISA nuokrypio", "x_label": "ISA nuokrypis (°C)"},
 }
+
+_DOC_GRAPHS: Dict[str, Dict[str, Any]] = {
+    "d1": {"x_col": "WIND_kt", "x_name_lt": "vėjo", "x_label": "Vėjo komponentė (kt)"},
+    "d2": {"x_col": "WEIGHT_kg", "x_name_lt": "masės", "x_label": "Masė (kg)"},
+    "d3": {"x_col": "ZP_ft", "x_name_lt": "skrydžio aukščio", "x_label": "Skrydžio aukštis (ft)"},
+    "d4": {"x_col": "ISA_C", "x_name_lt": "ISA nuokrypio", "x_label": "ISA nuokrypis (°C)"},
+}
+
 _BP_OTHER_COLS = ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt"]
 
 BUILTIN_SCENARIOS_DIR = Path("data/scenarios")
@@ -197,13 +205,22 @@ def _conditions_sentence_from_row_with_costs(row: pd.Series, cfg: Config) -> str
 
     tc = float(getattr(cfg, "time_cost_operational", float("nan")))
     if np.isfinite(tc):
-        parts.append(f"Laiko sąnaudos = {tc:.0f} €/h.")
+        parts.append(f"Laiko sąnaudos = {tc:.0f} €/h")
 
     mode = str(getattr(cfg, "breakpoint_saving_mode", "default")).strip().lower()
-    if mode == "custom":
-        thr = float(getattr(cfg, "breakpoint_saving_eur", float("nan")))
+
+    if mode == "per_nm":
+        thr = float(getattr(cfg, "breakpoint_saving_eur_per_nm", float("nan")))
         if np.isfinite(thr):
-            parts.append(f"Sutaupymas≥{thr:.0f} €/h")
+            parts.append(f"Sutaupymas ≥ {thr:.2f} €/NM")
+
+    elif mode == "per_hour_trip":
+        thr = float(getattr(cfg, "breakpoint_saving_eur_per_hour", float("nan")))
+        trip_nm = float(getattr(cfg, "breakpoint_trip_distance_nm", float("nan")))
+        if np.isfinite(thr):
+            parts.append(f"Sutaupymas ≥ {thr:.1f} €/h")
+        if np.isfinite(trip_nm):
+            parts.append(f"Maršrutas = {trip_nm:.0f} NM")
 
     if not parts:
         return base
@@ -356,8 +373,6 @@ def _build_economical_scenarios_table(summary_tbl: pd.DataFrame, cfg: Config) ->
         "ECSR_low_kt",
         "ECSR_high_kt",
         "V_notch_kt",
-        "DOCmin_EurPerHr",
-        "DOCnotch_EurPerHr",
         "DOCmin_EurPerNM",
         "DOCnotch_EurPerNM",
     ]
@@ -375,7 +390,6 @@ def _build_economical_scenarios_table(summary_tbl: pd.DataFrame, cfg: Config) ->
 
     df["DeltaV_kt"] = df["V_notch_kt"] - df["V_ECSR_kt"]
     df["DocDiff_EurPerNM"] = df["DOCnotch_EurPerNM"] - df["DOCmin_EurPerNM"]
-    df["DocDiff_EurPerHr"] = df["DOCnotch_EurPerHr"] - df["DOCmin_EurPerHr"]
 
     df = df.loc[df["DeltaV_kt"] >= tol_kt].copy()
     if df.empty:
@@ -398,9 +412,6 @@ def _build_economical_scenarios_table(summary_tbl: pd.DataFrame, cfg: Config) ->
             "DOC ECON (EUR/NM)": df["DOCmin_EurPerNM"].map(lambda v: f"{int(round(v))}" if np.isfinite(v) else ""),
             "DOC IASnotch (EUR/NM)": df["DOCnotch_EurPerNM"].map(lambda v: f"{int(round(v))}" if np.isfinite(v) else ""),
             "DOC skirtumas (EUR/NM)": df["DocDiff_EurPerNM"].map(lambda v: f"{int(round(v))}" if np.isfinite(v) else ""),
-            "DOC ECON (EUR/h)": df["DOCmin_EurPerHr"].map(lambda v: f"{int(round(v))}" if np.isfinite(v) else ""),
-            "DOC IASnotch (EUR/h)": df["DOCnotch_EurPerHr"].map(lambda v: f"{int(round(v))}" if np.isfinite(v) else ""),
-            "DOC skirtumas (EUR/h)": df["DocDiff_EurPerHr"].map(lambda v: f"{int(round(v))}" if np.isfinite(v) else ""),
         }
     )
     return out
@@ -1500,6 +1511,92 @@ def _plot_breakpoint_vs_grouped(
     fig.tight_layout()
     return fig
 
+def _plot_doc_vs_grouped(
+    summary_tbl: pd.DataFrame,
+    *,
+    x_col: str,
+    title: str,
+    x_label: str,
+    group_col: Optional[str],
+    docmin_col: str = "DOCmin_EurPerNM",
+    docnotch_col: str = "DOCnotch_EurPerNM",
+) -> Any:
+    fig, ax = _mpl_academic_fig()
+
+    df = summary_tbl.copy()
+    df[x_col] = pd.to_numeric(df[x_col], errors="coerce")
+    df[docmin_col] = pd.to_numeric(df[docmin_col], errors="coerce")
+    df[docnotch_col] = pd.to_numeric(df[docnotch_col], errors="coerce")
+
+    keep = np.isfinite(df[x_col]) & np.isfinite(df[docmin_col]) & np.isfinite(df[docnotch_col])
+    df = df.loc[keep].copy()
+    if df.empty:
+        raise ValueError("Nėra duomenų po filtravimo.")
+
+    used_group = None
+    if group_col and group_col in df.columns:
+        df[group_col] = pd.to_numeric(df[group_col], errors="coerce")
+        df = df.loc[np.isfinite(df[group_col])].copy()
+        if not df.empty and int(df[group_col].nunique()) > 1:
+            used_group = group_col
+
+    if used_group:
+        g = (
+            df.groupby([used_group, x_col], as_index=False)[[docmin_col, docnotch_col]]
+            .median(numeric_only=True)
+            .rename(columns={docmin_col: "DOCmin", docnotch_col: "DOCnotch"})
+        )
+
+        for grp_val, sub in g.groupby(used_group, sort=True):
+            sub = sub.sort_values(x_col)
+            xs = sub[x_col].to_numpy(float)
+            ys_min = sub["DOCmin"].to_numpy(float)
+            ys_notch = sub["DOCnotch"].to_numpy(float)
+
+            lbl = _group_label(used_group, float(grp_val))
+            ax.plot(xs, ys_min, linewidth=2.2, marker="o", markersize=4.8, label=f"DOCmin — {lbl}")
+            ax.plot(xs, ys_notch, linewidth=2.2, marker="s", markersize=4.8, linestyle="--", label=f"DOCnotch — {lbl}")
+
+        ax.legend(loc="best")
+        y_all = np.concatenate([g["DOCmin"].to_numpy(float), g["DOCnotch"].to_numpy(float)])
+
+    else:
+        g = (
+            df.groupby(x_col, as_index=False)[[docmin_col, docnotch_col]]
+            .median(numeric_only=True)
+            .rename(columns={docmin_col: "DOCmin", docnotch_col: "DOCnotch"})
+            .sort_values(x_col)
+        )
+
+        xs = g[x_col].to_numpy(float)
+        ys_min = g["DOCmin"].to_numpy(float)
+        ys_notch = g["DOCnotch"].to_numpy(float)
+
+        ax.plot(xs, ys_min, linewidth=2.2, marker="o", markersize=4.8, color="darkred", label="DOCmin")
+        ax.plot(xs, ys_notch, linewidth=2.2, marker="s", markersize=4.8, linestyle="--", color="navy", label="DOCnotch")
+
+        y_all = np.concatenate([ys_min, ys_notch])
+        ax.legend(loc="best")
+
+    y_all = y_all[np.isfinite(y_all)]
+    if y_all.size:
+        y_min = float(np.nanmin(y_all))
+        y_max = float(np.nanmax(y_all))
+        rng = y_max - y_min
+        if rng <= 0 or not np.isfinite(rng):
+            pad = max(0.15 * max(abs(y_min), 1.0), 0.20)
+            ax.set_ylim(y_min - pad, y_max + pad)
+        else:
+            top_pad = max(0.20 * rng, 0.12 * max(abs(y_max), 1.0), 0.20)
+            bot_pad = max(0.12 * rng, 0.06 * max(abs(y_min), 1.0), 0.10)
+            ax.set_ylim(y_min - bot_pad, y_max + top_pad)
+
+    ax.set_title(title)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("DOC (EUR/NM)")
+    _add_axis_arrows(ax)
+    fig.tight_layout()
+    return fig
 
 def _nearest_available(summary_tbl: pd.DataFrame, col: str, target: float) -> float:
     vals = pd.to_numeric(summary_tbl.get(col, pd.Series([], dtype=float)), errors="coerce").to_numpy(float)
@@ -1601,6 +1698,12 @@ def _init_state() -> None:
         st.session_state.setdefault(f"open_{gid}", False)
         st.session_state.setdefault(f"err_{gid}", "")
 
+    for gid in _DOC_GRAPHS.keys():
+        st.session_state.setdefault(f"fig_{gid}", None)
+        st.session_state.setdefault(f"cap_{gid}", "")
+        st.session_state.setdefault(f"open_{gid}", False)
+        st.session_state.setdefault(f"err_{gid}", "")
+
     st.session_state.setdefault("show_glossary", False)
     st.session_state.setdefault("excel_written_msg", "")
 
@@ -1628,7 +1731,7 @@ def _init_state() -> None:
     st.session_state.setdefault("in_wind", 0.0)
     st.session_state.setdefault("in_metric", "Pasirinkite...")
     st.session_state.setdefault("in_dist_nm", 0.0)
-    st.session_state.setdefault("in_hours_val", 1.0)
+    st.session_state.setdefault("in_trip_nm_y", 0.0)
     st.session_state.setdefault("quick_doc_dist_nm", 0.0)
     st.session_state.setdefault("mode", "Scenarijus") 
     st.session_state.setdefault("in_last_res", None)
@@ -1674,16 +1777,54 @@ with st.sidebar:
         "Peržiūros režimas",
         options=["Scenarijus", "Įvestis"],
         index=0,
-        key="mode",  # keep selection across reruns
+        key="mode",
+        help=(
+            "„Scenarijus“ režime peržiūrimi konkretūs įkelti scenarijai. "
+            "„Įvestis“ režime rezultatai ir grafikai apskaičiuojami pagal jūsų įvestas sąlygas "
+            "naudojant scenarijų interpoliaciją."
+        ),
     )
 
-    saving_custom_enabled = st.checkbox(
+    saving_mode_nm = st.checkbox(
+        "Taikyti sutaupymo vertę (€/NM)",
+        key="saving_mode_nm",
+    )
+
+    saving_mode_h = st.checkbox(
         "Taikyti sutaupymo vertę (€/h)",
-        key="saving_custom_enabled",
+        key="saving_mode_h",
     )
 
-    if not bool(st.session_state.get("saving_custom_enabled", False)):
-        st.session_state["saving_custom_value"] = float(st.session_state.get("saving_custom_value", 2.0) or 2.0)
+    if saving_mode_nm and saving_mode_h:
+        st.warning("Pasirinkite tik vieną sutaupymo vertės būdą.")
+        st.stop()
+
+    saving_custom_nm = None
+    saving_custom_h = None
+    saving_route_nm = None
+
+    if saving_mode_nm:
+        saving_custom_nm = st.number_input(
+            "Sutaupymas (€/NM)",
+            min_value=0.0,
+            step=0.1,
+            key="saving_custom_nm",
+        )
+
+    if saving_mode_h:
+        saving_custom_h = st.number_input(
+            "Sutaupymas (€/h)",
+            min_value=0.0,
+            step=1.0,
+            key="saving_custom_h",
+        )
+
+        saving_route_nm = st.number_input(
+            "Visas maršruto ilgis (NM)",
+            min_value=0.0,
+            step=10.0,
+            key="saving_route_nm",
+        )
 
     # ---- NO FORM HERE (buttons inside forms cause crashes) ----
     fuel_price = st.number_input(
@@ -1710,15 +1851,6 @@ with st.sidebar:
         key="epsilon_pct_val",
     )
 
-    saving_custom = float(st.session_state.get("saving_custom_value", 2.0))
-    if bool(st.session_state.get("saving_custom_enabled", False)):
-        saving_custom = st.number_input(
-            "Sutaupymas (€/h)",
-            min_value=0.0,
-            step=1.0,
-            key="saving_custom_value",
-        )
-
     run_btn = st.button("Generuoti", type="primary", use_container_width=True)
         
 if run_btn:
@@ -1734,13 +1866,23 @@ if run_btn:
         st.error("ECSR epsilon negali būti neigiamas.")
         st.stop()
 
+    if saving_mode_nm:
+        saving_mode_value = "per_nm"
+    elif saving_mode_h:
+        saving_mode_value = "per_hour_trip"
+    else:
+        saving_mode_value = "default"
+
     cfg = replace(
         cfg0,
         fuel_price_eur_per_kg=float(fuel_price),
         time_cost_operational=float(tc_op),
         epsilon_break_even=float(float(epsilon_pct) / 100.0),
-        breakpoint_saving_mode=("custom" if saving_custom_enabled else "default"),
-        breakpoint_saving_eur=float(saving_custom),
+        breakpoint_saving_mode=saving_mode_value,
+        breakpoint_saving_eur_per_nm=float(saving_custom_nm or 0.0),
+        breakpoint_saving_eur_per_hour=float(saving_custom_h or 0.0),
+        breakpoint_trip_distance_nm=float(saving_route_nm or 0.0),
+        
     )
 
     with st.spinner("Skaičiuojama..."):
@@ -1826,6 +1968,12 @@ if run_btn:
         st.session_state[f"open_{gid}"] = False
         st.session_state[f"fig_{gid}_time"] = None
         st.session_state[f"fig_{gid}_fuel"] = None
+        st.session_state[f"cap_{gid}"] = ""
+        st.session_state[f"err_{gid}"] = ""
+
+    for gid in _DOC_GRAPHS.keys():
+        st.session_state[f"open_{gid}"] = False
+        st.session_state[f"fig_{gid}"] = None
         st.session_state[f"cap_{gid}"] = ""
         st.session_state[f"err_{gid}"] = ""
 
@@ -1919,8 +2067,6 @@ metric_items: List[Tuple[str, str]] = [
     ("ECSR (kt)", "__ECSR_RANGE__"),
     ("DOCmin_perNM (EUR/NM)", "DOCmin_EurPerNM"),
     ("DOCnotch_perNM (EUR/NM)", "DOCnotch_EurPerNM"),
-    ("DOCmin_perH (EUR/h)", "DOCmin_EurPerHr"),
-    ("DOCnotch_perH (EUR/h)", "DOCnotch_EurPerHr"),
     ("DOC_perX (EUR)", "__DOCMIN_PER_X__"),
     ("DOC_perY (EUR)", "__DOCMIN_PER_Y__"),
     ("Laiko sąnaudų lūžio taškas (€/h)", "__BREAK_TIME__"),
@@ -1948,14 +2094,24 @@ def _show_result_card(value: str, unit: str) -> None:
 if mode == "Scenarijus":
     top_l, top_r = st.columns(2, gap="large")
     with top_l:
-        pick_scn = st.selectbox("Pasirinkite scenarijų", ["Pasirinkite..."] + scenario_names, index=0, key="quick_scn")
+        pick_scn = st.selectbox(
+            "Pasirinkite scenarijų",
+            ["Pasirinkite..."] + scenario_names,
+            index=0,
+            key="quick_scn",
+        )
     with top_r:
-        pick_metric_label = st.selectbox("Pasirinkite rodiklį", list(metric_map.keys()), index=0, key="quick_metric")
+        pick_metric_label = st.selectbox(
+            "Pasirinkite rodiklį",
+            list(metric_map.keys()),
+            index=0,
+            key="quick_metric",
+        )
 
     show_placeholder = (pick_scn == "Pasirinkite..." or metric_map[pick_metric_label] == "__NONE__")
 
     distance_nm = 0.0
-    hours_val = 1.0
+    trip_nm_for_y = 0.0
     is_docmin_per_x = (not show_placeholder) and (metric_map[pick_metric_label] == "__DOCMIN_PER_X__")
     is_docmin_per_y = (not show_placeholder) and (metric_map[pick_metric_label] == "__DOCMIN_PER_Y__")
 
@@ -1974,11 +2130,11 @@ if mode == "Scenarijus":
         st.markdown("<div style='height: 6px'></div>", unsafe_allow_html=True)
         _, mid, _ = st.columns([2.2, 1.2, 2.2], gap="large")
         with mid:
-            hours_val = st.number_input(
-                "Laikas (h)",
+            trip_nm_for_y = st.number_input(
+                "Maršruto atstumas (NM)",
                 min_value=0.0,
-                step=0.5,
-                key="quick_doc_hours",
+                step=10.0,
+                key="quick_doc_trip_nm",
             )
 
     shown_value = ""
@@ -2032,19 +2188,67 @@ if mode == "Scenarijus":
                     diff_total = round(diff_total, 1)
 
             elif col_key == "__DOCMIN_PER_Y__":
+                docmin_per_nm = float(pd.to_numeric(row.get("DOCmin_EurPerNM", np.nan), errors="coerce"))
+                docnotch_per_nm = float(pd.to_numeric(row.get("DOCnotch_EurPerNM", np.nan), errors="coerce"))
                 docmin_per_h = float(pd.to_numeric(row.get("DOCmin_EurPerHr", np.nan), errors="coerce"))
                 docnotch_per_h = float(pd.to_numeric(row.get("DOCnotch_EurPerHr", np.nan), errors="coerce"))
-                hrs = float(hours_val)
+                trip_nm = float(trip_nm_for_y)
 
-                if np.isfinite(docmin_per_h) and np.isfinite(hrs):
-                    docmin_total = float(docmin_per_h) * hrs
+                econ_total_trip = float("nan")
+                notch_total_trip = float("nan")
+                econ_time_h = float("nan")
+                notch_time_h = float("nan")
+                gs_econ = float("nan")
+                gs_notch = float("nan")
 
-                if np.isfinite(docnotch_per_h) and np.isfinite(hrs):
-                    docnotch_total = float(docnotch_per_h) * hrs
+                if np.isfinite(docmin_per_nm) and np.isfinite(docmin_per_h) and docmin_per_nm > 0:
+                    gs_econ = float(docmin_per_h / docmin_per_nm)
+
+                if np.isfinite(docnotch_per_nm) and np.isfinite(docnotch_per_h) and docnotch_per_nm > 0:
+                    gs_notch = float(docnotch_per_h / docnotch_per_nm)
+
+                if np.isfinite(docmin_per_nm) and np.isfinite(trip_nm):
+                    econ_total_trip = float(docmin_per_nm) * trip_nm
+
+                if np.isfinite(docnotch_per_nm) and np.isfinite(trip_nm):
+                    notch_total_trip = float(docnotch_per_nm) * trip_nm
+
+                if np.isfinite(gs_econ) and gs_econ > 0 and np.isfinite(trip_nm):
+                    econ_time_h = float(trip_nm / gs_econ)
+
+                if np.isfinite(gs_notch) and gs_notch > 0 and np.isfinite(trip_nm):
+                    notch_time_h = float(trip_nm / gs_notch)
+
+                if np.isfinite(econ_total_trip) and np.isfinite(econ_time_h) and econ_time_h > 0:
+                    docmin_total = float(econ_total_trip / econ_time_h)
+                else:
+                    docmin_total = float("nan")
+
+                if np.isfinite(notch_total_trip) and np.isfinite(notch_time_h) and notch_time_h > 0:
+                    docnotch_total = float(notch_total_trip / notch_time_h)
+                else:
+                    docnotch_total = float("nan")
 
                 if np.isfinite(docmin_total) and np.isfinite(docnotch_total):
-                    diff_total = float(docnotch_total) - float(docmin_total)
-                    diff_total = round(diff_total, 1)
+                    diff_total = round(float(docnotch_total - docmin_total), 1)
+                else:
+                    diff_total = float("nan")
+
+                if (
+                    np.isfinite(econ_total_trip)
+                    and np.isfinite(notch_total_trip)
+                    and np.isfinite(econ_time_h)
+                    and np.isfinite(notch_time_h)
+                ):
+                    quick_caption = (
+                        f"{quick_caption}. "
+                        f"Maršrutas {trip_nm:g} NM: "
+                        f"ECON laikas = {_fmt_num(econ_time_h)} h, "
+                        f"IASnotch laikas = {_fmt_num(notch_time_h)} h. "
+                        f"DOC ECON maršrutui = {_fmt_eur(econ_total_trip, decimals=1)} EUR, "
+                        f"DOC IASnotch maršrutui = {_fmt_eur(notch_total_trip, decimals=1)} EUR, "
+                        f"sutaupymas maršrutui = {_fmt_eur(notch_total_trip - econ_total_trip, decimals=1)} EUR."
+                    )
 
             else:
                 val = float(pd.to_numeric(row.get(col_key, np.nan), errors="coerce"))
@@ -2077,15 +2281,25 @@ if mode == "Scenarijus":
     else:
         if is_docmin_per_x or is_docmin_per_y:
             r1, r2, r3 = st.columns(3, gap="large")
+
+            if is_docmin_per_x:
+                cap1 = "DOCmin rezultatas"
+                cap2 = "DOCnotch rezultatas"
+                unit_txt = "EUR"
+            else:
+                cap1 = "DOCmin vid. per val."
+                cap2 = "DOCnotch vid. per val."
+                unit_txt = "EUR/h"
+
             with r1:
                 v = _fmt_eur(docmin_total, decimals=1) if np.isfinite(docmin_total) else ""
-                _render_result_card(v, "EUR" if v else "", "DOCmin rezultatas", max_width_px=190)
+                _render_result_card(v, unit_txt if v else "", cap1, max_width_px=190)
             with r2:
                 v = _fmt_eur(docnotch_total, decimals=1) if np.isfinite(docnotch_total) else ""
-                _render_result_card(v, "EUR" if v else "", "DOCnotch rezultatas", max_width_px=190)
+                _render_result_card(v, unit_txt if v else "", cap2, max_width_px=190)
             with r3:
                 v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else ""
-                _render_result_card(v, "EUR" if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
+                _render_result_card(v, unit_txt if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
         else:
             _show_result_card(shown_value, shown_unit)
 
@@ -2108,7 +2322,7 @@ else:
     show_placeholder = (col_key == "__NONE__")
 
     distance_nm = float(st.session_state.get("in_dist_nm", 0.0))
-    hours_val = float(st.session_state.get("in_hours_val", 1.0))
+    trip_nm_for_y = float(st.session_state.get("in_trip_nm_y", 0.0))
 
     if not show_placeholder and col_key == "__DOCMIN_PER_X__":
         distance_nm = st.number_input(
@@ -2119,11 +2333,11 @@ else:
         )
 
     if not show_placeholder and col_key == "__DOCMIN_PER_Y__":
-        hours_val = st.number_input(
-            "Laikas (h)",
+        trip_nm_for_y = st.number_input(
+            "Maršruto atstumas (NM)",
             min_value=0.0,
-            step=0.5,
-            key="in_hours_val",
+            step=10.0,
+            key="in_trip_nm_y",
         )
 
     st.markdown("<div style='height: 6px'></div>", unsafe_allow_html=True)
@@ -2189,25 +2403,73 @@ else:
                 else:
                     diff_total = float("nan")
             elif col_key == "__DOCMIN_PER_Y__":
-                hrs = float(hours_val)
+                trip_nm = float(trip_nm_for_y)
+
+                econ_total_trip = (
+                    float(res_in.docmin_eur_per_nm) * trip_nm
+                    if np.isfinite(res_in.docmin_eur_per_nm)
+                    else float("nan")
+                )
+                notch_total_trip = (
+                    float(res_in.docnotch_eur_per_nm) * trip_nm
+                    if np.isfinite(res_in.docnotch_eur_per_nm)
+                    else float("nan")
+                )
+
+                gs_econ = (
+                    float(res_in.docmin_eur_per_h / res_in.docmin_eur_per_nm)
+                    if np.isfinite(res_in.docmin_eur_per_h) and np.isfinite(res_in.docmin_eur_per_nm) and res_in.docmin_eur_per_nm > 0
+                    else float("nan")
+                )
+                gs_notch = (
+                    float(res_in.docnotch_eur_per_h / res_in.docnotch_eur_per_nm)
+                    if np.isfinite(res_in.docnotch_eur_per_h) and np.isfinite(res_in.docnotch_eur_per_nm) and res_in.docnotch_eur_per_nm > 0
+                    else float("nan")
+                )
+
+                econ_time_h = (
+                    float(trip_nm / gs_econ)
+                    if np.isfinite(gs_econ) and gs_econ > 0
+                    else float("nan")
+                )
+                notch_time_h = (
+                    float(trip_nm / gs_notch)
+                    if np.isfinite(gs_notch) and gs_notch > 0
+                    else float("nan")
+                )
 
                 docmin_total = (
-                    float(res_in.docmin_eur_per_h) * hrs
-                    if np.isfinite(res_in.docmin_eur_per_h)
+                    float(econ_total_trip / econ_time_h)
+                    if np.isfinite(econ_total_trip) and np.isfinite(econ_time_h) and econ_time_h > 0
                     else float("nan")
                 )
 
                 docnotch_total = (
-                    float(res_in.docnotch_eur_per_h) * hrs
-                    if np.isfinite(res_in.docnotch_eur_per_h)
+                    float(notch_total_trip / notch_time_h)
+                    if np.isfinite(notch_total_trip) and np.isfinite(notch_time_h) and notch_time_h > 0
                     else float("nan")
                 )
 
                 if np.isfinite(docmin_total) and np.isfinite(docnotch_total):
-                    diff_total = float(docnotch_total) - float(docmin_total)
-                    diff_total = round(diff_total, 1)
+                    diff_total = round(float(docnotch_total) - float(docmin_total), 1)
                 else:
                     diff_total = float("nan")
+
+                if (
+                    np.isfinite(econ_total_trip)
+                    and np.isfinite(notch_total_trip)
+                    and np.isfinite(econ_time_h)
+                    and np.isfinite(notch_time_h)
+                ):
+                    st.caption(
+                        "Maršrutas "
+                        f"{trip_nm:g} NM: "
+                        f"ECON laikas = {_fmt_num(econ_time_h)} h, "
+                        f"IASnotch laikas = {_fmt_num(notch_time_h)} h, "
+                        f"DOC ECON maršrutui = {_fmt_eur(econ_total_trip, decimals=1)} EUR, "
+                        f"DOC IASnotch maršrutui = {_fmt_eur(notch_total_trip, decimals=1)} EUR, "
+                        f"sutaupymas maršrutui = {_fmt_eur(notch_total_trip - econ_total_trip, decimals=1)} EUR."
+                    )
             else:
                 mapping = {
                     "V_ECSR_kt": (res_in.v_ecsr_kt, "kt"),
@@ -2236,17 +2498,87 @@ else:
     else:
         if col_key in {"__DOCMIN_PER_X__", "__DOCMIN_PER_Y__"}:
             r1, r2, r3 = st.columns(3, gap="large")
+
+            if col_key == "__DOCMIN_PER_X__":
+                cap1 = "DOCmin rezultatas"
+                cap2 = "DOCnotch rezultatas"
+                unit_txt = "EUR"
+            else:
+                cap1 = "DOCmin vid. per val."
+                cap2 = "DOCnotch vid. per val."
+                unit_txt = "EUR/h"
+
             with r1:
                 v = _fmt_eur(docmin_total, decimals=1) if np.isfinite(docmin_total) else ""
-                _render_result_card(v, "EUR" if v else "", "DOCmin rezultatas", max_width_px=190)
+                _render_result_card(v, unit_txt if v else "", cap1, max_width_px=190)
             with r2:
                 v = _fmt_eur(docnotch_total, decimals=1) if np.isfinite(docnotch_total) else ""
-                _render_result_card(v, "EUR" if v else "", "DOCnotch rezultatas", max_width_px=190)
+                _render_result_card(v, unit_txt if v else "", cap2, max_width_px=190)
             with r3:
                 v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else ""
-                _render_result_card(v, "EUR" if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
+                _render_result_card(v, unit_txt if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
         else:
             _show_result_card(shown_value, shown_unit)
+
+
+def _bp_filter_ui_scenario(graph_id: str, *, summary_tbl0: pd.DataFrame) -> Dict[str, Optional[float]]:
+    meta = _BP_GRAPHS.get(graph_id) or _DOC_GRAPHS[graph_id]
+    x_col = meta["x_col"]
+    fixed: Dict[str, Optional[float]] = {}
+
+    cols = st.columns(3, gap="medium")
+    other_cols = [c for c in _BP_OTHER_COLS if c != x_col]
+
+    for i, col in enumerate(other_cols):
+        label, unit = _GROUP_META.get(col, (col, ""))
+        values = _unique_sorted(summary_tbl0[col]) if col in summary_tbl0.columns else []
+        options = ["nefiksuoti"] + [_fmt_num(v) for v in values] if values else ["nefiksuoti"]
+        with cols[i % 3]:
+            pick = st.selectbox(
+                f"Fiksuoti {label} ({unit})" if unit else f"Fiksuoti {label}",
+                options,
+                key=f"{graph_id}_flt_{col}",
+            )
+        fixed[col] = None if pick == "nefiksuoti" else float(pick)
+
+    fixed[x_col] = None
+    return fixed
+
+
+def _bp_filter_ui_input(graph_id: str) -> Dict[str, Optional[float]]:
+    meta = _BP_GRAPHS.get(graph_id) or _DOC_GRAPHS[graph_id]
+    x_col = meta["x_col"]
+    fixed: Dict[str, Optional[float]] = {x_col: None}
+
+    cols = st.columns(3, gap="medium")
+    other_cols = [c for c in _BP_OTHER_COLS if c != x_col]
+    defaults = {
+        "ZP_ft": float(st.session_state.get("in_fl", 0.0)),
+        "WEIGHT_kg": float(st.session_state.get("in_wt", 0.0)),
+        "ISA_C": float(st.session_state.get("in_isa", 0.0)),
+        "WIND_kt": float(st.session_state.get("in_wind", 0.0)),
+    }
+
+    for i, col in enumerate(other_cols):
+        label, unit = _GROUP_META.get(col, (col, ""))
+        with cols[i % 3]:
+            unfixed = st.checkbox(
+                f"Pažymėkite, jeigu norite „{label}“ vertės nefiksuoti",
+                value=False,
+                key=f"{graph_id}_unfix_{col}",
+            )
+            if unfixed:
+                fixed[col] = None
+            else:
+                value = st.number_input(
+                    f"{label} ({unit})" if unit else f"{label}",
+                    value=float(defaults.get(col, 0.0)),
+                    step=1.0 if col in {"ISA_C", "WIND_kt"} else 500.0,
+                    key=f"{graph_id}_in_{col}",
+                )
+                fixed[col] = float(value)
+
+    return fixed
 
 # ========================= Grafikai =========================
 st.divider()
@@ -2280,7 +2612,63 @@ if mode == "Scenarijus":
             _show_fig(st.session_state["fig_g1"])
             _black_note(st.session_state.get("cap_g1", ""))
 
-    with st.expander("Grafikas 2 — ECON (kt) vs Laiko sąnaudos (eur/h)", expanded=st.session_state["open_g2"]):
+    for gid, meta in _DOC_GRAPHS.items():
+        x_col = meta["x_col"]
+        x_label = meta["x_label"]
+        x_name_lt = meta["x_name_lt"]
+
+        doc_graph_titles = {
+            "d1": "Grafikas 2 — DOC (eur/nm) vs Vėjo komponentė (kt)",
+            "d2": "Grafikas 3 — DOC (eur/nm) vs Masė (kg)",
+            "d3": "Grafikas 4 — DOC (eur/nm) vs Skrydžio aukštis (ft)",
+            "d4": "Grafikas 5 — DOC (eur/nm) vs ISA nuokrypis (°C)",
+        }
+        exp_title = doc_graph_titles[gid]
+        open_key = f"open_{gid}"
+        fig_key = f"fig_{gid}"
+        cap_key = f"cap_{gid}"
+        err_key = f"err_{gid}"
+
+        with st.expander(exp_title, expanded=st.session_state.get(open_key, False)):
+            fixed = _bp_filter_ui_scenario(gid, summary_tbl0=summary_tbl)
+            filtered_local = _filter_summary_by_constants(
+                summary_tbl,
+                zp_ft=fixed.get("ZP_ft"),
+                weight_kg=fixed.get("WEIGHT_kg"),
+                isa_c=fixed.get("ISA_C"),
+                wind_kt=fixed.get("WIND_kt"),
+            )
+
+            candidates = [c for c in _BP_OTHER_COLS if c != x_col]
+            ok, group_col, msg = _validate_breakpoint_request(filtered_local, x_col=x_col, candidates=candidates)
+            if not ok:
+                st.error(msg)
+
+            if st.button("Generuoti DOC grafiką", key=f"btn_{gid}_doc", disabled=not ok):
+                st.session_state[open_key] = True
+                try:
+                    st.session_state[fig_key] = _plot_doc_vs_grouped(
+                        filtered_local,
+                        x_col=x_col,
+                        title=f"DOC priklausomybė nuo {x_name_lt}",
+                        x_label=x_label,
+                        group_col=group_col,
+                    )
+                    st.session_state[cap_key] = _conditions_sentence_from_filters(fixed, x_col=x_col, grouped_by=group_col)
+                    st.session_state[err_key] = ""
+                except Exception as e:
+                    st.session_state[fig_key] = None
+                    st.session_state[cap_key] = ""
+                    st.session_state[err_key] = _normalize_ui_error(e)
+                st.rerun()
+
+            if st.session_state.get(err_key):
+                st.error(st.session_state[err_key])
+            if st.session_state.get(fig_key) is not None:
+                _show_fig(st.session_state[fig_key])
+                _black_note(st.session_state.get(cap_key, ""))
+
+    with st.expander("Grafikas 6 — ECON (kt) vs Laiko sąnaudos (eur/h)", expanded=st.session_state["open_g2"]):
         col1, col2 = st.columns([3, 1], gap="large")
         with col1:
             g2_scn = st.selectbox("Scenarijus", scenario_names, key="g2_scn")
@@ -2304,7 +2692,7 @@ if mode == "Scenarijus":
             _show_fig(st.session_state["fig_g2"])
             _black_note(st.session_state.get("cap_g2", ""))
 
-    with st.expander("Grafikas 3 — ECON (kt) vs Degalų kaina (eur/kg)", expanded=st.session_state["open_g3"]):
+    with st.expander("Grafikas 7 — ECON (kt) vs Degalų kaina (eur/kg)", expanded=st.session_state["open_g3"]):
         col1, col2 = st.columns([3, 1], gap="large")
         with col1:
             g3_scn = st.selectbox("Scenarijus", scenario_names, key="g3_scn")
@@ -2363,7 +2751,79 @@ else:
         if st.session_state["fig_g1"] is not None:
             _show_fig(st.session_state["fig_g1"])
 
-    with st.expander("Grafikas 2 — ECON (kt) vs Laiko sąnaudos (eur/h)", expanded=st.session_state["open_g2"]):
+    for gid, meta in _DOC_GRAPHS.items():
+        x_col = meta["x_col"]
+        x_label = meta["x_label"]
+        x_name_lt = meta["x_name_lt"]
+
+        doc_graph_titles = {
+            "d1": "Grafikas 2 — DOC (eur/nm) vs Vėjo komponentė (kt)",
+            "d2": "Grafikas 3 — DOC (eur/nm) vs Masė (kg)",
+            "d3": "Grafikas 4 — DOC (eur/nm) vs Skrydžio aukštis (ft)",
+            "d4": "Grafikas 5 — DOC (eur/nm) vs ISA nuokrypis (°C)",
+        }
+        exp_title = doc_graph_titles[gid]
+        open_key = f"open_{gid}"
+        fig_key = f"fig_{gid}"
+        cap_key = f"cap_{gid}"
+        err_key = f"err_{gid}"
+
+        with st.expander(exp_title, expanded=st.session_state.get(open_key, False)):
+            fixed_in = _bp_filter_ui_input(gid)
+
+            candidates = [c for c in _BP_OTHER_COLS if c != x_col]
+            ok = True
+            group_col = None
+            msg = ""
+            snapped: Dict[str, float] = {}
+
+            try:
+                filtered_local, snapped = _filter_summary_snapped(summary_tbl, fixed=fixed_in, x_col=x_col)
+                if filtered_local.empty:
+                    raise ValueError("Nėra duomenų pagal pasirinktas fiksuotas reikšmes.")
+                ok, group_col, msg = _validate_breakpoint_request(filtered_local, x_col=x_col, candidates=candidates)
+            except Exception as e:
+                ok = False
+                msg = _normalize_ui_error(e)
+                filtered_local = summary_tbl.iloc[0:0].copy()
+
+            if not ok and msg:
+                st.error(msg)
+
+            if st.button("Generuoti DOC grafiką", key=f"btn_{gid}_doc_input", disabled=not ok):
+                st.session_state[open_key] = True
+                try:
+                    st.session_state[fig_key] = _plot_doc_vs_grouped(
+                        filtered_local,
+                        x_col=x_col,
+                        title=f"DOC priklausomybė nuo {x_name_lt}",
+                        x_label=x_label,
+                        group_col=group_col,
+                    )
+
+                    fixed_for_caption: Dict[str, Optional[float]] = dict(fixed_in)
+                    for k, v in snapped.items():
+                        fixed_for_caption[k] = v
+
+                    st.session_state[cap_key] = _conditions_sentence_from_filters(
+                        fixed_for_caption,
+                        x_col=x_col,
+                        grouped_by=group_col,
+                    )
+                    st.session_state[err_key] = ""
+                except Exception as e:
+                    st.session_state[fig_key] = None
+                    st.session_state[cap_key] = ""
+                    st.session_state[err_key] = _normalize_ui_error(e)
+                st.rerun()
+
+            if st.session_state.get(err_key):
+                st.error(st.session_state[err_key])
+            if st.session_state.get(fig_key) is not None:
+                _show_fig(st.session_state[fig_key])
+                _black_note(st.session_state.get(cap_key, ""))
+
+    with st.expander("Grafikas 6 — ECON (kt) vs Laiko sąnaudos (eur/h)", expanded=st.session_state["open_g2"]):
         c1, c2, c3, c4, c5 = st.columns([1.1, 1.1, 1.1, 1.1, 1.0], gap="small")
         with c1:
             fl = st.number_input("Aukštis (ft)", value=float(st.session_state["in_fl"]), step=500.0, key="g2i_fl")
@@ -2397,7 +2857,7 @@ else:
         if st.session_state["fig_g2"] is not None:
             _show_fig(st.session_state["fig_g2"])
 
-    with st.expander("Grafikas 3 — ECON (kt) vs Degalų kaina (eur/kg)", expanded=st.session_state["open_g3"]):
+    with st.expander("Grafikas 7 — ECON (kt) vs Degalų kaina (eur/kg)", expanded=st.session_state["open_g3"]):
         c1, c2, c3, c4, c5 = st.columns([1.1, 1.1, 1.1, 1.1, 1.0], gap="small")
         with c1:
             fl = st.number_input("Aukštis (ft)", value=float(st.session_state["in_fl"]), step=500.0, key="g3i_fl")
@@ -2431,76 +2891,18 @@ else:
         if st.session_state["fig_g3"] is not None:
             _show_fig(st.session_state["fig_g3"])
 
-
-# --- Breakpoint graphs 4-7 ---
-
-
-def _bp_filter_ui_scenario(graph_id: str, *, summary_tbl0: pd.DataFrame) -> Dict[str, Optional[float]]:
-    meta = _BP_GRAPHS[graph_id]
-    x_col = meta["x_col"]
-    fixed: Dict[str, Optional[float]] = {}
-
-    cols = st.columns(3, gap="medium")
-    other_cols = [c for c in _BP_OTHER_COLS if c != x_col]
-
-    for i, col in enumerate(other_cols):
-        label, unit = _GROUP_META.get(col, (col, ""))
-        values = _unique_sorted(summary_tbl0[col]) if col in summary_tbl0.columns else []
-        options = ["nefiksuoti"] + [f"{v:.0f}" for v in values] if values else ["nefiksuoti"]
-        with cols[i % 3]:
-            pick = st.selectbox(
-                f"Fiksuoti {label} ({unit})" if unit else f"Fiksuoti {label}",
-                options,
-                key=f"{graph_id}_flt_{col}",
-            )
-        fixed[col] = None if pick == "nefiksuoti" else float(pick)
-
-    fixed[x_col] = None
-    return fixed
-
-
-def _bp_filter_ui_input(graph_id: str) -> Dict[str, Optional[float]]:
-    meta = _BP_GRAPHS[graph_id]
-    x_col = meta["x_col"]
-    fixed: Dict[str, Optional[float]] = {x_col: None}
-
-    cols = st.columns(3, gap="medium")
-    other_cols = [c for c in _BP_OTHER_COLS if c != x_col]
-    defaults = {
-        "ZP_ft": float(st.session_state.get("in_fl", 0.0)),
-        "WEIGHT_kg": float(st.session_state.get("in_wt", 0.0)),
-        "ISA_C": float(st.session_state.get("in_isa", 0.0)),
-        "WIND_kt": float(st.session_state.get("in_wind", 0.0)),
-    }
-
-    for i, col in enumerate(other_cols):
-        label, unit = _GROUP_META.get(col, (col, ""))
-        with cols[i % 3]:
-            unfixed = st.checkbox(
-                f"Pažymėkite, jeigu norite „{label}“ vertės nefiksuoti",
-                value=False,
-                key=f"{graph_id}_unfix_{col}",
-            )
-            if unfixed:
-                fixed[col] = None
-            else:
-                value = st.number_input(
-                    f"{label} ({unit})" if unit else f"{label}",
-                    value=float(defaults.get(col, 0.0)),
-                    step=1.0 if col in {"ISA_C", "WIND_kt"} else 500.0,
-                    key=f"{graph_id}_in_{col}",
-                )
-                fixed[col] = float(value)
-
-    return fixed
-
-
 for gid, meta in _BP_GRAPHS.items():
     x_col = meta["x_col"]
     x_label = meta["x_label"]
     x_name_lt = meta["x_name_lt"]
 
-    exp_title = f"Grafikas {gid[-1]} — Lūžio taškai vs {x_label}"
+    _bp_title_map = {
+        "g4": "Grafikas 8 — Lūžio taškai vs Vėjo komponentė (kt)",
+        "g5": "Grafikas 9 — Lūžio taškai vs Masė (kg)",
+        "g6": "Grafikas 10 — Lūžio taškai vs Skrydžio aukštis (ft)",
+        "g7": "Grafikas 11 — Lūžio taškai vs ISA nuokrypis (°C)",
+    }
+    exp_title = _bp_title_map[gid]
     open_key = f"open_{gid}"
     fig_key_time = f"fig_{gid}_time"
     fig_key_fuel = f"fig_{gid}_fuel"
@@ -2611,7 +3013,16 @@ for gid, meta in _BP_GRAPHS.items():
                         group_col=group_col,
                         fmt="{:.2f} €/kg",
                     )
-                    st.session_state[cap_key] = ""
+
+                    fixed_for_caption: Dict[str, Optional[float]] = dict(fixed_in)
+                    for k, v in snapped.items():
+                        fixed_for_caption[k] = v
+
+                    st.session_state[cap_key] = _conditions_sentence_from_filters(
+                        fixed_for_caption,
+                        x_col=x_col,
+                        grouped_by=group_col,
+                    )
                     st.session_state[err_key] = ""
                 except Exception as e:
                     st.session_state[fig_key_time] = None
@@ -2626,6 +3037,8 @@ for gid, meta in _BP_GRAPHS.items():
                 _show_fig(st.session_state[fig_key_time])
             if st.session_state.get(fig_key_fuel) is not None:
                 _show_fig(st.session_state[fig_key_fuel])
+            if st.session_state.get(fig_key_time) is not None or st.session_state.get(fig_key_fuel) is not None:
+                _black_note(st.session_state.get(cap_key, ""))
 
 # ========================= Summary tables + download =========================
 st.divider()
@@ -2706,12 +3119,6 @@ display_tbl = display_tbl.rename(columns=rename_map)
 for col in [
     "Aukštis, ft",
     "Masė, kg",
-    "DOCmin, eur/h",
-    "DOCnotch, eur/h",
-    "DOCmin, eur/nm",
-    "DOCnotch, eur/nm",
-    "DOCmin_100nm, eur",
-    "DOCnotch_100nm, eur",
 ]:
     if col in display_tbl.columns:
         vals = pd.to_numeric(display_tbl[col], errors="coerce")
@@ -2742,8 +3149,6 @@ ordered_cols = [
     "Laiko sąnaudų lūžio taškas, eur/h",
     "Degalų sąnaudų lūžio taškas, eur/kg",
 
-    "DOCmin, eur/h",
-    "DOCnotch, eur/h",
     "DOCmin, eur/nm",
     "DOCnotch, eur/nm",
 ]

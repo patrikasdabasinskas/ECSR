@@ -1627,9 +1627,9 @@ def _init_state() -> None:
     st.session_state.setdefault("in_isa", 0.0)
     st.session_state.setdefault("in_wind", 0.0)
     st.session_state.setdefault("in_metric", "Pasirinkite...")
-    st.session_state.setdefault("in_dist_nm", 100.0)
+    st.session_state.setdefault("in_dist_nm", 0.0)
     st.session_state.setdefault("in_hours_val", 1.0)
-    st.session_state.setdefault("quick_doc_dist_nm", 100.0)
+    st.session_state.setdefault("quick_doc_dist_nm", 0.0)
     st.session_state.setdefault("mode", "Scenarijus") 
     st.session_state.setdefault("in_last_res", None)
     st.session_state.setdefault("in_err", "")
@@ -1954,7 +1954,7 @@ if mode == "Scenarijus":
 
     show_placeholder = (pick_scn == "Pasirinkite..." or metric_map[pick_metric_label] == "__NONE__")
 
-    distance_nm = 100.0
+    distance_nm = 0.0
     hours_val = 1.0
     is_docmin_per_x = (not show_placeholder) and (metric_map[pick_metric_label] == "__DOCMIN_PER_X__")
     is_docmin_per_y = (not show_placeholder) and (metric_map[pick_metric_label] == "__DOCMIN_PER_Y__")
@@ -2108,7 +2108,7 @@ else:
     col_key = metric_map[pick_metric_label]
     show_placeholder = (col_key == "__NONE__")
 
-    distance_nm = float(st.session_state.get("in_dist_nm", 100.0))
+    distance_nm = float(st.session_state.get("in_dist_nm", 0.0))
     hours_val = float(st.session_state.get("in_hours_val", 1.0))
 
     if not show_placeholder and col_key == "__DOCMIN_PER_X__":

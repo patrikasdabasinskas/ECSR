@@ -70,7 +70,6 @@ class Config:
     epsilon_break_even: float = 0.01
 
     breakpoint_speed_tol_kt: float = 1.0
-    breakpoint_distance_nm: float = 100.0
     breakpoint_saving_mode: str = "default"  # "default" | "custom"
     breakpoint_saving_eur: float = 2.0
 
@@ -819,6 +818,8 @@ class InterpQuickResult:
     ecsr_high_kt: float
     docmin_eur_per_nm: float
     docnotch_eur_per_nm: float
+    docmin_eur_per_h: float
+    docnotch_eur_per_h: float
     be_time_cost_eur_per_hr: float
     be_fuel_price_eur_per_kg: float
 
@@ -969,6 +970,8 @@ def compute_quick_metrics_interpolated(
         "ECSR_high_kt",
         "DOCmin_EurPerNM",
         "DOCnotch_EurPerNM",
+        "DOCmin_EurPerHr",
+        "DOCnotch_EurPerHr",
         "BreakEven_TIME_COST_EurPerHr",
         "BreakEven_FUEL_PRICE_EurPerKg",
     ]
@@ -980,6 +983,8 @@ def compute_quick_metrics_interpolated(
     e_hi = _numeric_col(df, "ECSR_high_kt")
     docmin = _numeric_col(df, "DOCmin_EurPerNM")
     docnotch = _numeric_col(df, "DOCnotch_EurPerNM")
+    docmin_h = _numeric_col(df, "DOCmin_EurPerHr")
+    docnotch_h = _numeric_col(df, "DOCnotch_EurPerHr")
     be_tc = _numeric_col(df, "BreakEven_TIME_COST_EurPerHr")
     be_fp = _numeric_col(df, "BreakEven_FUEL_PRICE_EurPerKg")
 
@@ -997,6 +1002,8 @@ def compute_quick_metrics_interpolated(
         ecsr_high_kt=float(max(lo_v, hi_v)),
         docmin_eur_per_nm=_interp_scalar_4d(pts, q, docmin, name="DOCmin_EurPerNM"),
         docnotch_eur_per_nm=_interp_scalar_4d(pts, q, docnotch, name="DOCnotch_EurPerNM"),
+        docmin_eur_per_h=_interp_scalar_4d(pts, q, docmin_h, name="DOCmin_EurPerHr"),
+        docnotch_eur_per_h=_interp_scalar_4d(pts, q, docnotch_h, name="DOCnotch_EurPerHr"),
         be_time_cost_eur_per_hr=_interp_scalar_4d(pts, q, be_tc, name="BreakEven_TIME_COST_EurPerHr"),
         be_fuel_price_eur_per_kg=_interp_scalar_4d(pts, q, be_fp, name="BreakEven_FUEL_PRICE_EurPerKg"),
     )
@@ -1367,9 +1374,15 @@ def _use_money_gate(cfg: Config) -> bool:
     return str(cfg.breakpoint_saving_mode).strip().lower() == "custom"
 
 
-def _delta_doc_total_from_per_nm(doc_notch_per_nm: np.ndarray, doc_min_per_nm: np.ndarray, cfg: Config) -> np.ndarray:
-    delta_per_nm = np.asarray(doc_notch_per_nm, float) - np.asarray(doc_min_per_nm, float)
-    return delta_per_nm * float(cfg.breakpoint_distance_nm)
+def _delta_doc_total_from_per_nm(
+    doc_notch_per_nm: np.ndarray,
+    doc_min_per_nm: np.ndarray,
+    gs_notch_kt: np.ndarray,
+    gs_econ_kt: np.ndarray,
+) -> np.ndarray:
+    doc_notch_per_h = np.asarray(doc_notch_per_nm, float) * np.asarray(gs_notch_kt, float)
+    doc_econ_per_h = np.asarray(doc_min_per_nm, float) * np.asarray(gs_econ_kt, float)
+    return doc_notch_per_h - doc_econ_per_h
 
 
 def _first_true_x(x: np.ndarray, cond: np.ndarray) -> float:
@@ -1433,7 +1446,15 @@ def compute_threshold_x_time_break(sc: Dict[str, Any], cfg: Config) -> Dict[str,
     speed_ok = delta_v >= float(cfg.breakpoint_speed_tol_kt)
 
     if _use_money_gate(cfg):
-        delta_eur = _delta_doc_total_from_per_nm(doc_notch, doc_min, cfg)
+        fuel_itp, time_itp, _ = _build_fuel_time_interpolators(sc)
+
+        gs_econ = 1.0 / time_itp(v_econ)
+        gs_notch = np.full_like(v_econ, np.nan, dtype=float)
+
+        v_notch_arr = np.full_like(v_econ, v_notch, dtype=float)
+        gs_notch[:] = 1.0 / time_itp(v_notch_arr)
+
+        delta_eur = _delta_doc_total_from_per_nm(doc_notch, doc_min, gs_notch, gs_econ)
         money_ok = delta_eur >= float(cfg.breakpoint_saving_eur)
     else:
         money_ok = np.ones_like(speed_ok, dtype=bool)
@@ -1471,7 +1492,12 @@ def _worth_at_fuel_price(sc: Dict[str, Any], fp: float, cfg: Config) -> bool:
         return False
 
     if _use_money_gate(cfg):
-        delta_eur = (doc_notch - doc_min) * float(cfg.breakpoint_distance_nm)
+        fuel_itp, time_itp, _ = _build_fuel_time_interpolators(sc)
+
+        gs_opt = float(1.0 / time_itp(np.array([v_opt]))[0])
+        gs_notch = float(1.0 / time_itp(np.array([v_notch]))[0])
+
+        delta_eur = (float(doc_notch) * gs_notch) - (float(doc_min) * gs_opt)
         return bool(delta_eur >= float(cfg.breakpoint_saving_eur))
 
     return True
@@ -1534,7 +1560,13 @@ def compute_threshold_x_fuel_break(sc: Dict[str, Any], cfg: Config) -> Dict[str,
         speed_ok = delta_v >= float(cfg.breakpoint_speed_tol_kt)
 
         if _use_money_gate(cfg):
-            delta_eur = _delta_doc_total_from_per_nm(doc_notch2, doc_min2, cfg)
+            fuel_itp, time_itp, _ = _build_fuel_time_interpolators(sc)
+
+            gs_econ2 = 1.0 / time_itp(v_econ2)
+            v_notch_arr = np.full_like(v_econ2, v_notch, dtype=float)
+            gs_notch2 = 1.0 / time_itp(v_notch_arr)
+
+            delta_eur = _delta_doc_total_from_per_nm(doc_notch2, doc_min2, gs_notch2, gs_econ2)
             money_ok = delta_eur >= float(cfg.breakpoint_saving_eur)
         else:
             money_ok = np.ones_like(speed_ok, dtype=bool)
@@ -1592,6 +1624,14 @@ def build_summary_table(scenarios: List[Dict[str, Any]], cfg: Config) -> pd.Data
         docmin = float(opt["DOC_min_EurPerNM"])
         docnotch = float(opt["DOC_notch_EurPerNM"])
 
+        fuel_itp, time_itp, _ = _build_fuel_time_interpolators(sc)
+
+        gs_ecsr = float(1.0 / time_itp(np.array([v_ecsr], dtype=float))[0])
+        gs_notch = float(1.0 / time_itp(np.array([float(sc["V_notch"])], dtype=float))[0])
+
+        docmin_per_h = float(docmin * gs_ecsr) if np.isfinite(docmin) and np.isfinite(gs_ecsr) else float("nan")
+        docnotch_per_h = float(docnotch * gs_notch) if np.isfinite(docnotch) and np.isfinite(gs_notch) else float("nan")
+
         ecsr = compute_ecsr_band(sc, tc_op, cfg)
         low = float(ecsr["ECSR_low_kt"])
         high = float(ecsr["ECSR_high_kt"])
@@ -1610,13 +1650,16 @@ def build_summary_table(scenarios: List[Dict[str, Any]], cfg: Config) -> pd.Data
             "V_ECSR_kt": v_ecsr,
             "ECSR_low_kt": low,
             "ECSR_high_kt": high,
+            "DOCmin_EurPerHr": docmin_per_h,
+            "DOCnotch_EurPerHr": docnotch_per_h,
             "DOCmin_EurPerNM": docmin,
             "DOCnotch_EurPerNM": docnotch,
         }
 
         for d in cfg.distances_nm:
-            row[f"DOCmin_{d}NM_EUR"] = docmin * float(d)
-            row[f"DOCnotch_{d}NM_EUR"] = docnotch * float(d)
+            if int(d) == 100:
+                row[f"DOCmin_{d}NM_EUR"] = docmin * float(d)
+                row[f"DOCnotch_{d}NM_EUR"] = docnotch * float(d)
 
         rows.append(row)
 

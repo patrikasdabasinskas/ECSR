@@ -70,8 +70,10 @@ class Config:
     epsilon_break_even: float = 0.01
 
     breakpoint_speed_tol_kt: float = 1.0
-    breakpoint_saving_mode: str = "default"  # "default" | "custom"
-    breakpoint_saving_eur: float = 2.0
+    breakpoint_saving_mode: str = "default"  # "default" | "per_nm" | "per_hour_trip"
+    breakpoint_saving_eur_per_nm: float = 0.0
+    breakpoint_saving_eur_per_hour: float = 0.0
+    breakpoint_trip_distance_nm: float = 0.0
 
     delim_scan_lines: int = 25
     delim_candidates: Tuple[str, ...] = (",", ";", "\t")
@@ -1371,7 +1373,7 @@ def interpolate_curve_knn_from_scenarios(
 
 
 def _use_money_gate(cfg: Config) -> bool:
-    return str(cfg.breakpoint_saving_mode).strip().lower() == "custom"
+    return str(cfg.breakpoint_saving_mode).strip().lower() in {"per_nm", "per_hour_trip"}
 
 
 def _delta_doc_total_from_per_nm(
@@ -1383,6 +1385,26 @@ def _delta_doc_total_from_per_nm(
     doc_notch_per_h = np.asarray(doc_notch_per_nm, float) * np.asarray(gs_notch_kt, float)
     doc_econ_per_h = np.asarray(doc_min_per_nm, float) * np.asarray(gs_econ_kt, float)
     return doc_notch_per_h - doc_econ_per_h
+
+def _delta_doc_trip_avg_per_hour(
+    doc_notch_per_nm: np.ndarray,
+    doc_min_per_nm: np.ndarray,
+    gs_notch_kt: np.ndarray,
+    gs_econ_kt: np.ndarray,
+    trip_distance_nm: float,
+) -> np.ndarray:
+    dist = float(trip_distance_nm)
+
+    doc_notch_total = np.asarray(doc_notch_per_nm, float) * dist
+    doc_econ_total = np.asarray(doc_min_per_nm, float) * dist
+
+    time_notch_h = dist / np.asarray(gs_notch_kt, float)
+    time_econ_h = dist / np.asarray(gs_econ_kt, float)
+
+    avg_doc_notch_per_h = doc_notch_total / time_notch_h
+    avg_doc_econ_per_h = doc_econ_total / time_econ_h
+
+    return avg_doc_notch_per_h - avg_doc_econ_per_h
 
 
 def _first_true_x(x: np.ndarray, cond: np.ndarray) -> float:
@@ -1449,13 +1471,27 @@ def compute_threshold_x_time_break(sc: Dict[str, Any], cfg: Config) -> Dict[str,
         fuel_itp, time_itp, _ = _build_fuel_time_interpolators(sc)
 
         gs_econ = 1.0 / time_itp(v_econ)
-        gs_notch = np.full_like(v_econ, np.nan, dtype=float)
-
         v_notch_arr = np.full_like(v_econ, v_notch, dtype=float)
-        gs_notch[:] = 1.0 / time_itp(v_notch_arr)
+        gs_notch = 1.0 / time_itp(v_notch_arr)
 
-        delta_eur = _delta_doc_total_from_per_nm(doc_notch, doc_min, gs_notch, gs_econ)
-        money_ok = delta_eur >= float(cfg.breakpoint_saving_eur)
+        mode = str(cfg.breakpoint_saving_mode).strip().lower()
+
+        if mode == "per_nm":
+            delta_val = doc_notch - doc_min
+            money_ok = delta_val >= float(cfg.breakpoint_saving_eur_per_nm)
+
+        elif mode == "per_hour_trip":
+            delta_val = _delta_doc_trip_avg_per_hour(
+                doc_notch_per_nm=doc_notch,
+                doc_min_per_nm=doc_min,
+                gs_notch_kt=gs_notch,
+                gs_econ_kt=gs_econ,
+                trip_distance_nm=float(cfg.breakpoint_trip_distance_nm),
+            )
+            money_ok = delta_val >= float(cfg.breakpoint_saving_eur_per_hour)
+
+        else:
+            money_ok = np.ones_like(speed_ok, dtype=bool)
     else:
         money_ok = np.ones_like(speed_ok, dtype=bool)
 
@@ -1497,8 +1533,23 @@ def _worth_at_fuel_price(sc: Dict[str, Any], fp: float, cfg: Config) -> bool:
         gs_opt = float(1.0 / time_itp(np.array([v_opt]))[0])
         gs_notch = float(1.0 / time_itp(np.array([v_notch]))[0])
 
-        delta_eur = (float(doc_notch) * gs_notch) - (float(doc_min) * gs_opt)
-        return bool(delta_eur >= float(cfg.breakpoint_saving_eur))
+        mode = str(cfg.breakpoint_saving_mode).strip().lower()
+
+        if mode == "per_nm":
+            delta_val = float(doc_notch - doc_min)
+            return bool(delta_val >= float(cfg.breakpoint_saving_eur_per_nm))
+
+        elif mode == "per_hour_trip":
+            delta_val = float(
+                _delta_doc_trip_avg_per_hour(
+                    doc_notch_per_nm=np.array([doc_notch], dtype=float),
+                    doc_min_per_nm=np.array([doc_min], dtype=float),
+                    gs_notch_kt=np.array([gs_notch], dtype=float),
+                    gs_econ_kt=np.array([gs_opt], dtype=float),
+                    trip_distance_nm=float(cfg.breakpoint_trip_distance_nm),
+                )[0]
+            )
+            return bool(delta_val >= float(cfg.breakpoint_saving_eur_per_hour))
 
     return True
 
@@ -1566,8 +1617,24 @@ def compute_threshold_x_fuel_break(sc: Dict[str, Any], cfg: Config) -> Dict[str,
             v_notch_arr = np.full_like(v_econ2, v_notch, dtype=float)
             gs_notch2 = 1.0 / time_itp(v_notch_arr)
 
-            delta_eur = _delta_doc_total_from_per_nm(doc_notch2, doc_min2, gs_notch2, gs_econ2)
-            money_ok = delta_eur >= float(cfg.breakpoint_saving_eur)
+            mode = str(cfg.breakpoint_saving_mode).strip().lower()
+
+            if mode == "per_nm":
+                delta_val = doc_notch2 - doc_min2
+                money_ok = delta_val >= float(cfg.breakpoint_saving_eur_per_nm)
+
+            elif mode == "per_hour_trip":
+                delta_val = _delta_doc_trip_avg_per_hour(
+                    doc_notch_per_nm=doc_notch2,
+                    doc_min_per_nm=doc_min2,
+                    gs_notch_kt=gs_notch2,
+                    gs_econ_kt=gs_econ2,
+                    trip_distance_nm=float(cfg.breakpoint_trip_distance_nm),
+                )
+                money_ok = delta_val >= float(cfg.breakpoint_saving_eur_per_hour)
+
+            else:
+                money_ok = np.ones_like(speed_ok, dtype=bool)
         else:
             money_ok = np.ones_like(speed_ok, dtype=bool)
 

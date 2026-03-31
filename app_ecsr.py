@@ -1921,8 +1921,8 @@ metric_items: List[Tuple[str, str]] = [
     ("DOCnotch_perNM (EUR/NM)", "DOCnotch_EurPerNM"),
     ("DOCmin_perH (EUR/h)", "DOCmin_EurPerHr"),
     ("DOCnotch_perH (EUR/h)", "DOCnotch_EurPerHr"),
-    ("DOCmin_perX (EUR)", "__DOCMIN_PER_X__"),
-    ("DOCmin_perY (EUR)", "__DOCMIN_PER_Y__"),
+    ("DOC_perX (EUR)", "__DOCMIN_PER_X__"),
+    ("DOC_perY (EUR)", "__DOCMIN_PER_Y__"),
     ("Laiko sąnaudų lūžio taškas (€/h)", "__BREAK_TIME__"),
     ("Degalų sąnaudų lūžio taškas (€/kg)", "__BREAK_FUEL__"),
 ]
@@ -2032,17 +2032,15 @@ if mode == "Scenarijus":
                     diff_total = round(diff_total, 1)
 
             elif col_key == "__DOCMIN_PER_Y__":
-                v_min_per_nm = float(pd.to_numeric(row.get("DOCmin_EurPerNM", np.nan), errors="coerce"))
-                v_notch_per_nm = float(pd.to_numeric(row.get("DOCnotch_EurPerNM", np.nan), errors="coerce"))
-                v_econ_kt = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
-                v_notch_kt = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
+                docmin_per_h = float(pd.to_numeric(row.get("DOCmin_EurPerHr", np.nan), errors="coerce"))
+                docnotch_per_h = float(pd.to_numeric(row.get("DOCnotch_EurPerHr", np.nan), errors="coerce"))
                 hrs = float(hours_val)
 
-                if np.isfinite(v_min_per_nm) and np.isfinite(v_econ_kt) and np.isfinite(hrs):
-                    docmin_total = float(v_min_per_nm) * float(v_econ_kt) * hrs
+                if np.isfinite(docmin_per_h) and np.isfinite(hrs):
+                    docmin_total = float(docmin_per_h) * hrs
 
-                if np.isfinite(v_notch_per_nm) and np.isfinite(v_notch_kt) and np.isfinite(hrs):
-                    docnotch_total = float(v_notch_per_nm) * float(v_notch_kt) * hrs
+                if np.isfinite(docnotch_per_h) and np.isfinite(hrs):
+                    docnotch_total = float(docnotch_per_h) * hrs
 
                 if np.isfinite(docmin_total) and np.isfinite(docnotch_total):
                     diff_total = float(docnotch_total) - float(docmin_total)
@@ -2194,14 +2192,14 @@ else:
                 hrs = float(hours_val)
 
                 docmin_total = (
-                    float(res_in.docmin_eur_per_nm) * float(res_in.v_ecsr_kt) * hrs
-                    if np.isfinite(res_in.docmin_eur_per_nm) and np.isfinite(res_in.v_ecsr_kt)
+                    float(res_in.docmin_eur_per_h) * hrs
+                    if np.isfinite(res_in.docmin_eur_per_h)
                     else float("nan")
                 )
 
                 docnotch_total = (
-                    float(res_in.docnotch_eur_per_nm) * float(res_in.v_notch_kt) * hrs
-                    if np.isfinite(res_in.docnotch_eur_per_nm) and np.isfinite(res_in.v_notch_kt)
+                    float(res_in.docnotch_eur_per_h) * hrs
+                    if np.isfinite(res_in.docnotch_eur_per_h)
                     else float("nan")
                 )
 

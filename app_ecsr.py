@@ -395,12 +395,12 @@ def _build_economical_scenarios_table(summary_tbl: pd.DataFrame, cfg: Config) ->
             ],
             "IASnotch (kt)": df["V_notch_kt"].round(0).astype(int),
             "ΔV (kt)": df["DeltaV_kt"].round(0).astype(int),
-            "DOC ECON (EUR/NM)": df["DOCmin_EurPerNM"].round(3),
-            "DOC IASnotch (EUR/NM)": df["DOCnotch_EurPerNM"].round(3),
-            "DOC skirtumas (EUR/NM)": df["DocDiff_EurPerNM"].round(3),
-            "DOC ECON (EUR/h)": df["DOCmin_EurPerHr"].round(1),
-            "DOC IASnotch (EUR/h)": df["DOCnotch_EurPerHr"].round(1),
-            "DOC skirtumas (EUR/h)": df["DocDiff_EurPerHr"].round(1),
+            "DOC ECON (EUR/NM)": df["DOCmin_EurPerNM"].map(lambda v: f"{int(round(v))}" if np.isfinite(v) else ""),
+            "DOC IASnotch (EUR/NM)": df["DOCnotch_EurPerNM"].map(lambda v: f"{int(round(v))}" if np.isfinite(v) else ""),
+            "DOC skirtumas (EUR/NM)": df["DocDiff_EurPerNM"].map(lambda v: f"{int(round(v))}" if np.isfinite(v) else ""),
+            "DOC ECON (EUR/h)": df["DOCmin_EurPerHr"].map(lambda v: f"{int(round(v))}" if np.isfinite(v) else ""),
+            "DOC IASnotch (EUR/h)": df["DOCnotch_EurPerHr"].map(lambda v: f"{int(round(v))}" if np.isfinite(v) else ""),
+            "DOC skirtumas (EUR/h)": df["DocDiff_EurPerHr"].map(lambda v: f"{int(round(v))}" if np.isfinite(v) else ""),
         }
     )
     return out
@@ -1966,7 +1966,6 @@ if mode == "Scenarijus":
             distance_nm = st.number_input(
                 "Atstumas (NM)",
                 min_value=0.0,
-                value=float(st.session_state.get("quick_doc_dist_nm", 0.0)),
                 step=10.0,
                 key="quick_doc_dist_nm",
             )
@@ -2115,7 +2114,6 @@ else:
         distance_nm = st.number_input(
             "Atstumas (NM)",
             min_value=0.0,
-            value=float(st.session_state.get("in_dist_nm", 0.0)),
             step=10.0,
             key="in_dist_nm",
         )
@@ -2705,7 +2703,16 @@ for d in cfg.distances_nm:
 
 display_tbl = display_tbl.rename(columns=rename_map)
 
-for col in ["Aukštis, ft", "Masė, kg"]:
+for col in [
+    "Aukštis, ft",
+    "Masė, kg",
+    "DOCmin, eur/h",
+    "DOCnotch, eur/h",
+    "DOCmin, eur/nm",
+    "DOCnotch, eur/nm",
+    "DOCmin_100nm, eur",
+    "DOCnotch_100nm, eur",
+]:
     if col in display_tbl.columns:
         vals = pd.to_numeric(display_tbl[col], errors="coerce")
         display_tbl[col] = vals.map(lambda v: f"{int(round(v))}" if np.isfinite(v) else "")

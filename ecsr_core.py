@@ -1375,17 +1375,6 @@ def interpolate_curve_knn_from_scenarios(
 def _use_money_gate(cfg: Config) -> bool:
     return str(cfg.breakpoint_saving_mode).strip().lower() in {"per_nm", "per_hour_trip"}
 
-
-def _delta_doc_total_from_per_nm(
-    doc_notch_per_nm: np.ndarray,
-    doc_min_per_nm: np.ndarray,
-    gs_notch_kt: np.ndarray,
-    gs_econ_kt: np.ndarray,
-) -> np.ndarray:
-    doc_notch_per_h = np.asarray(doc_notch_per_nm, float) * np.asarray(gs_notch_kt, float)
-    doc_econ_per_h = np.asarray(doc_min_per_nm, float) * np.asarray(gs_econ_kt, float)
-    return doc_notch_per_h - doc_econ_per_h
-
 def _delta_doc_trip_avg_per_hour(
     doc_notch_per_nm: np.ndarray,
     doc_min_per_nm: np.ndarray,
@@ -1398,13 +1387,10 @@ def _delta_doc_trip_avg_per_hour(
     doc_notch_total = np.asarray(doc_notch_per_nm, float) * dist
     doc_econ_total = np.asarray(doc_min_per_nm, float) * dist
 
-    time_notch_h = dist / np.asarray(gs_notch_kt, float)
     time_econ_h = dist / np.asarray(gs_econ_kt, float)
 
-    avg_doc_notch_per_h = doc_notch_total / time_notch_h
-    avg_doc_econ_per_h = doc_econ_total / time_econ_h
-
-    return avg_doc_notch_per_h - avg_doc_econ_per_h
+    saving_total_trip = doc_notch_total - doc_econ_total
+    return saving_total_trip / time_econ_h
 
 
 def _first_true_x(x: np.ndarray, cond: np.ndarray) -> float:

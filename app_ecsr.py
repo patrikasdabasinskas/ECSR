@@ -181,14 +181,17 @@ def _trip_saving_per_hour_from_totals(
     docmin_per_nm: float,
     docnotch_per_nm: float,
     docmin_per_h: float,
+    docnotch_per_h: float,
     trip_nm: float,
 ) -> float:
     if not (
         np.isfinite(docmin_per_nm)
         and np.isfinite(docnotch_per_nm)
         and np.isfinite(docmin_per_h)
+        and np.isfinite(docnotch_per_h)
         and np.isfinite(trip_nm)
         and docmin_per_nm > 0
+        and docnotch_per_nm > 0
         and trip_nm > 0
     ):
         return float("nan")
@@ -197,15 +200,42 @@ def _trip_saving_per_hour_from_totals(
     notch_total_trip = float(docnotch_per_nm) * float(trip_nm)
 
     gs_econ = float(docmin_per_h) / float(docmin_per_nm)
+    gs_notch = float(docnotch_per_h) / float(docnotch_per_nm)
+
     if not np.isfinite(gs_econ) or gs_econ <= 0:
+        return float("nan")
+    if not np.isfinite(gs_notch) or gs_notch <= 0:
         return float("nan")
 
     econ_time_h = float(trip_nm) / gs_econ
+    notch_time_h = float(trip_nm) / gs_notch
+
     if not np.isfinite(econ_time_h) or econ_time_h <= 0:
+        return float("nan")
+    if not np.isfinite(notch_time_h) or notch_time_h <= 0:
         return float("nan")
 
     saving_total_trip = float(notch_total_trip - econ_total_trip)
-    return float(saving_total_trip / econ_time_h)
+    return float(saving_total_trip / notch_time_h)
+
+
+def _trip_total_saving_eur(
+    *,
+    docmin_per_nm: float,
+    docnotch_per_nm: float,
+    trip_nm: float,
+) -> float:
+    if not (
+        np.isfinite(docmin_per_nm)
+        and np.isfinite(docnotch_per_nm)
+        and np.isfinite(trip_nm)
+        and trip_nm > 0
+    ):
+        return float("nan")
+
+    econ_total_trip = float(docmin_per_nm) * float(trip_nm)
+    notch_total_trip = float(docnotch_per_nm) * float(trip_nm)
+    return float(notch_total_trip - econ_total_trip)
 
 
 def _group_label(group_col: str, group_val: float) -> str:
@@ -410,6 +440,17 @@ def _build_economical_scenarios_table(summary_tbl: pd.DataFrame, cfg: Config) ->
     if not set(need).issubset(summary_tbl.columns):
         return pd.DataFrame()
 
+    dist_cols: List[int] = [int(d) for d in getattr(cfg, "distances_nm", ()) if int(d) == 100]
+    for d in dist_cols:
+        need.extend(
+            [
+                f"DOCmin_{d}NM_EUR",
+                f"DOCnotch_{d}NM_EUR",
+            ]
+        )
+
+    need = [c for c in need if c in summary_tbl.columns]
+
     df = summary_tbl[need].copy()
     for col in need[1:]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -422,30 +463,47 @@ def _build_economical_scenarios_table(summary_tbl: pd.DataFrame, cfg: Config) ->
     df["DeltaV_kt"] = df["V_notch_kt"] - df["V_ECSR_kt"]
     df["DocDiff_EurPerNM"] = df["DOCnotch_EurPerNM"] - df["DOCmin_EurPerNM"]
 
+    for d in dist_cols:
+        min_col = f"DOCmin_{d}NM_EUR"
+        notch_col = f"DOCnotch_{d}NM_EUR"
+        if min_col in df.columns and notch_col in df.columns:
+            df[f"DocDiff_{d}NM_EUR"] = df[notch_col] - df[min_col]
+
     df = df.loc[df["DeltaV_kt"] >= tol_kt].copy()
     if df.empty:
         return pd.DataFrame()
 
     df = df.sort_values(by="ScenarioName", key=lambda s: s.map(_scenario_sort_key)).reset_index(drop=True)
 
-    out = pd.DataFrame(
-        {
-            "Bandymas": df["ScenarioName"].map(_scenario_trial_label),
-            "ECON (kt)": df["V_ECSR_kt"].round(0).astype(int),
-            "ECSR": [
-                f"{int(round(min(lo, hi)))}"
-                if int(round(min(lo, hi))) == int(round(max(lo, hi)))
-                else f"{int(round(min(lo, hi)))}–{int(round(max(lo, hi)))}"
-                for lo, hi in zip(df["ECSR_low_kt"].tolist(), df["ECSR_high_kt"].tolist())
-            ],
-            "IASnotch (kt)": df["V_notch_kt"].round(0).astype(int),
-            "ΔV (kt)": df["DeltaV_kt"].round(0).astype(int),
-            "DOC ECON (EUR/NM)": df["DOCmin_EurPerNM"].map(lambda v: f"{int(round(v))}" if np.isfinite(v) else ""),
-            "DOC IASnotch (EUR/NM)": df["DOCnotch_EurPerNM"].map(lambda v: f"{int(round(v))}" if np.isfinite(v) else ""),
-            "DOC skirtumas (EUR/NM)": df["DocDiff_EurPerNM"].map(lambda v: f"{int(round(v))}" if np.isfinite(v) else ""),
-        }
-    )
-    return out
+    out_data: Dict[str, Any] = {
+        "Bandymas": df["ScenarioName"].map(_scenario_trial_label),
+        "ECON (kt)": df["V_ECSR_kt"].round(0).astype(int),
+        "ECSR": [
+            f"{int(round(min(lo, hi)))}"
+            if int(round(min(lo, hi))) == int(round(max(lo, hi)))
+            else f"{int(round(min(lo, hi)))}–{int(round(max(lo, hi)))}"
+            for lo, hi in zip(df["ECSR_low_kt"].tolist(), df["ECSR_high_kt"].tolist())
+        ],
+        "IASnotch (kt)": df["V_notch_kt"].round(0).astype(int),
+        "ΔV (kt)": df["DeltaV_kt"].round(0).astype(int),
+        "DOC ECON (EUR/NM)": df["DOCmin_EurPerNM"].map(lambda v: f"{float(v):.3f}" if np.isfinite(v) else ""),
+        "DOC IASnotch (EUR/NM)": df["DOCnotch_EurPerNM"].map(lambda v: f"{float(v):.3f}" if np.isfinite(v) else ""),
+        "DOC skirtumas (EUR/NM)": df["DocDiff_EurPerNM"].map(lambda v: f"{float(v):.3f}" if np.isfinite(v) else ""),
+    }
+
+    for d in dist_cols:
+        min_col = f"DOCmin_{d}NM_EUR"
+        notch_col = f"DOCnotch_{d}NM_EUR"
+        diff_col = f"DocDiff_{d}NM_EUR"
+
+        if min_col in df.columns:
+            out_data[f"DOC ECON {d}NM (EUR)"] = df[min_col].map(lambda v: f"{float(v):.1f}" if np.isfinite(v) else "")
+        if notch_col in df.columns:
+            out_data[f"DOC IASnotch {d}NM (EUR)"] = df[notch_col].map(lambda v: f"{float(v):.1f}" if np.isfinite(v) else "")
+        if diff_col in df.columns:
+            out_data[f"DOC skirtumas {d}NM (EUR)"] = df[diff_col].map(lambda v: f"{float(v):.1f}" if np.isfinite(v) else "")
+
+    return pd.DataFrame(out_data)
 
 
 # ------------------------- Result card -------------------------
@@ -1400,10 +1458,16 @@ def _label_points_global_dedup(
     overlap_frac: float = 0.80,
     y_offset_pts: int = 6,
     fontsize: int = 7,
+    same_x_tol: float = 1e-9,
+    close_y_delta: float = 1.0,
 ) -> None:
     """
-    Place labels globally (across all plotted lines) and skip labels that would overlap
-    already-placed labels by >= overlap_frac.
+    Place labels globally and suppress labels that are:
+    1) visually overlapping, or
+    2) at the same x-position with very similar y-values.
+
+    Rule #2 is important for grouped DOC graphs where several series share the same x
+    and their values differ only slightly. In that case we keep only one label.
     """
     if not candidates:
         return
@@ -1412,10 +1476,9 @@ def _label_points_global_dedup(
     fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
 
-    kept_bboxes = []
+    kept_bboxes: List[Any] = []
+    kept_xy: List[Tuple[float, float]] = []
 
-    # Choose who "wins" when labels clash:
-    # current policy = higher y first. If you want "first group wins", we can change this.
     candidates_sorted = sorted(
         [(float(x), float(y), str(t)) for x, y, t in candidates if np.isfinite(x) and np.isfinite(y)],
         key=lambda r: r[1],
@@ -1423,6 +1486,13 @@ def _label_points_global_dedup(
     )
 
     for x0, y0, txt in candidates_sorted:
+        same_x_close_y = any(
+            abs(x0 - x1) <= float(same_x_tol) and abs(y0 - y1) <= float(close_y_delta)
+            for x1, y1 in kept_xy
+        )
+        if same_x_close_y:
+            continue
+
         ann = ax.annotate(
             txt,
             xy=(x0, y0),
@@ -1452,11 +1522,13 @@ def _label_points_global_dedup(
         fig.canvas.draw()
         bb = ann.get_window_extent(renderer=renderer)
 
-        too_close = any(_bbox_overlap_frac(bb, bb2) >= float(overlap_frac) for bb2 in kept_bboxes)
-        if too_close:
+        too_close_bbox = any(_bbox_overlap_frac(bb, bb2) >= float(overlap_frac) for bb2 in kept_bboxes)
+        if too_close_bbox:
             ann.remove()
-        else:
-            kept_bboxes.append(bb)
+            continue
+
+        kept_bboxes.append(bb)
+        kept_xy.append((float(x0), float(y0)))
 
 
 def _plot_breakpoint_vs_grouped(
@@ -2182,7 +2254,7 @@ if mode == "Scenarijus":
     docmin_total = float("nan")
     docnotch_total = float("nan")
     diff_total = float("nan")
-    saving_per_hour_trip = float("nan")
+    saving_total_trip = float("nan")
     quick_caption = ""
 
     if not show_placeholder:
@@ -2217,6 +2289,7 @@ if mode == "Scenarijus":
                 v_min_per_nm = float(pd.to_numeric(row.get("DOCmin_EurPerNM", np.nan), errors="coerce"))
                 v_notch_per_nm = float(pd.to_numeric(row.get("DOCnotch_EurPerNM", np.nan), errors="coerce"))
                 v_min_per_h = float(pd.to_numeric(row.get("DOCmin_EurPerHr", np.nan), errors="coerce"))
+                v_notch_per_h = float(pd.to_numeric(row.get("DOCnotch_EurPerHr", np.nan), errors="coerce"))
                 dist = float(distance_nm)
 
                 if np.isfinite(v_min_per_nm) and np.isfinite(dist):
@@ -2230,10 +2303,9 @@ if mode == "Scenarijus":
                 else:
                     diff_total = float("nan")
 
-                saving_per_hour_trip = _trip_saving_per_hour_from_totals(
+                saving_total_trip = _trip_total_saving_eur(
                     docmin_per_nm=v_min_per_nm,
                     docnotch_per_nm=v_notch_per_nm,
-                    docmin_per_h=v_min_per_h,
                     trip_nm=dist,
                 )
 
@@ -2279,7 +2351,7 @@ if mode == "Scenarijus":
                 v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else ""
                 _render_result_card(v, "EUR" if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
             with r4:
-                v = _fmt_eur(saving_per_hour_trip, decimals=1) if np.isfinite(saving_per_hour_trip) else ""
+                v = _fmt_eur(saving_total_trip, decimals=1) if np.isfinite(saving_total_trip) else ""
                 _render_result_card(v, "EUR/h" if v else "", "Sutaupymas per val.", max_width_px=190)
         else:
             _show_result_card(shown_value, shown_unit)
@@ -2343,7 +2415,7 @@ else:
     docmin_total = float("nan")
     docnotch_total = float("nan")
     diff_total = float("nan")
-    saving_per_hour_trip = float("nan")
+    saving_total_trip = float("nan")
 
     if not show_placeholder:
         res_in = st.session_state.get("in_last_res", None)
@@ -2377,10 +2449,9 @@ else:
                 else:
                     diff_total = float("nan")
 
-                saving_per_hour_trip = _trip_saving_per_hour_from_totals(
+                saving_total_trip = _trip_total_saving_eur(
                     docmin_per_nm=float(res_in.docmin_eur_per_nm),
                     docnotch_per_nm=float(res_in.docnotch_eur_per_nm),
-                    docmin_per_h=float(res_in.docmin_eur_per_h),
                     trip_nm=dist,
                 )
             else:
@@ -2420,8 +2491,8 @@ else:
                 v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else ""
                 _render_result_card(v, "EUR" if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
             with r4:
-                v = _fmt_eur(saving_per_hour_trip, decimals=1) if np.isfinite(saving_per_hour_trip) else ""
-                _render_result_card(v, "EUR/h" if v else "", "Sutaupymas per val.", max_width_px=190)
+                v = _fmt_eur(saving_total_trip, decimals=1) if np.isfinite(saving_total_trip) else ""
+                _render_result_card(v, "EUR" if v else "", "Sutaupymas per maršrutą", max_width_px=190)
         else:
             _show_result_card(shown_value, shown_unit)
 

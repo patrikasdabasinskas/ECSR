@@ -176,6 +176,37 @@ def _fmt_eur(v: float, *, decimals: int = 1) -> str:
         return ""
     return f"{float(v):.{int(decimals)}f}".replace(".", ",")
 
+def _trip_saving_per_hour_from_totals(
+    *,
+    docmin_per_nm: float,
+    docnotch_per_nm: float,
+    docmin_per_h: float,
+    trip_nm: float,
+) -> float:
+    if not (
+        np.isfinite(docmin_per_nm)
+        and np.isfinite(docnotch_per_nm)
+        and np.isfinite(docmin_per_h)
+        and np.isfinite(trip_nm)
+        and docmin_per_nm > 0
+        and trip_nm > 0
+    ):
+        return float("nan")
+
+    econ_total_trip = float(docmin_per_nm) * float(trip_nm)
+    notch_total_trip = float(docnotch_per_nm) * float(trip_nm)
+
+    gs_econ = float(docmin_per_h) / float(docmin_per_nm)
+    if not np.isfinite(gs_econ) or gs_econ <= 0:
+        return float("nan")
+
+    econ_time_h = float(trip_nm) / gs_econ
+    if not np.isfinite(econ_time_h) or econ_time_h <= 0:
+        return float("nan")
+
+    saving_total_trip = float(notch_total_trip - econ_total_trip)
+    return float(saving_total_trip / econ_time_h)
+
 
 def _group_label(group_col: str, group_val: float) -> str:
     name, unit = _GROUP_META.get(group_col, (group_col, ""))
@@ -750,7 +781,7 @@ def _plot_doc_vs_ias(sc: Dict[str, Any], cfg: Config, time_cost_eur_per_hr: floa
 
     ax.set_title(f"DOC priklausomybė nuo IAS — {sc['scenarioName']}")
     ax.set_xlabel("IAS (kt)")
-    ax.set_ylabel("DOC (EUR)")
+    ax.set_ylabel("DOC (EUR/NM)")
     _add_axis_arrows(ax)
     ax.legend(loc="best")
     fig.tight_layout()
@@ -1519,16 +1550,14 @@ def _plot_doc_vs_grouped(
     x_label: str,
     group_col: Optional[str],
     docmin_col: str = "DOCmin_EurPerNM",
-    docnotch_col: str = "DOCnotch_EurPerNM",
 ) -> Any:
     fig, ax = _mpl_academic_fig()
 
     df = summary_tbl.copy()
     df[x_col] = pd.to_numeric(df[x_col], errors="coerce")
     df[docmin_col] = pd.to_numeric(df[docmin_col], errors="coerce")
-    df[docnotch_col] = pd.to_numeric(df[docnotch_col], errors="coerce")
 
-    keep = np.isfinite(df[x_col]) & np.isfinite(df[docmin_col]) & np.isfinite(df[docnotch_col])
+    keep = np.isfinite(df[x_col]) & np.isfinite(df[docmin_col])
     df = df.loc[keep].copy()
     if df.empty:
         raise ValueError("Nėra duomenų po filtravimo.")
@@ -1542,58 +1571,84 @@ def _plot_doc_vs_grouped(
 
     if used_group:
         g = (
-            df.groupby([used_group, x_col], as_index=False)[[docmin_col, docnotch_col]]
-            .median(numeric_only=True)
-            .rename(columns={docmin_col: "DOCmin", docnotch_col: "DOCnotch"})
+            df.groupby([used_group, x_col], as_index=False)[docmin_col]
+            .median()
+            .rename(columns={docmin_col: "DOCmin"})
         )
+
+        label_candidates: List[Tuple[float, float, str]] = []
 
         for grp_val, sub in g.groupby(used_group, sort=True):
             sub = sub.sort_values(x_col)
             xs = sub[x_col].to_numpy(float)
-            ys_min = sub["DOCmin"].to_numpy(float)
-            ys_notch = sub["DOCnotch"].to_numpy(float)
+            ys = sub["DOCmin"].to_numpy(float)
 
-            lbl = _group_label(used_group, float(grp_val))
-            ax.plot(xs, ys_min, linewidth=2.2, marker="o", markersize=4.8, label=f"DOCmin — {lbl}")
-            ax.plot(xs, ys_notch, linewidth=2.2, marker="s", markersize=4.8, linestyle="--", label=f"DOCnotch — {lbl}")
+            ax.plot(
+                xs,
+                ys,
+                linewidth=2.2,
+                marker="o",
+                markersize=4.8,
+                label=_group_label(used_group, float(grp_val)),
+            )
+
+            for x0, y0 in zip(xs.tolist(), ys.tolist()):
+                if np.isfinite(x0) and np.isfinite(y0):
+                    label_candidates.append((float(x0), float(y0), f"{float(y0):.2f}"))
+
+        _label_points_global_dedup(
+            ax,
+            label_candidates,
+            overlap_frac=0.80,
+            y_offset_pts=6,
+            fontsize=7,
+        )
 
         ax.legend(loc="best")
-        y_all = np.concatenate([g["DOCmin"].to_numpy(float), g["DOCnotch"].to_numpy(float)])
+        y_for_limits = g["DOCmin"].to_numpy(float)
 
     else:
         g = (
-            df.groupby(x_col, as_index=False)[[docmin_col, docnotch_col]]
-            .median(numeric_only=True)
-            .rename(columns={docmin_col: "DOCmin", docnotch_col: "DOCnotch"})
+            df.groupby(x_col, as_index=False)[docmin_col]
+            .median()
+            .rename(columns={docmin_col: "DOCmin"})
             .sort_values(x_col)
         )
 
         xs = g[x_col].to_numpy(float)
-        ys_min = g["DOCmin"].to_numpy(float)
-        ys_notch = g["DOCnotch"].to_numpy(float)
+        ys = g["DOCmin"].to_numpy(float)
 
-        ax.plot(xs, ys_min, linewidth=2.2, marker="o", markersize=4.8, color="darkred", label="DOCmin")
-        ax.plot(xs, ys_notch, linewidth=2.2, marker="s", markersize=4.8, linestyle="--", color="navy", label="DOCnotch")
+        ax.plot(xs, ys, linewidth=2.2, color="darkred")
+        ax.scatter(xs, ys, s=26, color="darkred")
 
-        y_all = np.concatenate([ys_min, ys_notch])
-        ax.legend(loc="best")
+        _label_points_with_overlap_avoidance(
+            ax,
+            xs,
+            ys,
+            fmt="{:.2f}",
+            y_offset_pts=6,
+            fontsize=7,
+        )
 
-    y_all = y_all[np.isfinite(y_all)]
-    if y_all.size:
-        y_min = float(np.nanmin(y_all))
-        y_max = float(np.nanmax(y_all))
+        y_for_limits = ys
+
+    y_for_limits = y_for_limits[np.isfinite(y_for_limits)]
+    if y_for_limits.size:
+        y_min = float(np.nanmin(y_for_limits))
+        y_max = float(np.nanmax(y_for_limits))
         rng = y_max - y_min
+
         if rng <= 0 or not np.isfinite(rng):
             pad = max(0.15 * max(abs(y_min), 1.0), 0.20)
             ax.set_ylim(y_min - pad, y_max + pad)
         else:
-            top_pad = max(0.20 * rng, 0.12 * max(abs(y_max), 1.0), 0.20)
-            bot_pad = max(0.12 * rng, 0.06 * max(abs(y_min), 1.0), 0.10)
+            top_pad = max(0.25 * rng, 0.12 * max(abs(y_max), 1.0), 0.20)
+            bot_pad = max(0.15 * rng, 0.06 * max(abs(y_min), 1.0), 0.10)
             ax.set_ylim(y_min - bot_pad, y_max + top_pad)
 
     ax.set_title(title)
     ax.set_xlabel(x_label)
-    ax.set_ylabel("DOC (EUR/NM)")
+    ax.set_ylabel("DOCmin (EUR/NM)")
     _add_axis_arrows(ax)
     fig.tight_layout()
     return fig
@@ -1731,7 +1786,6 @@ def _init_state() -> None:
     st.session_state.setdefault("in_wind", 0.0)
     st.session_state.setdefault("in_metric", "Pasirinkite...")
     st.session_state.setdefault("in_dist_nm", 0.0)
-    st.session_state.setdefault("in_trip_nm_y", 0.0)
     st.session_state.setdefault("quick_doc_dist_nm", 0.0)
     st.session_state.setdefault("mode", "Scenarijus") 
     st.session_state.setdefault("in_last_res", None)
@@ -2068,7 +2122,6 @@ metric_items: List[Tuple[str, str]] = [
     ("DOCmin_perNM (EUR/NM)", "DOCmin_EurPerNM"),
     ("DOCnotch_perNM (EUR/NM)", "DOCnotch_EurPerNM"),
     ("DOC_perX (EUR)", "__DOCMIN_PER_X__"),
-    ("DOC_perY (EUR)", "__DOCMIN_PER_Y__"),
     ("Laiko sąnaudų lūžio taškas (€/h)", "__BREAK_TIME__"),
     ("Degalų sąnaudų lūžio taškas (€/kg)", "__BREAK_FUEL__"),
 ]
@@ -2111,9 +2164,7 @@ if mode == "Scenarijus":
     show_placeholder = (pick_scn == "Pasirinkite..." or metric_map[pick_metric_label] == "__NONE__")
 
     distance_nm = 0.0
-    trip_nm_for_y = 0.0
     is_docmin_per_x = (not show_placeholder) and (metric_map[pick_metric_label] == "__DOCMIN_PER_X__")
-    is_docmin_per_y = (not show_placeholder) and (metric_map[pick_metric_label] == "__DOCMIN_PER_Y__")
 
     if is_docmin_per_x:
         st.markdown("<div style='height: 6px'></div>", unsafe_allow_html=True)
@@ -2126,22 +2177,12 @@ if mode == "Scenarijus":
                 key="quick_doc_dist_nm",
             )
 
-    if is_docmin_per_y:
-        st.markdown("<div style='height: 6px'></div>", unsafe_allow_html=True)
-        _, mid, _ = st.columns([2.2, 1.2, 2.2], gap="large")
-        with mid:
-            trip_nm_for_y = st.number_input(
-                "Maršruto atstumas (NM)",
-                min_value=0.0,
-                step=10.0,
-                key="quick_doc_trip_nm",
-            )
-
     shown_value = ""
     shown_unit = ""
     docmin_total = float("nan")
     docnotch_total = float("nan")
     diff_total = float("nan")
+    saving_per_hour_trip = float("nan")
     quick_caption = ""
 
     if not show_placeholder:
@@ -2175,6 +2216,7 @@ if mode == "Scenarijus":
             elif col_key == "__DOCMIN_PER_X__":
                 v_min_per_nm = float(pd.to_numeric(row.get("DOCmin_EurPerNM", np.nan), errors="coerce"))
                 v_notch_per_nm = float(pd.to_numeric(row.get("DOCnotch_EurPerNM", np.nan), errors="coerce"))
+                v_min_per_h = float(pd.to_numeric(row.get("DOCmin_EurPerHr", np.nan), errors="coerce"))
                 dist = float(distance_nm)
 
                 if np.isfinite(v_min_per_nm) and np.isfinite(dist):
@@ -2184,71 +2226,16 @@ if mode == "Scenarijus":
                     docnotch_total = float(v_notch_per_nm) * dist
 
                 if np.isfinite(docmin_total) and np.isfinite(docnotch_total):
-                    diff_total = float(docnotch_total) - float(docmin_total)
-                    diff_total = round(diff_total, 1)
-
-            elif col_key == "__DOCMIN_PER_Y__":
-                docmin_per_nm = float(pd.to_numeric(row.get("DOCmin_EurPerNM", np.nan), errors="coerce"))
-                docnotch_per_nm = float(pd.to_numeric(row.get("DOCnotch_EurPerNM", np.nan), errors="coerce"))
-                docmin_per_h = float(pd.to_numeric(row.get("DOCmin_EurPerHr", np.nan), errors="coerce"))
-                docnotch_per_h = float(pd.to_numeric(row.get("DOCnotch_EurPerHr", np.nan), errors="coerce"))
-                trip_nm = float(trip_nm_for_y)
-
-                econ_total_trip = float("nan")
-                notch_total_trip = float("nan")
-                econ_time_h = float("nan")
-                notch_time_h = float("nan")
-                gs_econ = float("nan")
-                gs_notch = float("nan")
-
-                if np.isfinite(docmin_per_nm) and np.isfinite(docmin_per_h) and docmin_per_nm > 0:
-                    gs_econ = float(docmin_per_h / docmin_per_nm)
-
-                if np.isfinite(docnotch_per_nm) and np.isfinite(docnotch_per_h) and docnotch_per_nm > 0:
-                    gs_notch = float(docnotch_per_h / docnotch_per_nm)
-
-                if np.isfinite(docmin_per_nm) and np.isfinite(trip_nm):
-                    econ_total_trip = float(docmin_per_nm) * trip_nm
-
-                if np.isfinite(docnotch_per_nm) and np.isfinite(trip_nm):
-                    notch_total_trip = float(docnotch_per_nm) * trip_nm
-
-                if np.isfinite(gs_econ) and gs_econ > 0 and np.isfinite(trip_nm):
-                    econ_time_h = float(trip_nm / gs_econ)
-
-                if np.isfinite(gs_notch) and gs_notch > 0 and np.isfinite(trip_nm):
-                    notch_time_h = float(trip_nm / gs_notch)
-
-                if np.isfinite(econ_total_trip) and np.isfinite(econ_time_h) and econ_time_h > 0:
-                    docmin_total = float(econ_total_trip / econ_time_h)
-                else:
-                    docmin_total = float("nan")
-
-                if np.isfinite(notch_total_trip) and np.isfinite(notch_time_h) and notch_time_h > 0:
-                    docnotch_total = float(notch_total_trip / notch_time_h)
-                else:
-                    docnotch_total = float("nan")
-
-                if np.isfinite(docmin_total) and np.isfinite(docnotch_total):
                     diff_total = round(float(docnotch_total - docmin_total), 1)
                 else:
                     diff_total = float("nan")
 
-                if (
-                    np.isfinite(econ_total_trip)
-                    and np.isfinite(notch_total_trip)
-                    and np.isfinite(econ_time_h)
-                    and np.isfinite(notch_time_h)
-                ):
-                    quick_caption = (
-                        f"{quick_caption}. "
-                        f"Maršrutas {trip_nm:g} NM: "
-                        f"ECON laikas = {_fmt_num(econ_time_h)} h, "
-                        f"IASnotch laikas = {_fmt_num(notch_time_h)} h. "
-                        f"DOC ECON maršrutui = {_fmt_eur(econ_total_trip, decimals=1)} EUR, "
-                        f"DOC IASnotch maršrutui = {_fmt_eur(notch_total_trip, decimals=1)} EUR, "
-                        f"sutaupymas maršrutui = {_fmt_eur(notch_total_trip - econ_total_trip, decimals=1)} EUR."
-                    )
+                saving_per_hour_trip = _trip_saving_per_hour_from_totals(
+                    docmin_per_nm=v_min_per_nm,
+                    docnotch_per_nm=v_notch_per_nm,
+                    docmin_per_h=v_min_per_h,
+                    trip_nm=dist,
+                )
 
             else:
                 val = float(pd.to_numeric(row.get(col_key, np.nan), errors="coerce"))
@@ -2279,27 +2266,21 @@ if mode == "Scenarijus":
     if show_placeholder:
         _show_result_card("", "")
     else:
-        if is_docmin_per_x or is_docmin_per_y:
-            r1, r2, r3 = st.columns(3, gap="large")
-
-            if is_docmin_per_x:
-                cap1 = "DOCmin rezultatas"
-                cap2 = "DOCnotch rezultatas"
-                unit_txt = "EUR"
-            else:
-                cap1 = "DOCmin vid. per val."
-                cap2 = "DOCnotch vid. per val."
-                unit_txt = "EUR/h"
+        if is_docmin_per_x:
+            r1, r2, r3, r4 = st.columns(4, gap="large")
 
             with r1:
                 v = _fmt_eur(docmin_total, decimals=1) if np.isfinite(docmin_total) else ""
-                _render_result_card(v, unit_txt if v else "", cap1, max_width_px=190)
+                _render_result_card(v, "EUR" if v else "", "DOCmin rezultatas", max_width_px=190)
             with r2:
                 v = _fmt_eur(docnotch_total, decimals=1) if np.isfinite(docnotch_total) else ""
-                _render_result_card(v, unit_txt if v else "", cap2, max_width_px=190)
+                _render_result_card(v, "EUR" if v else "", "DOCnotch rezultatas", max_width_px=190)
             with r3:
                 v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else ""
-                _render_result_card(v, unit_txt if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
+                _render_result_card(v, "EUR" if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
+            with r4:
+                v = _fmt_eur(saving_per_hour_trip, decimals=1) if np.isfinite(saving_per_hour_trip) else ""
+                _render_result_card(v, "EUR/h" if v else "", "Sutaupymas per val.", max_width_px=190)
         else:
             _show_result_card(shown_value, shown_unit)
 
@@ -2322,7 +2303,6 @@ else:
     show_placeholder = (col_key == "__NONE__")
 
     distance_nm = float(st.session_state.get("in_dist_nm", 0.0))
-    trip_nm_for_y = float(st.session_state.get("in_trip_nm_y", 0.0))
 
     if not show_placeholder and col_key == "__DOCMIN_PER_X__":
         distance_nm = st.number_input(
@@ -2330,14 +2310,6 @@ else:
             min_value=0.0,
             step=10.0,
             key="in_dist_nm",
-        )
-
-    if not show_placeholder and col_key == "__DOCMIN_PER_Y__":
-        trip_nm_for_y = st.number_input(
-            "Maršruto atstumas (NM)",
-            min_value=0.0,
-            step=10.0,
-            key="in_trip_nm_y",
         )
 
     st.markdown("<div style='height: 6px'></div>", unsafe_allow_html=True)
@@ -2371,6 +2343,7 @@ else:
     docmin_total = float("nan")
     docnotch_total = float("nan")
     diff_total = float("nan")
+    saving_per_hour_trip = float("nan")
 
     if not show_placeholder:
         res_in = st.session_state.get("in_last_res", None)
@@ -2395,89 +2368,27 @@ else:
                     shown_value = "Nėra lūžio taško"
             elif col_key == "__DOCMIN_PER_X__":
                 dist = float(distance_nm)
+
                 docmin_total = float(res_in.docmin_eur_per_nm) * dist if np.isfinite(res_in.docmin_eur_per_nm) else float("nan")
                 docnotch_total = float(res_in.docnotch_eur_per_nm) * dist if np.isfinite(res_in.docnotch_eur_per_nm) else float("nan")
-                if np.isfinite(docmin_total) and np.isfinite(docnotch_total):
-                    diff_total = float(docnotch_total) - float(docmin_total)
-                    diff_total = round(diff_total, 1)
-                else:
-                    diff_total = float("nan")
-            elif col_key == "__DOCMIN_PER_Y__":
-                trip_nm = float(trip_nm_for_y)
-
-                econ_total_trip = (
-                    float(res_in.docmin_eur_per_nm) * trip_nm
-                    if np.isfinite(res_in.docmin_eur_per_nm)
-                    else float("nan")
-                )
-                notch_total_trip = (
-                    float(res_in.docnotch_eur_per_nm) * trip_nm
-                    if np.isfinite(res_in.docnotch_eur_per_nm)
-                    else float("nan")
-                )
-
-                gs_econ = (
-                    float(res_in.docmin_eur_per_h / res_in.docmin_eur_per_nm)
-                    if np.isfinite(res_in.docmin_eur_per_h) and np.isfinite(res_in.docmin_eur_per_nm) and res_in.docmin_eur_per_nm > 0
-                    else float("nan")
-                )
-                gs_notch = (
-                    float(res_in.docnotch_eur_per_h / res_in.docnotch_eur_per_nm)
-                    if np.isfinite(res_in.docnotch_eur_per_h) and np.isfinite(res_in.docnotch_eur_per_nm) and res_in.docnotch_eur_per_nm > 0
-                    else float("nan")
-                )
-
-                econ_time_h = (
-                    float(trip_nm / gs_econ)
-                    if np.isfinite(gs_econ) and gs_econ > 0
-                    else float("nan")
-                )
-                notch_time_h = (
-                    float(trip_nm / gs_notch)
-                    if np.isfinite(gs_notch) and gs_notch > 0
-                    else float("nan")
-                )
-
-                docmin_total = (
-                    float(econ_total_trip / econ_time_h)
-                    if np.isfinite(econ_total_trip) and np.isfinite(econ_time_h) and econ_time_h > 0
-                    else float("nan")
-                )
-
-                docnotch_total = (
-                    float(notch_total_trip / notch_time_h)
-                    if np.isfinite(notch_total_trip) and np.isfinite(notch_time_h) and notch_time_h > 0
-                    else float("nan")
-                )
 
                 if np.isfinite(docmin_total) and np.isfinite(docnotch_total):
-                    diff_total = round(float(docnotch_total) - float(docmin_total), 1)
+                    diff_total = round(float(docnotch_total - docmin_total), 1)
                 else:
                     diff_total = float("nan")
 
-                if (
-                    np.isfinite(econ_total_trip)
-                    and np.isfinite(notch_total_trip)
-                    and np.isfinite(econ_time_h)
-                    and np.isfinite(notch_time_h)
-                ):
-                    st.caption(
-                        "Maršrutas "
-                        f"{trip_nm:g} NM: "
-                        f"ECON laikas = {_fmt_num(econ_time_h)} h, "
-                        f"IASnotch laikas = {_fmt_num(notch_time_h)} h, "
-                        f"DOC ECON maršrutui = {_fmt_eur(econ_total_trip, decimals=1)} EUR, "
-                        f"DOC IASnotch maršrutui = {_fmt_eur(notch_total_trip, decimals=1)} EUR, "
-                        f"sutaupymas maršrutui = {_fmt_eur(notch_total_trip - econ_total_trip, decimals=1)} EUR."
-                    )
+                saving_per_hour_trip = _trip_saving_per_hour_from_totals(
+                    docmin_per_nm=float(res_in.docmin_eur_per_nm),
+                    docnotch_per_nm=float(res_in.docnotch_eur_per_nm),
+                    docmin_per_h=float(res_in.docmin_eur_per_h),
+                    trip_nm=dist,
+                )
             else:
                 mapping = {
                     "V_ECSR_kt": (res_in.v_ecsr_kt, "kt"),
                     "V_notch_kt": (res_in.v_notch_kt, "kt"),
                     "DOCmin_EurPerNM": (res_in.docmin_eur_per_nm, "EUR/NM"),
                     "DOCnotch_EurPerNM": (res_in.docnotch_eur_per_nm, "EUR/NM"),
-                    "DOCmin_EurPerHr": (res_in.docmin_eur_per_h, "EUR/h"),
-                    "DOCnotch_EurPerHr": (res_in.docnotch_eur_per_h, "EUR/h"),
                 }
                 if col_key in mapping:
                     val, unit = mapping[col_key]
@@ -2496,27 +2407,21 @@ else:
     if show_placeholder:
         _show_result_card("", "")
     else:
-        if col_key in {"__DOCMIN_PER_X__", "__DOCMIN_PER_Y__"}:
-            r1, r2, r3 = st.columns(3, gap="large")
-
-            if col_key == "__DOCMIN_PER_X__":
-                cap1 = "DOCmin rezultatas"
-                cap2 = "DOCnotch rezultatas"
-                unit_txt = "EUR"
-            else:
-                cap1 = "DOCmin vid. per val."
-                cap2 = "DOCnotch vid. per val."
-                unit_txt = "EUR/h"
+        if col_key == "__DOCMIN_PER_X__":
+            r1, r2, r3, r4 = st.columns(4, gap="large")
 
             with r1:
                 v = _fmt_eur(docmin_total, decimals=1) if np.isfinite(docmin_total) else ""
-                _render_result_card(v, unit_txt if v else "", cap1, max_width_px=190)
+                _render_result_card(v, "EUR" if v else "", "DOCmin rezultatas", max_width_px=190)
             with r2:
                 v = _fmt_eur(docnotch_total, decimals=1) if np.isfinite(docnotch_total) else ""
-                _render_result_card(v, unit_txt if v else "", cap2, max_width_px=190)
+                _render_result_card(v, "EUR" if v else "", "DOCnotch rezultatas", max_width_px=190)
             with r3:
                 v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else ""
-                _render_result_card(v, unit_txt if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
+                _render_result_card(v, "EUR" if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
+            with r4:
+                v = _fmt_eur(saving_per_hour_trip, decimals=1) if np.isfinite(saving_per_hour_trip) else ""
+                _render_result_card(v, "EUR/h" if v else "", "Sutaupymas per val.", max_width_px=190)
         else:
             _show_result_card(shown_value, shown_unit)
 
@@ -2618,10 +2523,10 @@ if mode == "Scenarijus":
         x_name_lt = meta["x_name_lt"]
 
         doc_graph_titles = {
-            "d1": "Grafikas 2 — DOC (eur/nm) vs Vėjo komponentė (kt)",
-            "d2": "Grafikas 3 — DOC (eur/nm) vs Masė (kg)",
-            "d3": "Grafikas 4 — DOC (eur/nm) vs Skrydžio aukštis (ft)",
-            "d4": "Grafikas 5 — DOC (eur/nm) vs ISA nuokrypis (°C)",
+            "d1": "Grafikas 2 — DOCmin (eur/nm) vs Vėjo komponentė (kt)",
+            "d2": "Grafikas 3 — DOCmin (eur/nm) vs Masė (kg)",
+            "d3": "Grafikas 4 — DOCmin (eur/nm) vs Skrydžio aukštis (ft)",
+            "d4": "Grafikas 5 — DOCmin (eur/nm) vs ISA nuokrypis (°C)",
         }
         exp_title = doc_graph_titles[gid]
         open_key = f"open_{gid}"
@@ -2650,7 +2555,7 @@ if mode == "Scenarijus":
                     st.session_state[fig_key] = _plot_doc_vs_grouped(
                         filtered_local,
                         x_col=x_col,
-                        title=f"DOC priklausomybė nuo {x_name_lt}",
+                        title=f"DOCmin priklausomybė nuo {x_name_lt}",
                         x_label=x_label,
                         group_col=group_col,
                     )
@@ -2757,10 +2662,10 @@ else:
         x_name_lt = meta["x_name_lt"]
 
         doc_graph_titles = {
-            "d1": "Grafikas 2 — DOC (eur/nm) vs Vėjo komponentė (kt)",
-            "d2": "Grafikas 3 — DOC (eur/nm) vs Masė (kg)",
-            "d3": "Grafikas 4 — DOC (eur/nm) vs Skrydžio aukštis (ft)",
-            "d4": "Grafikas 5 — DOC (eur/nm) vs ISA nuokrypis (°C)",
+            "d1": "Grafikas 2 — DOCmin (eur/nm) vs Vėjo komponentė (kt)",
+            "d2": "Grafikas 3 — DOCmin (eur/nm) vs Masė (kg)",
+            "d3": "Grafikas 4 — DOCmin (eur/nm) vs Skrydžio aukštis (ft)",
+            "d4": "Grafikas 5 — DOCmin (eur/nm) vs ISA nuokrypis (°C)",
         }
         exp_title = doc_graph_titles[gid]
         open_key = f"open_{gid}"
@@ -2796,7 +2701,7 @@ else:
                     st.session_state[fig_key] = _plot_doc_vs_grouped(
                         filtered_local,
                         x_col=x_col,
-                        title=f"DOC priklausomybė nuo {x_name_lt}",
+                        title=f"DOCmin priklausomybė nuo {x_name_lt}",
                         x_label=x_label,
                         group_col=group_col,
                     )
@@ -3103,8 +3008,6 @@ rename_map = {
     "ECSR_low_kt": "IASlow, kt",
     "ECSR_high_kt": "IAShigh, kt",
 
-    "DOCmin_EurPerHr": "DOCmin, eur/h",
-    "DOCnotch_EurPerHr": "DOCnotch, eur/h",
     "DOCmin_EurPerNM": "DOCmin, eur/nm",
     "DOCnotch_EurPerNM": "DOCnotch, eur/nm",
 }
@@ -3160,6 +3063,12 @@ for d in cfg.distances_nm:
         ordered_cols.append(f"DOCnotch_{d}nm, eur")
 
 # Keep only columns that exist (safe if config changes)
+
+display_tbl = display_tbl.drop(
+    columns=["DOCmin_EurPerHr", "DOCnotch_EurPerHr", "DOCmin, eur/h", "DOCnotch, eur/h"],
+    errors="ignore",
+)
+
 ordered_cols = [c for c in ordered_cols if c in display_tbl.columns]
 
 # Append any remaining columns at end (optional: keep nothing extra)
@@ -3230,10 +3139,8 @@ if st.session_state["show_glossary"]:
 **DOC** – tiesioginės eksploatacinės sąnaudos, **EUR** / Gali būti matuojamos ir 1 jūrmylei - tuomet **EUR/NM**  
 **DOCmin_perNM** – minimalios DOC sąnaudos per **1 jūrmylią**, **EUR/NM**  
 **DOCnotch_perNM** – DOC sąnaudos per **1 jūrmylią**, kai galios svirtis yra fiksuotoje padėtyje (angl. notch) arba kai lėktuvas skrenda **IASnotch** greičiu, **EUR/NM**  
-**DOCmin_perX** – minimalios DOC sąnaudos per **X jūrmylių**, **EUR**
-**DOCmin_perH** – minimalios DOC sąnaudos per **1 valandą**, **EUR/h**
-**DOCnotch_perH** – DOC sąnaudos per **1 valandą** skrendant **IASnotch**, **EUR/h**
-**DOCmin_perY** – minimalios DOC sąnaudos per **Y valandų**, **EUR**
+**DOC_perX** – bendros DOC sąnaudos pasirinktam maršruto ilgiui X, **EUR**
+
 
 **EPSILON** - nedidelė procentinė tolerancija, kurios dydis priklauso nuo oro linijų prioritetų ir kuri nusako, kokiu mastu sąnaudos gali padidėti virš **DOCmin**, **%**
 

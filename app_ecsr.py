@@ -176,49 +176,6 @@ def _fmt_eur(v: float, *, decimals: int = 1) -> str:
         return ""
     return f"{float(v):.{int(decimals)}f}".replace(".", ",")
 
-def _trip_saving_per_hour_from_totals(
-    *,
-    docmin_per_nm: float,
-    docnotch_per_nm: float,
-    docmin_per_h: float,
-    docnotch_per_h: float,
-    trip_nm: float,
-) -> float:
-    if not (
-        np.isfinite(docmin_per_nm)
-        and np.isfinite(docnotch_per_nm)
-        and np.isfinite(docmin_per_h)
-        and np.isfinite(docnotch_per_h)
-        and np.isfinite(trip_nm)
-        and docmin_per_nm > 0
-        and docnotch_per_nm > 0
-        and trip_nm > 0
-    ):
-        return float("nan")
-
-    econ_total_trip = float(docmin_per_nm) * float(trip_nm)
-    notch_total_trip = float(docnotch_per_nm) * float(trip_nm)
-
-    gs_econ = float(docmin_per_h) / float(docmin_per_nm)
-    gs_notch = float(docnotch_per_h) / float(docnotch_per_nm)
-
-    if not np.isfinite(gs_econ) or gs_econ <= 0:
-        return float("nan")
-    if not np.isfinite(gs_notch) or gs_notch <= 0:
-        return float("nan")
-
-    econ_time_h = float(trip_nm) / gs_econ
-    notch_time_h = float(trip_nm) / gs_notch
-
-    if not np.isfinite(econ_time_h) or econ_time_h <= 0:
-        return float("nan")
-    if not np.isfinite(notch_time_h) or notch_time_h <= 0:
-        return float("nan")
-
-    saving_total_trip = float(notch_total_trip - econ_total_trip)
-    return float(saving_total_trip / notch_time_h)
-
-
 def _trip_total_saving_eur(
     *,
     docmin_per_nm: float,
@@ -1459,7 +1416,7 @@ def _label_points_global_dedup(
     y_offset_pts: int = 6,
     fontsize: int = 7,
     same_x_tol: float = 1e-9,
-    close_y_delta: float = 1.0,
+    close_y_delta: float = 0.5,
 ) -> None:
     """
     Place labels globally and suppress labels that are:
@@ -2288,8 +2245,6 @@ if mode == "Scenarijus":
             elif col_key == "__DOCMIN_PER_X__":
                 v_min_per_nm = float(pd.to_numeric(row.get("DOCmin_EurPerNM", np.nan), errors="coerce"))
                 v_notch_per_nm = float(pd.to_numeric(row.get("DOCnotch_EurPerNM", np.nan), errors="coerce"))
-                v_min_per_h = float(pd.to_numeric(row.get("DOCmin_EurPerHr", np.nan), errors="coerce"))
-                v_notch_per_h = float(pd.to_numeric(row.get("DOCnotch_EurPerHr", np.nan), errors="coerce"))
                 dist = float(distance_nm)
 
                 if np.isfinite(v_min_per_nm) and np.isfinite(dist):
@@ -2308,6 +2263,7 @@ if mode == "Scenarijus":
                     docnotch_per_nm=v_notch_per_nm,
                     trip_nm=dist,
                 )
+
 
             else:
                 val = float(pd.to_numeric(row.get(col_key, np.nan), errors="coerce"))
@@ -2340,7 +2296,6 @@ if mode == "Scenarijus":
     else:
         if is_docmin_per_x:
             r1, r2, r3, r4 = st.columns(4, gap="large")
-
             with r1:
                 v = _fmt_eur(docmin_total, decimals=1) if np.isfinite(docmin_total) else ""
                 _render_result_card(v, "EUR" if v else "", "DOCmin rezultatas", max_width_px=190)
@@ -2352,7 +2307,7 @@ if mode == "Scenarijus":
                 _render_result_card(v, "EUR" if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
             with r4:
                 v = _fmt_eur(saving_total_trip, decimals=1) if np.isfinite(saving_total_trip) else ""
-                _render_result_card(v, "EUR/h" if v else "", "Sutaupymas per val.", max_width_px=190)
+                _render_result_card(v, "EUR" if v else "", "Sutaupymas per maršrutą", max_width_px=190)
         else:
             _show_result_card(shown_value, shown_unit)
 

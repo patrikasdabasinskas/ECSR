@@ -1764,9 +1764,6 @@ def _init_state() -> None:
     st.session_state.setdefault("show_glossary", False)
     st.session_state.setdefault("excel_written_msg", "")
 
-    st.session_state.setdefault("saving_custom_enabled", False)
-    st.session_state.setdefault("saving_custom_value", 2.0)
-
     st.session_state.setdefault("ecsr_calc_fl_txt", "")
     st.session_state.setdefault("ecsr_calc_wt_txt", "")
     st.session_state.setdefault("ecsr_calc_isa_txt", "")
@@ -1846,6 +1843,8 @@ with st.sidebar:
         key="saving_mode_nm",
     )
 
+    saving_custom_nm = None
+    
     if saving_mode_nm:
         saving_custom_nm = st.number_input(
             "Sutaupymas (€/NM)",

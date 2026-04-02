@@ -1389,7 +1389,7 @@ def _label_points_global_dedup(
     y_offset_pts: int = 6,
     fontsize: int = 7,
     same_x_tol: float = 1e-9,
-    close_y_delta: float = 0.5,
+    close_y_delta: float = 0.2,
 ) -> None:
     """
     Place labels globally and suppress labels that are:
@@ -2415,20 +2415,25 @@ def _bp_filter_ui_input(graph_id: str) -> Dict[str, Optional[float]]:
 
     for i, col in enumerate(other_cols):
         label, unit = _GROUP_META.get(col, (col, ""))
+        unfix_key = f"{graph_id}_unfix_{col}"
+        input_key = f"{graph_id}_in_{col}"
+
+        st.session_state.setdefault(unfix_key, False)
+        st.session_state.setdefault(input_key, float(defaults.get(col, 0.0)))
+
         with cols[i % 3]:
             unfixed = st.checkbox(
                 f"Pažymėkite, jeigu norite „{label}“ vertės nefiksuoti",
-                value=False,
-                key=f"{graph_id}_unfix_{col}",
+                key=unfix_key,
             )
+
             if unfixed:
                 fixed[col] = None
             else:
                 value = st.number_input(
                     f"{label} ({unit})" if unit else f"{label}",
-                    value=float(defaults.get(col, 0.0)),
                     step=1.0 if col in {"ISA_C", "WIND_kt"} else 500.0,
-                    key=f"{graph_id}_in_{col}",
+                    key=input_key,
                 )
                 fixed[col] = float(value)
 

@@ -176,24 +176,6 @@ def _fmt_eur(v: float, *, decimals: int = 1) -> str:
         return ""
     return f"{float(v):.{int(decimals)}f}".replace(".", ",")
 
-def _trip_total_saving_eur(
-    *,
-    docmin_per_nm: float,
-    docnotch_per_nm: float,
-    trip_nm: float,
-) -> float:
-    if not (
-        np.isfinite(docmin_per_nm)
-        and np.isfinite(docnotch_per_nm)
-        and np.isfinite(trip_nm)
-        and trip_nm > 0
-    ):
-        return float("nan")
-
-    econ_total_trip = float(docmin_per_nm) * float(trip_nm)
-    notch_total_trip = float(docnotch_per_nm) * float(trip_nm)
-    return float(notch_total_trip - econ_total_trip)
-
 
 def _group_label(group_col: str, group_val: float) -> str:
     name, unit = _GROUP_META.get(group_col, (group_col, ""))
@@ -231,15 +213,6 @@ def _conditions_sentence_from_row_with_costs(row: pd.Series, cfg: Config) -> str
         thr = float(getattr(cfg, "breakpoint_saving_eur_per_nm", float("nan")))
         if np.isfinite(thr):
             parts.append(f"Sutaupymas ≥ {thr:.2f} €/NM")
-
-    elif mode == "per_hour_trip":
-        thr = float(getattr(cfg, "breakpoint_saving_eur_per_hour", float("nan")))
-        trip_nm = float(getattr(cfg, "breakpoint_trip_distance_nm", float("nan")))
-        if np.isfinite(thr):
-            parts.append(f"Sutaupymas ≥ {thr:.1f} €/h")
-        if np.isfinite(trip_nm):
-            parts.append(f"Maršrutas = {trip_nm:.0f} NM")
-
     if not parts:
         return base
     return f"{base}. " + ", ".join(parts)
@@ -1873,40 +1846,12 @@ with st.sidebar:
         key="saving_mode_nm",
     )
 
-    saving_mode_h = st.checkbox(
-        "Taikyti sutaupymo vertę (€/h)",
-        key="saving_mode_h",
-    )
-
-    if saving_mode_nm and saving_mode_h:
-        st.warning("Pasirinkite tik vieną sutaupymo vertės būdą.")
-        st.stop()
-
-    saving_custom_nm = None
-    saving_custom_h = None
-    saving_route_nm = None
-
     if saving_mode_nm:
         saving_custom_nm = st.number_input(
             "Sutaupymas (€/NM)",
             min_value=0.0,
             step=0.1,
             key="saving_custom_nm",
-        )
-
-    if saving_mode_h:
-        saving_custom_h = st.number_input(
-            "Sutaupymas (€/h)",
-            min_value=0.0,
-            step=1.0,
-            key="saving_custom_h",
-        )
-
-        saving_route_nm = st.number_input(
-            "Visas maršruto ilgis (NM)",
-            min_value=0.0,
-            step=10.0,
-            key="saving_route_nm",
         )
 
     # ---- NO FORM HERE (buttons inside forms cause crashes) ----
@@ -1951,8 +1896,6 @@ if run_btn:
 
     if saving_mode_nm:
         saving_mode_value = "per_nm"
-    elif saving_mode_h:
-        saving_mode_value = "per_hour_trip"
     else:
         saving_mode_value = "default"
 
@@ -1963,9 +1906,6 @@ if run_btn:
         epsilon_break_even=float(float(epsilon_pct) / 100.0),
         breakpoint_saving_mode=saving_mode_value,
         breakpoint_saving_eur_per_nm=float(saving_custom_nm or 0.0),
-        breakpoint_saving_eur_per_hour=float(saving_custom_h or 0.0),
-        breakpoint_trip_distance_nm=float(saving_route_nm or 0.0),
-        
     )
 
     with st.spinner("Skaičiuojama..."):
@@ -2211,7 +2151,6 @@ if mode == "Scenarijus":
     docmin_total = float("nan")
     docnotch_total = float("nan")
     diff_total = float("nan")
-    saving_total_trip = float("nan")
     quick_caption = ""
 
     if not show_placeholder:
@@ -2257,14 +2196,6 @@ if mode == "Scenarijus":
                     diff_total = round(float(docnotch_total - docmin_total), 1)
                 else:
                     diff_total = float("nan")
-
-                saving_total_trip = _trip_total_saving_eur(
-                    docmin_per_nm=v_min_per_nm,
-                    docnotch_per_nm=v_notch_per_nm,
-                    trip_nm=dist,
-                )
-
-
             else:
                 val = float(pd.to_numeric(row.get(col_key, np.nan), errors="coerce"))
                 if np.isfinite(val):
@@ -2295,7 +2226,7 @@ if mode == "Scenarijus":
         _show_result_card("", "")
     else:
         if is_docmin_per_x:
-            r1, r2, r3, r4 = st.columns(4, gap="large")
+            r1, r2, r3 = st.columns(3, gap="large")
             with r1:
                 v = _fmt_eur(docmin_total, decimals=1) if np.isfinite(docmin_total) else ""
                 _render_result_card(v, "EUR" if v else "", "DOCmin rezultatas", max_width_px=190)
@@ -2305,9 +2236,6 @@ if mode == "Scenarijus":
             with r3:
                 v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else ""
                 _render_result_card(v, "EUR" if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
-            with r4:
-                v = _fmt_eur(saving_total_trip, decimals=1) if np.isfinite(saving_total_trip) else ""
-                _render_result_card(v, "EUR" if v else "", "Sutaupymas per maršrutą", max_width_px=190)
         else:
             _show_result_card(shown_value, shown_unit)
 
@@ -2370,7 +2298,6 @@ else:
     docmin_total = float("nan")
     docnotch_total = float("nan")
     diff_total = float("nan")
-    saving_total_trip = float("nan")
 
     if not show_placeholder:
         res_in = st.session_state.get("in_last_res", None)
@@ -2403,12 +2330,6 @@ else:
                     diff_total = round(float(docnotch_total - docmin_total), 1)
                 else:
                     diff_total = float("nan")
-
-                saving_total_trip = _trip_total_saving_eur(
-                    docmin_per_nm=float(res_in.docmin_eur_per_nm),
-                    docnotch_per_nm=float(res_in.docnotch_eur_per_nm),
-                    trip_nm=dist,
-                )
             else:
                 mapping = {
                     "V_ECSR_kt": (res_in.v_ecsr_kt, "kt"),
@@ -2434,7 +2355,7 @@ else:
         _show_result_card("", "")
     else:
         if col_key == "__DOCMIN_PER_X__":
-            r1, r2, r3, r4 = st.columns(4, gap="large")
+            r1, r2, r3 = st.columns(3, gap="large")
 
             with r1:
                 v = _fmt_eur(docmin_total, decimals=1) if np.isfinite(docmin_total) else ""
@@ -2445,9 +2366,6 @@ else:
             with r3:
                 v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else ""
                 _render_result_card(v, "EUR" if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
-            with r4:
-                v = _fmt_eur(saving_total_trip, decimals=1) if np.isfinite(saving_total_trip) else ""
-                _render_result_card(v, "EUR" if v else "", "Sutaupymas per maršrutą", max_width_px=190)
         else:
             _show_result_card(shown_value, shown_unit)
 

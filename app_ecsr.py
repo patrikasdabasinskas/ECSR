@@ -1471,6 +1471,7 @@ def _plot_breakpoint_vs_grouped(
     x_label: str,
     group_col: Optional[str],
     fmt: str,
+    show_point_labels: bool = False,
 ) -> Any:
     fig, ax = _mpl_academic_fig()
 
@@ -1507,7 +1508,8 @@ def _plot_breakpoint_vs_grouped(
                     label_candidates.append((float(x0), float(y0), fmt.format(float(y0))))
 
         # GLOBAL label placement with overlap dedup across groups
-        _label_points_global_dedup(ax, label_candidates, overlap_frac=0.80, y_offset_pts=6, fontsize=7)
+        if show_point_labels:
+            _label_points_global_dedup(ax, label_candidates, overlap_frac=0.80, y_offset_pts=6, fontsize=7)
 
         ax.legend(loc="best")
         y_for_limits = g["BE"].to_numpy(float)
@@ -1521,7 +1523,8 @@ def _plot_breakpoint_vs_grouped(
         ax.scatter(xs, ys, s=26, color="darkred")
 
         # Single series: old labeling is fine (or you can also use global_dedup)
-        _label_points_with_overlap_avoidance(ax, xs, ys, fmt=fmt, y_offset_pts=6, fontsize=7)
+        if show_point_labels:
+            _label_points_with_overlap_avoidance(ax, xs, ys, fmt=fmt, y_offset_pts=6, fontsize=7)
 
         y_for_limits = ys
 
@@ -1552,6 +1555,7 @@ def _plot_doc_vs_grouped(
     x_label: str,
     group_col: Optional[str],
     docmin_col: str = "DOCmin_EurPerNM",
+    show_point_labels: bool = False,
 ) -> Any:
     fig, ax = _mpl_academic_fig()
 
@@ -1598,13 +1602,14 @@ def _plot_doc_vs_grouped(
                 if np.isfinite(x0) and np.isfinite(y0):
                     label_candidates.append((float(x0), float(y0), f"{float(y0):.2f}"))
 
-        _label_points_global_dedup(
-            ax,
-            label_candidates,
-            overlap_frac=0.80,
-            y_offset_pts=6,
-            fontsize=7,
-        )
+        if show_point_labels:
+            _label_points_global_dedup(
+                ax,
+                label_candidates,
+                overlap_frac=0.80,
+                y_offset_pts=6,
+                fontsize=7,
+            )
 
         ax.legend(loc="best")
         y_for_limits = g["DOCmin"].to_numpy(float)
@@ -1623,14 +1628,15 @@ def _plot_doc_vs_grouped(
         ax.plot(xs, ys, linewidth=2.2, color="darkred")
         ax.scatter(xs, ys, s=26, color="darkred")
 
-        _label_points_with_overlap_avoidance(
-            ax,
-            xs,
-            ys,
-            fmt="{:.2f}",
-            y_offset_pts=6,
-            fontsize=7,
-        )
+        if show_point_labels:
+            _label_points_with_overlap_avoidance(
+                ax,
+                xs,
+                ys,
+                fmt="{:.2f}",
+                y_offset_pts=6,
+                fontsize=7,
+            )
 
         y_for_limits = ys
 
@@ -1844,7 +1850,7 @@ with st.sidebar:
     )
 
     saving_custom_nm = None
-    
+
     if saving_mode_nm:
         saving_custom_nm = st.number_input(
             "Sutaupymas (€/NM)",
@@ -2501,6 +2507,7 @@ if mode == "Scenarijus":
                         title=f"DOCmin priklausomybė nuo {x_name_lt}",
                         x_label=x_label,
                         group_col=group_col,
+                        show_point_labels=True,
                     )
                     st.session_state[cap_key] = _conditions_sentence_from_filters(fixed, x_col=x_col, grouped_by=group_col)
                     st.session_state[err_key] = ""
@@ -2647,8 +2654,8 @@ else:
                         title=f"DOCmin priklausomybė nuo {x_name_lt}",
                         x_label=x_label,
                         group_col=group_col,
+                        show_point_labels=True,
                     )
-
                     fixed_for_caption: Dict[str, Optional[float]] = dict(fixed_in)
                     for k, v in snapped.items():
                         fixed_for_caption[k] = v
@@ -2785,6 +2792,7 @@ for gid, meta in _BP_GRAPHS.items():
                         x_label=x_label,
                         group_col=group_col,
                         fmt="{:.0f} €/h",
+                        show_point_labels=True,
                     )
 
                     st.session_state[fig_key_fuel] = _plot_breakpoint_vs_grouped(
@@ -2796,9 +2804,14 @@ for gid, meta in _BP_GRAPHS.items():
                         x_label=x_label,
                         group_col=group_col,
                         fmt="{:.2f} €/kg",
+                        show_point_labels=True,
                     )
 
-                    st.session_state[cap_key] = _conditions_sentence_from_filters(fixed, x_col=x_col, grouped_by=group_col)
+                    st.session_state[cap_key] = _conditions_sentence_from_filters(
+                        fixed,
+                        x_col=x_col,
+                        grouped_by=group_col,
+                    )
                     st.session_state[err_key] = ""
                 except Exception as e:
                     st.session_state[fig_key_time] = None
@@ -2850,6 +2863,7 @@ for gid, meta in _BP_GRAPHS.items():
                         x_label=x_label,
                         group_col=group_col,
                         fmt="{:.0f} €/h",
+                        show_point_labels=True,
                     )
                     st.session_state[fig_key_fuel] = _plot_breakpoint_vs_grouped(
                         filtered_local,
@@ -2860,6 +2874,7 @@ for gid, meta in _BP_GRAPHS.items():
                         x_label=x_label,
                         group_col=group_col,
                         fmt="{:.2f} €/kg",
+                        show_point_labels=True,
                     )
 
                     fixed_for_caption: Dict[str, Optional[float]] = dict(fixed_in)

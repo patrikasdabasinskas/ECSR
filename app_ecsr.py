@@ -1383,7 +1383,7 @@ def _bbox_overlap_frac(a, b) -> float:
 
 def _label_points_global_dedup(
     ax,
-    candidates: List[Tuple[float, float, str]],
+    candidates: List[Tuple[float, float, str, str]],
     *,
     overlap_frac: float = 0.80,
     y_offset_pts: int = 6,
@@ -1392,12 +1392,8 @@ def _label_points_global_dedup(
     close_y_delta: float = 0.2,
 ) -> None:
     """
-    Place labels globally and suppress labels that are:
-    1) visually overlapping, or
-    2) at the same x-position with very similar y-values.
-
-    Rule #2 is important for grouped DOC graphs where several series share the same x
-    and their values differ only slightly. In that case we keep only one label.
+    Show labels on all graphs, but if multiple groups are very close at the same x,
+    keep labels only from one chosen group inside that close cluster.
     """
     if not candidates:
         return
@@ -1407,21 +1403,29 @@ def _label_points_global_dedup(
     renderer = fig.canvas.get_renderer()
 
     kept_bboxes: List[Any] = []
-    kept_xy: List[Tuple[float, float]] = []
+    chosen_group_for_cluster: List[Tuple[float, float, str]] = []
 
     candidates_sorted = sorted(
-        [(float(x), float(y), str(t)) for x, y, t in candidates if np.isfinite(x) and np.isfinite(y)],
-        key=lambda r: r[1],
-        reverse=True,
+        [
+            (float(x), float(y), str(t), str(g))
+            for x, y, t, g in candidates
+            if np.isfinite(x) and np.isfinite(y)
+        ],
+        key=lambda r: (r[0], -r[1]),
     )
 
-    for x0, y0, txt in candidates_sorted:
-        same_x_close_y = any(
-            abs(x0 - x1) <= float(same_x_tol) and abs(y0 - y1) <= float(close_y_delta)
-            for x1, y1 in kept_xy
-        )
-        if same_x_close_y:
-            continue
+    for x0, y0, txt, grp in candidates_sorted:
+        matched_cluster_idx = None
+
+        for i, (cx, cy, cgrp) in enumerate(chosen_group_for_cluster):
+            if abs(x0 - cx) <= float(same_x_tol) and abs(y0 - cy) <= float(close_y_delta):
+                matched_cluster_idx = i
+                break
+
+        if matched_cluster_idx is not None:
+            _, _, chosen_grp = chosen_group_for_cluster[matched_cluster_idx]
+            if grp != chosen_grp:
+                continue
 
         ann = ax.annotate(
             txt,
@@ -1457,9 +1461,10 @@ def _label_points_global_dedup(
             ann.remove()
             continue
 
-        kept_bboxes.append(bb)
-        kept_xy.append((float(x0), float(y0)))
+        if matched_cluster_idx is None:
+            chosen_group_for_cluster.append((float(x0), float(y0), str(grp)))
 
+        kept_bboxes.append(bb)
 
 def _plot_breakpoint_vs_grouped(
     summary_tbl: pd.DataFrame,
@@ -1494,7 +1499,7 @@ def _plot_breakpoint_vs_grouped(
         g = df.groupby([used_group, x_col], as_index=False)[y_col].median().rename(columns={y_col: "BE"})
 
         # Plot all groups first + collect all label candidates
-        label_candidates: List[Tuple[float, float, str]] = []
+        label_candidates: List[Tuple[float, float, str, str]] = []
 
         for grp_val, sub in g.groupby(used_group, sort=True):
             sub = sub.sort_values(x_col)
@@ -1505,7 +1510,9 @@ def _plot_breakpoint_vs_grouped(
 
             for x0, y0 in zip(xs.tolist(), ys.tolist()):
                 if np.isfinite(x0) and np.isfinite(y0):
-                    label_candidates.append((float(x0), float(y0), fmt.format(float(y0))))
+                    label_candidates.append(
+                        (float(x0), float(y0), fmt.format(float(y0)), str(grp_val))
+                    )
 
         # GLOBAL label placement with overlap dedup across groups
         if show_point_labels:
@@ -1582,7 +1589,7 @@ def _plot_doc_vs_grouped(
             .rename(columns={docmin_col: "DOCmin"})
         )
 
-        label_candidates: List[Tuple[float, float, str]] = []
+        label_candidates: List[Tuple[float, float, str, str]] = []
 
         for grp_val, sub in g.groupby(used_group, sort=True):
             sub = sub.sort_values(x_col)
@@ -1600,7 +1607,9 @@ def _plot_doc_vs_grouped(
 
             for x0, y0 in zip(xs.tolist(), ys.tolist()):
                 if np.isfinite(x0) and np.isfinite(y0):
-                    label_candidates.append((float(x0), float(y0), f"{float(y0):.2f}"))
+                    label_candidates.append(
+                        (float(x0), float(y0), f"{float(y0):.2f}", str(grp_val))
+                    )
 
         if show_point_labels:
             _label_points_global_dedup(
@@ -2415,8 +2424,8 @@ def _bp_filter_ui_input(graph_id: str) -> Dict[str, Optional[float]]:
 
     for i, col in enumerate(other_cols):
         label, unit = _GROUP_META.get(col, (col, ""))
-        unfix_key = f"{graph_id}_unfix_{col}"
-        input_key = f"{graph_id}_in_{col}"
+        unfix_key = f"inputmode_{graph_id}_unfix_{col}"
+        input_key = f"inputmode_{graph_id}_in_{col}"
 
         st.session_state.setdefault(unfix_key, False)
         st.session_state.setdefault(input_key, float(defaults.get(col, 0.0)))
@@ -2503,7 +2512,7 @@ if mode == "Scenarijus":
             if not ok:
                 st.error(msg)
 
-            if st.button("Generuoti DOC grafiką", key=f"btn_{gid}_doc", disabled=not ok):
+            if st.button("Generuoti grafiką", key=f"btn_{gid}_doc", disabled=not ok):
                 st.session_state[open_key] = True
                 try:
                     st.session_state[fig_key] = _plot_doc_vs_grouped(
@@ -2650,7 +2659,7 @@ else:
             if not ok and msg:
                 st.error(msg)
 
-            if st.button("Generuoti DOC grafiką", key=f"btn_{gid}_doc_input", disabled=not ok):
+            if st.button("Generuoti grafiką", key=f"btn_{gid}_doc_input", disabled=not ok):
                 st.session_state[open_key] = True
                 try:
                     st.session_state[fig_key] = _plot_doc_vs_grouped(

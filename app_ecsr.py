@@ -1381,6 +1381,8 @@ def _bbox_overlap_frac(a, b) -> float:
     return float(inter / min(area_a, area_b))
 
 
+# File: app_ecsr.py
+
 def _label_points_global_dedup(
     ax,
     candidates: List[Tuple[float, float, str, str]],
@@ -1392,9 +1394,15 @@ def _label_points_global_dedup(
     close_y_delta: float = 0.2,
 ) -> None:
     """
-    Show labels on all graphs, but if multiple groups are very close at the same x,
-    keep labels only from one chosen group inside that close cluster.
+    Label policy for grouped graphs:
+
+    - Labels are decided per whole group/line, not per individual point.
+    - If several groups are close to each other at the same x (|dy| <= close_y_delta),
+      only one representative group from that close family is labeled.
+    - For the chosen representative group, labels are shown on all its points
+      (subject only to bbox-overlap suppression for unreadable exact collisions).
     """
+
     if not candidates:
         return
 
@@ -1402,31 +1410,113 @@ def _label_points_global_dedup(
     fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
 
-    kept_bboxes: List[Any] = []
-    chosen_group_for_cluster: List[Tuple[float, float, str]] = []
+    rows = [
+        (float(x), float(y), str(txt), str(grp))
+        for x, y, txt, grp in candidates
+        if np.isfinite(x) and np.isfinite(y)
+    ]
+    if not rows:
+        return
 
-    candidates_sorted = sorted(
-        [
-            (float(x), float(y), str(t), str(g))
-            for x, y, t, g in candidates
-            if np.isfinite(x) and np.isfinite(y)
-        ],
-        key=lambda r: (r[0], -r[1]),
-    )
+    # -----------------------------
+    # 1) Build per-group full lines
+    # -----------------------------
+    group_points: Dict[str, List[Tuple[float, float, str]]] = {}
+    for x, y, txt, grp in rows:
+        group_points.setdefault(grp, []).append((x, y, txt))
 
-    for x0, y0, txt, grp in candidates_sorted:
-        matched_cluster_idx = None
+    for grp in group_points:
+        group_points[grp] = sorted(group_points[grp], key=lambda r: r[0])
 
-        for i, (cx, cy, cgrp) in enumerate(chosen_group_for_cluster):
-            if abs(x0 - cx) <= float(same_x_tol) and abs(y0 - cy) <= float(close_y_delta):
-                matched_cluster_idx = i
-                break
+    # Helper: map x -> y for each group
+    group_xy: Dict[str, Dict[float, float]] = {}
+    for grp, pts in group_points.items():
+        xy_map: Dict[float, float] = {}
+        for x, y, _txt in pts:
+            xy_map[x] = y
+        group_xy[grp] = xy_map
 
-        if matched_cluster_idx is not None:
-            _, _, chosen_grp = chosen_group_for_cluster[matched_cluster_idx]
-            if grp != chosen_grp:
+    groups = list(group_points.keys())
+
+    def _groups_are_close(grp_a: str, grp_b: str) -> bool:
+        """
+        Two groups belong to the same close family if, on every shared x,
+        their y-values differ by <= close_y_delta, and they share at least one x.
+        """
+        xa = group_xy[grp_a]
+        xb = group_xy[grp_b]
+
+        shared_x = []
+        for x1 in xa.keys():
+            for x2 in xb.keys():
+                if abs(float(x1) - float(x2)) <= float(same_x_tol):
+                    shared_x.append((float(x1), float(x2)))
+
+        if not shared_x:
+            return False
+
+        for x1, x2 in shared_x:
+            if abs(float(xa[x1]) - float(xb[x2])) > float(close_y_delta):
+                return False
+
+        return True
+
+    # -----------------------------
+    # 2) Build close families
+    # -----------------------------
+    families: List[List[str]] = []
+    visited: set[str] = set()
+
+    for grp in groups:
+        if grp in visited:
+            continue
+
+        stack = [grp]
+        family: List[str] = []
+
+        while stack:
+            cur = stack.pop()
+            if cur in visited:
                 continue
+            visited.add(cur)
+            family.append(cur)
 
+            for other in groups:
+                if other in visited:
+                    continue
+                if _groups_are_close(cur, other):
+                    stack.append(other)
+
+        families.append(family)
+
+    # -----------------------------
+    # 3) Choose one representative line per family
+    #    Rule: choose the upper line (highest mean y)
+    # -----------------------------
+    representative_groups: set[str] = set()
+
+    for family in families:
+        best_grp = max(
+            family,
+            key=lambda g: float(np.mean([y for _, y, _ in group_points[g]])),
+        )
+        representative_groups.add(best_grp)
+
+    # -----------------------------
+    # 4) Label ALL points only for representative groups
+    #    Keep bbox-overlap suppression only for exact unreadable collisions
+    # -----------------------------
+    kept_bboxes: List[Any] = []
+
+    label_rows: List[Tuple[float, float, str, str]] = []
+    for grp in sorted(representative_groups):
+        for x, y, txt in group_points[grp]:
+            label_rows.append((x, y, txt, grp))
+
+    # Stable ordering: left-to-right, and higher y first
+    label_rows = sorted(label_rows, key=lambda r: (r[0], -r[1], r[3]))
+
+    for x0, y0, txt, _grp in label_rows:
         ann = ax.annotate(
             txt,
             xy=(x0, y0),
@@ -1460,9 +1550,6 @@ def _label_points_global_dedup(
         if too_close_bbox:
             ann.remove()
             continue
-
-        if matched_cluster_idx is None:
-            chosen_group_for_cluster.append((float(x0), float(y0), str(grp)))
 
         kept_bboxes.append(bb)
 

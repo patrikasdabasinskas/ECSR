@@ -1504,7 +1504,7 @@ def _label_points_global_dedup(
         kept_bboxes.append(bb)
 
 
-def _plot_doc_vs_grouped(
+def _plot_saving_vs_grouped(
     summary_tbl: pd.DataFrame,
     *,
     x_col: str,
@@ -1512,32 +1512,24 @@ def _plot_doc_vs_grouped(
     x_label: str,
     group_col: Optional[str],
     show_point_labels: bool = False,
-    show_docnotch: bool = False,
 ) -> Any:
-    import matplotlib.ticker as mticker
-
     fig, ax = _mpl_academic_fig()
 
     df = summary_tbl.copy()
     df[x_col] = pd.to_numeric(df[x_col], errors="coerce")
     df["DOCmin_EurPerNM"] = pd.to_numeric(df["DOCmin_EurPerNM"], errors="coerce")
+    df["DOCnotch_EurPerNM"] = pd.to_numeric(df["DOCnotch_EurPerNM"], errors="coerce")
 
-    if show_docnotch:
-        df["DOCnotch_EurPerNM"] = pd.to_numeric(df["DOCnotch_EurPerNM"], errors="coerce")
-        keep = (
-            np.isfinite(df[x_col])
-            & np.isfinite(df["DOCmin_EurPerNM"])
-            & np.isfinite(df["DOCnotch_EurPerNM"])
-        )
-    else:
-        keep = np.isfinite(df[x_col]) & np.isfinite(df["DOCmin_EurPerNM"])
-
+    keep = (
+        np.isfinite(df[x_col])
+        & np.isfinite(df["DOCmin_EurPerNM"])
+        & np.isfinite(df["DOCnotch_EurPerNM"])
+    )
     df = df.loc[keep].copy()
     if df.empty:
         raise ValueError("Nėra duomenų po filtravimo.")
 
-    scale = 100.0 if show_docnotch else 1.0
-    y_label = "DOC (EUR/100NM)" if show_docnotch else "DOC (EUR/NM)"
+    df["Saving_EurPerNM"] = df["DOCnotch_EurPerNM"] - df["DOCmin_EurPerNM"]
 
     used_group = None
     if group_col and group_col in df.columns:
@@ -1547,139 +1539,84 @@ def _plot_doc_vs_grouped(
             used_group = group_col
 
     y_all: List[float] = []
-    docmin_label_color = "darkred" if show_docnotch else "black"
 
     if used_group:
-        agg_cols = ["DOCmin_EurPerNM"] + (["DOCnotch_EurPerNM"] if show_docnotch else [])
-        g = df.groupby([used_group, x_col], as_index=False)[agg_cols].median()
+        g = (
+            df.groupby([used_group, x_col], as_index=False)["Saving_EurPerNM"]
+            .median()
+            .rename(columns={"Saving_EurPerNM": "Saving"})
+        )
 
-        label_candidates_min: List[Tuple[float, float, str, str]] = []
-        label_candidates_notch: List[Tuple[float, float, str, str]] = []
+        label_candidates: List[Tuple[float, float, str, str]] = []
 
         for grp_val, sub in g.groupby(used_group, sort=True):
             sub = sub.sort_values(x_col)
             xs = sub[x_col].to_numpy(float)
-            ys_min = sub["DOCmin_EurPerNM"].to_numpy(float) * scale
+            ys = sub["Saving"].to_numpy(float)
 
             ax.plot(
                 xs,
-                ys_min,
+                ys,
                 linewidth=2.2,
                 marker="o",
                 markersize=4.8,
                 linestyle="-",
                 color="darkred",
-                label=f"{_group_label(used_group, float(grp_val))} — DOCmin",
+                label=_group_label(used_group, float(grp_val)),
             )
 
-            y_all.extend(ys_min.tolist())
+            y_all.extend(ys.tolist())
 
             if show_point_labels:
-                for x0, y0 in zip(xs.tolist(), ys_min.tolist()):
+                for x0, y0 in zip(xs.tolist(), ys.tolist()):
                     if np.isfinite(x0) and np.isfinite(y0):
-                        label_candidates_min.append(
-                            (float(x0), float(y0), f"{float(y0):.2f}", f"{grp_val}_min")
+                        label_candidates.append(
+                            (float(x0), float(y0), f"{float(y0):.2f}", str(grp_val))
                         )
 
-            if show_docnotch:
-                ys_notch = sub["DOCnotch_EurPerNM"].to_numpy(float) * scale
-
-                ax.plot(
-                    xs,
-                    ys_notch,
-                    linewidth=2.2,
-                    marker="s",
-                    markersize=4.6,
-                    linestyle="--",
-                    color="dodgerblue",
-                    label=f"{_group_label(used_group, float(grp_val))} — DOCnotch",
-                )
-
-                y_all.extend(ys_notch.tolist())
-
-                if show_point_labels:
-                    for x0, y0 in zip(xs.tolist(), ys_notch.tolist()):
-                        if np.isfinite(x0) and np.isfinite(y0):
-                            label_candidates_notch.append(
-                                (float(x0), float(y0), f"{float(y0):.2f}", f"{grp_val}_notch")
-                            )
-
-        if show_point_labels:
-            if label_candidates_notch:
-                _label_points_global_dedup(
-                    ax,
-                    label_candidates_notch,
-                    overlap_frac=0.80,
-                    y_offset_pts=8,
-                    fontsize=7,
-                    color="dodgerblue",
-                )
-
-            if label_candidates_min:
-                _label_points_global_dedup(
-                    ax,
-                    label_candidates_min,
-                    overlap_frac=0.80,
-                    y_offset_pts=-10,
-                    fontsize=7,
-                    color=docmin_label_color,
-                )
+        if show_point_labels and label_candidates:
+            _label_points_global_dedup(
+                ax,
+                label_candidates,
+                overlap_frac=0.80,
+                y_offset_pts=6,
+                fontsize=7,
+                color="darkred",
+            )
 
         ax.legend(loc="best")
 
     else:
-        agg_cols = ["DOCmin_EurPerNM"] + (["DOCnotch_EurPerNM"] if show_docnotch else [])
-        g = df.groupby(x_col, as_index=False)[agg_cols].median().sort_values(x_col)
+        g = (
+            df.groupby(x_col, as_index=False)["Saving_EurPerNM"]
+            .median()
+            .rename(columns={"Saving_EurPerNM": "Saving"})
+            .sort_values(x_col)
+        )
 
         xs = g[x_col].to_numpy(float)
-        ys_min = g["DOCmin_EurPerNM"].to_numpy(float) * scale
+        ys = g["Saving"].to_numpy(float)
 
         ax.plot(
             xs,
-            ys_min,
+            ys,
             linewidth=2.2,
             marker="o",
             color="darkred",
-            label="DOCmin",
         )
-        y_all.extend(ys_min.tolist())
+        ax.scatter(xs, ys, s=26, color="darkred")
+        y_all.extend(ys.tolist())
 
         if show_point_labels:
             _label_points_with_overlap_avoidance(
                 ax,
                 xs,
-                ys_min,
+                ys,
                 fmt="{:.2f}",
-                y_offset_pts=-10,
+                y_offset_pts=6,
                 fontsize=7,
-                color=docmin_label_color,
+                color="darkred",
             )
-
-        if show_docnotch:
-            ys_notch = g["DOCnotch_EurPerNM"].to_numpy(float) * scale
-            ax.plot(
-                xs,
-                ys_notch,
-                linewidth=2.2,
-                marker="s",
-                linestyle="--",
-                color="dodgerblue",
-                label="DOCnotch",
-            )
-            y_all.extend(ys_notch.tolist())
-
-            if show_point_labels:
-                _label_points_with_overlap_avoidance(
-                    ax,
-                    xs,
-                    ys_notch,
-                    fmt="{:.2f}",
-                    y_offset_pts=8,
-                    fontsize=7,
-                    color="dodgerblue",
-                )
-
-        ax.legend(loc="best")
 
     y_for_limits = np.asarray(y_all, float)
     y_for_limits = y_for_limits[np.isfinite(y_for_limits)]
@@ -1689,25 +1626,16 @@ def _plot_doc_vs_grouped(
         rng = y_max - y_min
 
         if rng <= 0 or not np.isfinite(rng):
-            pad = max(0.15 * max(abs(y_min), 1.0), 0.20)
+            pad = max(0.15 * max(abs(y_min), 1.0), 0.05)
             ax.set_ylim(y_min - pad, y_max + pad)
         else:
-            if show_docnotch:
-                top_pad = max(0.12 * rng, 0.04 * max(abs(y_max), 1.0), 0.05)
-                bot_pad = max(0.12 * rng, 0.04 * max(abs(y_min), 1.0), 0.05)
-            else:
-                top_pad = max(0.25 * rng, 0.12 * max(abs(y_max), 1.0), 0.20)
-                bot_pad = max(0.25 * rng, 0.12 * max(abs(y_min), 1.0), 0.20)
-
+            top_pad = max(0.25 * rng, 0.12 * max(abs(y_max), 1.0), 0.05)
+            bot_pad = max(0.15 * rng, 0.06 * max(abs(y_min), 1.0), 0.03)
             ax.set_ylim(y_min - bot_pad, y_max + top_pad)
-
-    if show_docnotch and y_for_limits.size:
-        ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=8))
-        ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
 
     ax.set_title(title)
     ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
+    ax.set_ylabel("Sutaupymas (EUR/NM)")
     _add_axis_arrows(ax)
     fig.tight_layout()
     return fig
@@ -2396,7 +2324,7 @@ if mode == "Scenarijus":
                 _render_result_card(v, "EUR" if v else "", "DOCnotch rezultatas", max_width_px=190)
             with r3:
                 v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else ""
-                _render_result_card(v, "EUR" if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
+                _render_result_card(v, "EUR" if v else "", "Sutaupymas (DOCnotch − DOCmin)", max_width_px=220)
         else:
             _show_result_card(shown_value, shown_unit)
 
@@ -2526,7 +2454,7 @@ else:
                 _render_result_card(v, "EUR" if v else "", "DOCnotch rezultatas", max_width_px=190)
             with r3:
                 v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else ""
-                _render_result_card(v, "EUR" if v else "", "Skirtumas (DOCnotch − DOCmin)", max_width_px=220)
+                _render_result_card(v, "EUR" if v else "", "Sutaupymas (DOCnotch − DOCmin)", max_width_px=220)
         else:
             _show_result_card(shown_value, shown_unit)
 
@@ -2625,10 +2553,10 @@ if mode == "Scenarijus":
         x_name_lt = meta["x_name_lt"]
 
         doc_graph_titles = {
-            "d1": "Grafikas 2 — DOC (eur/nm) vs Vėjo komponentė (kt)",
-            "d2": "Grafikas 3 — DOC (eur/nm) vs Masė (kg)",
-            "d3": "Grafikas 4 — DOC (eur/nm) vs Skrydžio aukštis (ft)",
-            "d4": "Grafikas 5 — DOC (eur/nm) vs ISA nuokrypis (°C)",
+            "d1": "Grafikas 2 — Sutaupymas (eur/nm) vs Vėjo komponentė (kt)",
+            "d2": "Grafikas 3 — Sutaupymas (eur/nm) vs Masė (kg)",
+            "d3": "Grafikas 4 — Sutaupymas (eur/nm) vs Skrydžio aukštis (ft)",
+            "d4": "Grafikas 5 — Sutaupymas (eur/nm) vs ISA nuokrypis (°C)",
         }
         exp_title = doc_graph_titles[gid]
         open_key = f"open_{gid}"
@@ -2651,12 +2579,7 @@ if mode == "Scenarijus":
             if not ok:
                 st.error(msg)
 
-            cc1, cc2 = st.columns([2.2, 1.0], gap="small")
-            with cc1:
-                show_docnotch = st.checkbox(
-                    "Rodyti DOCnotch kreivę",
-                    key=f"{gid}_show_docnotch_scn",
-                )
+            _, cc2 = st.columns([2.2, 1.0], gap="small")
             with cc2:
                 run_graph = st.button(
                     "Generuoti grafiką",
@@ -2668,14 +2591,13 @@ if mode == "Scenarijus":
             if run_graph:
                 st.session_state[open_key] = True
                 try:
-                    st.session_state[fig_key] = _plot_doc_vs_grouped(
+                    st.session_state[fig_key] = _plot_saving_vs_grouped(
                         filtered_local,
                         x_col=x_col,
-                        title=f"DOC priklausomybė nuo {x_name_lt}",
+                        title=f"Sutaupymo priklausomybė nuo {x_name_lt}",
                         x_label=x_label,
                         group_col=group_col,
                         show_point_labels=True,
-                        show_docnotch=show_docnotch,
                     )
                     st.session_state[cap_key] = _conditions_sentence_from_filters(fixed, x_col=x_col, grouped_by=group_col)
                     st.session_state[err_key] = ""
@@ -2780,10 +2702,10 @@ else:
         x_name_lt = meta["x_name_lt"]
 
         doc_graph_titles = {
-            "d1": "Grafikas 2 — DOC (eur/nm) vs Vėjo komponentė (kt)",
-            "d2": "Grafikas 3 — DOC (eur/nm) vs Masė (kg)",
-            "d3": "Grafikas 4 — DOC (eur/nm) vs Skrydžio aukštis (ft)",
-            "d4": "Grafikas 5 — DOC (eur/nm) vs ISA nuokrypis (°C)",
+            "d1": "Grafikas 2 — Sutaupymas (eur/nm) vs Vėjo komponentė (kt)",
+            "d2": "Grafikas 3 — Sutaupymas (eur/nm) vs Masė (kg)",
+            "d3": "Grafikas 4 — Sutaupymas (eur/nm) vs Skrydžio aukštis (ft)",
+            "d4": "Grafikas 5 — Sutaupymas (eur/nm) vs ISA nuokrypis (°C)",
         }
         exp_title = doc_graph_titles[gid]
         open_key = f"open_{gid}"
@@ -2819,12 +2741,7 @@ else:
             if not ok and msg:
                 st.error(msg)
 
-            cc1, cc2 = st.columns([2.2, 1.0], gap="small")
-            with cc1:
-                show_docnotch = st.checkbox(
-                    "Rodyti DOCnotch kreivę",
-                    key=f"{gid}_show_docnotch_input",
-                )
+            _, cc2 = st.columns([2.2, 1.0], gap="small")
             with cc2:
                 run_graph = st.button(
                     "Generuoti grafiką",
@@ -2836,14 +2753,13 @@ else:
             if run_graph:
                 st.session_state[open_key] = True
                 try:
-                    st.session_state[fig_key] = _plot_doc_vs_grouped(
+                    st.session_state[fig_key] = _plot_saving_vs_grouped(
                         filtered_local,
                         x_col=x_col,
-                        title=f"DOC priklausomybė nuo {x_name_lt}",
+                        title=f"Sutaupymo priklausomybė nuo {x_name_lt}",
                         x_label=x_label,
                         group_col=group_col,
                         show_point_labels=True,
-                        show_docnotch=show_docnotch,
                     )
                     st.session_state[cap_key] = _conditions_sentence_from_filters(
                         fixed_in,

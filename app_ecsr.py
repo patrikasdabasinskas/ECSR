@@ -1623,17 +1623,16 @@ def _plot_saving_vs_grouped(
     y_for_limits = np.asarray(y_all, float)
     y_for_limits = y_for_limits[np.isfinite(y_for_limits)]
     if y_for_limits.size:
-        y_min = float(np.nanmin(y_for_limits))
-        y_max = float(np.nanmax(y_for_limits))
+        y_min = max(0.0, float(np.nanmin(y_for_limits)))
+        y_max = max(0.0, float(np.nanmax(y_for_limits)))
         rng = y_max - y_min
 
         if rng <= 0 or not np.isfinite(rng):
-            pad = max(0.15 * max(abs(y_min), 1.0), 0.05)
-            ax.set_ylim(y_min - pad, y_max + pad)
+            pad = max(0.15 * max(abs(y_max), 1.0), 0.05)
+            ax.set_ylim(0.0, y_max + pad)
         else:
             top_pad = max(0.25 * rng, 0.12 * max(abs(y_max), 1.0), 0.05)
-            bot_pad = max(0.15 * rng, 0.06 * max(abs(y_min), 1.0), 0.03)
-            ax.set_ylim(y_min - bot_pad, y_max + top_pad)
+            ax.set_ylim(0.0, y_max + top_pad)
 
     ax.set_title(title)
     ax.set_xlabel(x_label)

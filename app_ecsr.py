@@ -1467,46 +1467,67 @@ def _filter_label_candidates_by_min_delta(
     min_delta: float,
 ) -> List[Tuple[float, float, str, str]]:
     """
-    Keep labels only if values are sufficiently separated inside each group.
-    Rule:
-    - if all neighboring y-differences in the group are < min_delta -> keep none
-    - otherwise keep only points that differ from at least one neighbor by >= min_delta
+    Keep labels only if values are sufficiently separated.
+
+    Applied in 2 stages:
+    1) within each group/series across neighboring x-points
+    2) across groups at the same x-position
+
+    Rules:
+    - if all neighboring y-differences inside one group are < min_delta -> that group gets no labels
+    - otherwise, inside that group keep only points that differ from at least one neighbor by >= min_delta
+    - then, for each x-position across all groups:
+        * if all neighboring y-differences are < min_delta -> keep no labels at that x
+        * otherwise keep only labels whose y differs from at least one neighbor at that x by >= min_delta
     """
     if not candidates or not np.isfinite(min_delta) or float(min_delta) <= 0.0:
         return candidates
 
-    groups: Dict[str, List[Tuple[float, float, str, str]]] = {}
-    for row in candidates:
-        groups.setdefault(str(row[3]), []).append(row)
+    thr = float(min_delta)
 
-    kept: List[Tuple[float, float, str, str]] = []
-
-    for grp, rows in groups.items():
-        rows = sorted(rows, key=lambda r: float(r[0]))
-        ys = [float(r[1]) for r in rows]
-
+    def _filter_rows_by_neighbor_gap(rows: List[Tuple[float, float, str, str]], sort_key):
+        rows = sorted(rows, key=sort_key)
         if len(rows) == 1:
-            kept.extend(rows)
-            continue
+            return rows
 
-        diffs: List[float] = []
-        for i in range(len(ys) - 1):
-            diffs.append(abs(ys[i + 1] - ys[i]))
+        ys = [float(r[1]) for r in rows]
+        diffs = [abs(ys[i + 1] - ys[i]) for i in range(len(ys) - 1)]
 
-        if not any(d >= float(min_delta) for d in diffs):
-            continue
+        if not any(d >= thr for d in diffs):
+            return []
 
         keep_mask = [False] * len(rows)
-
         for i in range(len(rows)):
-            left_ok = i > 0 and abs(ys[i] - ys[i - 1]) >= float(min_delta)
-            right_ok = i < len(rows) - 1 and abs(ys[i + 1] - ys[i]) >= float(min_delta)
+            left_ok = i > 0 and abs(ys[i] - ys[i - 1]) >= thr
+            right_ok = i < len(rows) - 1 and abs(ys[i + 1] - ys[i]) >= thr
             if left_ok or right_ok:
                 keep_mask[i] = True
 
-        kept.extend([row for row, flag in zip(rows, keep_mask) if flag])
+        return [row for row, keep in zip(rows, keep_mask) if keep]
 
-    return kept
+    # Stage 1: filter inside each series
+    by_group: Dict[str, List[Tuple[float, float, str, str]]] = {}
+    for row in candidates:
+        by_group.setdefault(str(row[3]), []).append(row)
+
+    stage1: List[Tuple[float, float, str, str]] = []
+    for grp_rows in by_group.values():
+        stage1.extend(_filter_rows_by_neighbor_gap(grp_rows, sort_key=lambda r: float(r[0])))
+
+    if not stage1:
+        return []
+
+    # Stage 2: filter across groups at the same x
+    by_x: Dict[float, List[Tuple[float, float, str, str]]] = {}
+    for row in stage1:
+        x = float(row[0])
+        by_x.setdefault(x, []).append(row)
+
+    final_kept: List[Tuple[float, float, str, str]] = []
+    for x_rows in by_x.values():
+        final_kept.extend(_filter_rows_by_neighbor_gap(x_rows, sort_key=lambda r: float(r[1])))
+
+    return final_kept
 
 def _label_points_global_dedup(
     ax,

@@ -1329,8 +1329,8 @@ def _label_points_with_overlap_avoidance(
                 "arrowstyle": "-",
                 "linewidth": 0.8,
                 "color": color,
-                "shrinkA": 6,
-                "shrinkB": 6,
+                "shrinkA": 1,
+                "shrinkB": 0,
             },
             bbox={
                 "boxstyle": "round,pad=0.08",
@@ -1480,8 +1480,8 @@ def _label_points_global_dedup(
                 "arrowstyle": "-",
                 "linewidth": 0.8,
                 "color": color,
-                "shrinkA": 6,
-                "shrinkB": 6,
+                "shrinkA": 1,
+                "shrinkB": 0,
             },
             bbox={
                 "boxstyle": "round,pad=0.08",
@@ -1503,93 +1503,6 @@ def _label_points_global_dedup(
 
         kept_bboxes.append(bb)
 
-def _plot_breakpoint_vs_grouped(
-    summary_tbl: pd.DataFrame,
-    *,
-    y_col: str,
-    y_label: str,
-    x_col: str,
-    title: str,
-    x_label: str,
-    group_col: Optional[str],
-    fmt: str,
-    show_point_labels: bool = False,
-) -> Any:
-    fig, ax = _mpl_academic_fig()
-
-    df = summary_tbl.copy()
-    df[y_col] = pd.to_numeric(df[y_col], errors="coerce")
-    df[x_col] = pd.to_numeric(df[x_col], errors="coerce")
-    keep = np.isfinite(df[y_col]) & np.isfinite(df[x_col])
-    df = df.loc[keep].copy()
-    if df.empty:
-        raise ValueError("Nėra duomenų po filtravimo.")
-
-    used_group = None
-    if group_col and group_col in df.columns:
-        df[group_col] = pd.to_numeric(df[group_col], errors="coerce")
-        df = df.loc[np.isfinite(df[group_col])].copy()
-        if not df.empty and int(df[group_col].nunique()) > 1:
-            used_group = group_col
-
-    if used_group:
-        g = df.groupby([used_group, x_col], as_index=False)[y_col].median().rename(columns={y_col: "BE"})
-
-        # Plot all groups first + collect all label candidates
-        label_candidates: List[Tuple[float, float, str, str]] = []
-
-        for grp_val, sub in g.groupby(used_group, sort=True):
-            sub = sub.sort_values(x_col)
-            xs = sub[x_col].to_numpy(float)
-            ys = sub["BE"].to_numpy(float)
-
-            ax.plot(xs, ys, linewidth=2.2, marker="o", markersize=4.8, label=_group_label(used_group, float(grp_val)))
-
-            for x0, y0 in zip(xs.tolist(), ys.tolist()):
-                if np.isfinite(x0) and np.isfinite(y0):
-                    label_candidates.append(
-                        (float(x0), float(y0), fmt.format(float(y0)), str(grp_val))
-                    )
-
-        # GLOBAL label placement with overlap dedup across groups
-        if show_point_labels:
-            _label_points_global_dedup(ax, label_candidates, overlap_frac=0.80, y_offset_pts=6, fontsize=7)
-
-        ax.legend(loc="best")
-        y_for_limits = g["BE"].to_numpy(float)
-
-    else:
-        df = df.sort_values(x_col)
-        xs = df[x_col].to_numpy(float)
-        ys = df[y_col].to_numpy(float)
-
-        ax.plot(xs, ys, linewidth=2.2, color="darkred")
-        ax.scatter(xs, ys, s=26, color="darkred")
-
-        # Single series: old labeling is fine (or you can also use global_dedup)
-        if show_point_labels:
-            _label_points_with_overlap_avoidance(ax, xs, ys, fmt=fmt, y_offset_pts=6, fontsize=7)
-
-        y_for_limits = ys
-
-    y_min = float(np.nanmin(y_for_limits))
-    y_max = float(np.nanmax(y_for_limits))
-    rng = y_max - y_min
-
-    if rng <= 0 or not np.isfinite(rng):
-        pad = max(0.15 * max(abs(y_min), 1.0), 0.20)
-        ax.set_ylim(y_min - pad, y_max + pad)
-    else:
-        top_pad = max(0.25 * rng, 0.12 * max(abs(y_max), 1.0), 0.20)
-        bot_pad = max(0.15 * rng, 0.06 * max(abs(y_min), 1.0), 0.10)
-        ax.set_ylim(y_min - bot_pad, y_max + top_pad)
-
-    ax.set_title(title)
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
-    _add_axis_arrows(ax)
-    fig.tight_layout()
-    return fig
 
 def _plot_doc_vs_grouped(
     summary_tbl: pd.DataFrame,
@@ -1629,7 +1542,6 @@ def _plot_doc_vs_grouped(
             used_group = group_col
 
     y_all: List[float] = []
-
     docmin_label_color = "darkred" if show_docnotch else "black"
 
     if used_group:
@@ -1775,9 +1687,33 @@ def _plot_doc_vs_grouped(
             pad = max(0.15 * max(abs(y_min), 1.0), 0.20)
             ax.set_ylim(y_min - pad, y_max + pad)
         else:
-            top_pad = max(0.25 * rng, 0.12 * max(abs(y_max), 1.0), 0.20)
-            bot_pad = max(0.25 * rng, 0.12 * max(abs(y_min), 1.0), 0.20)
+            if show_docnotch:
+                top_pad = max(0.12 * rng, 0.04 * max(abs(y_max), 1.0), 0.05)
+                bot_pad = max(0.12 * rng, 0.04 * max(abs(y_min), 1.0), 0.05)
+            else:
+                top_pad = max(0.25 * rng, 0.12 * max(abs(y_max), 1.0), 0.20)
+                bot_pad = max(0.25 * rng, 0.12 * max(abs(y_min), 1.0), 0.20)
+
             ax.set_ylim(y_min - bot_pad, y_max + top_pad)
+
+    if show_docnotch and y_for_limits.size:
+        import matplotlib.ticker as mticker
+
+        y0, y1 = ax.get_ylim()
+        yr = float(y1 - y0)
+
+        if yr <= 0:
+            step = 0.005
+        elif yr <= 0.03:
+            step = 0.002
+        elif yr <= 0.06:
+            step = 0.005
+        elif yr <= 0.12:
+            step = 0.01
+        else:
+            step = 0.02
+
+        ax.yaxis.set_major_locator(mticker.MultipleLocator(step))
 
     ax.set_title(title)
     ax.set_xlabel(x_label)
@@ -1785,6 +1721,95 @@ def _plot_doc_vs_grouped(
     _add_axis_arrows(ax)
     fig.tight_layout()
     return fig
+
+def _plot_breakpoint_vs_grouped(
+    summary_tbl: pd.DataFrame,
+    *,
+    y_col: str,
+    y_label: str,
+    x_col: str,
+    title: str,
+    x_label: str,
+    group_col: Optional[str],
+    fmt: str,
+    show_point_labels: bool = False,
+) -> Any:
+    fig, ax = _mpl_academic_fig()
+
+    df = summary_tbl.copy()
+    df[y_col] = pd.to_numeric(df[y_col], errors="coerce")
+    df[x_col] = pd.to_numeric(df[x_col], errors="coerce")
+    keep = np.isfinite(df[y_col]) & np.isfinite(df[x_col])
+    df = df.loc[keep].copy()
+    if df.empty:
+        raise ValueError("Nėra duomenų po filtravimo.")
+
+    used_group = None
+    if group_col and group_col in df.columns:
+        df[group_col] = pd.to_numeric(df[group_col], errors="coerce")
+        df = df.loc[np.isfinite(df[group_col])].copy()
+        if not df.empty and int(df[group_col].nunique()) > 1:
+            used_group = group_col
+
+    if used_group:
+        g = df.groupby([used_group, x_col], as_index=False)[y_col].median().rename(columns={y_col: "BE"})
+
+        # Plot all groups first + collect all label candidates
+        label_candidates: List[Tuple[float, float, str, str]] = []
+
+        for grp_val, sub in g.groupby(used_group, sort=True):
+            sub = sub.sort_values(x_col)
+            xs = sub[x_col].to_numpy(float)
+            ys = sub["BE"].to_numpy(float)
+
+            ax.plot(xs, ys, linewidth=2.2, marker="o", markersize=4.8, label=_group_label(used_group, float(grp_val)))
+
+            for x0, y0 in zip(xs.tolist(), ys.tolist()):
+                if np.isfinite(x0) and np.isfinite(y0):
+                    label_candidates.append(
+                        (float(x0), float(y0), fmt.format(float(y0)), str(grp_val))
+                    )
+
+        # GLOBAL label placement with overlap dedup across groups
+        if show_point_labels:
+            _label_points_global_dedup(ax, label_candidates, overlap_frac=0.80, y_offset_pts=6, fontsize=7)
+
+        ax.legend(loc="best")
+        y_for_limits = g["BE"].to_numpy(float)
+
+    else:
+        df = df.sort_values(x_col)
+        xs = df[x_col].to_numpy(float)
+        ys = df[y_col].to_numpy(float)
+
+        ax.plot(xs, ys, linewidth=2.2, color="darkred")
+        ax.scatter(xs, ys, s=26, color="darkred")
+
+        # Single series: old labeling is fine (or you can also use global_dedup)
+        if show_point_labels:
+            _label_points_with_overlap_avoidance(ax, xs, ys, fmt=fmt, y_offset_pts=6, fontsize=7)
+
+        y_for_limits = ys
+
+    y_min = float(np.nanmin(y_for_limits))
+    y_max = float(np.nanmax(y_for_limits))
+    rng = y_max - y_min
+
+    if rng <= 0 or not np.isfinite(rng):
+        pad = max(0.15 * max(abs(y_min), 1.0), 0.20)
+        ax.set_ylim(y_min - pad, y_max + pad)
+    else:
+        top_pad = max(0.25 * rng, 0.12 * max(abs(y_max), 1.0), 0.20)
+        bot_pad = max(0.15 * rng, 0.06 * max(abs(y_min), 1.0), 0.10)
+        ax.set_ylim(y_min - bot_pad, y_max + top_pad)
+
+    ax.set_title(title)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    _add_axis_arrows(ax)
+    fig.tight_layout()
+    return fig
+
 
 def _build_interpolated_sweep_table(
     summary_tbl: pd.DataFrame,

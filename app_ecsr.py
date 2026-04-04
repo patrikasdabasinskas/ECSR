@@ -2571,12 +2571,12 @@ def _bp_filter_ui_input(graph_id: str) -> Dict[str, Optional[float]]:
         label, unit = _GROUP_META.get(col, (col, ""))
         input_key = f"inputmode_{graph_id}_in_{col}"
 
-        st.session_state.setdefault(input_key, float(defaults.get(col, 0.0)))
+        if input_key not in st.session_state:
+            st.session_state[input_key] = float(defaults.get(col, 0.0))
 
         with cols[i % 3]:
             value = st.number_input(
                 f"{label} ({unit})" if unit else f"{label}",
-                value=float(st.session_state[input_key]),
                 step=1.0 if col in {"ISA_C", "WIND_kt"} else 500.0,
                 key=input_key,
             )

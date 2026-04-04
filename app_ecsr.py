@@ -1625,16 +1625,20 @@ def _plot_doc_vs_grouped(
     title: str,
     x_label: str,
     group_col: Optional[str],
-    docmin_col: str = "DOCmin_EurPerNM",
     show_point_labels: bool = False,
 ) -> Any:
     fig, ax = _mpl_academic_fig()
 
     df = summary_tbl.copy()
     df[x_col] = pd.to_numeric(df[x_col], errors="coerce")
-    df[docmin_col] = pd.to_numeric(df[docmin_col], errors="coerce")
+    df["DOCmin_EurPerNM"] = pd.to_numeric(df["DOCmin_EurPerNM"], errors="coerce")
+    df["DOCnotch_EurPerNM"] = pd.to_numeric(df["DOCnotch_EurPerNM"], errors="coerce")
 
-    keep = np.isfinite(df[x_col]) & np.isfinite(df[docmin_col])
+    keep = (
+        np.isfinite(df[x_col])
+        & np.isfinite(df["DOCmin_EurPerNM"])
+        & np.isfinite(df["DOCnotch_EurPerNM"])
+    )
     df = df.loc[keep].copy()
     if df.empty:
         raise ValueError("Nėra duomenų po filtravimo.")
@@ -1646,11 +1650,18 @@ def _plot_doc_vs_grouped(
         if not df.empty and int(df[group_col].nunique()) > 1:
             used_group = group_col
 
+    y_all: List[float] = []
+
     if used_group:
         g = (
-            df.groupby([used_group, x_col], as_index=False)[docmin_col]
+            df.groupby([used_group, x_col], as_index=False)[["DOCmin_EurPerNM", "DOCnotch_EurPerNM"]]
             .median()
-            .rename(columns={docmin_col: "DOCmin"})
+            .rename(
+                columns={
+                    "DOCmin_EurPerNM": "DOCmin",
+                    "DOCnotch_EurPerNM": "DOCnotch",
+                }
+            )
         )
 
         label_candidates: List[Tuple[float, float, str, str]] = []
@@ -1658,22 +1669,42 @@ def _plot_doc_vs_grouped(
         for grp_val, sub in g.groupby(used_group, sort=True):
             sub = sub.sort_values(x_col)
             xs = sub[x_col].to_numpy(float)
-            ys = sub["DOCmin"].to_numpy(float)
+            ys_min = sub["DOCmin"].to_numpy(float)
+            ys_notch = sub["DOCnotch"].to_numpy(float)
+
+            group_label = _group_label(used_group, float(grp_val))
 
             ax.plot(
                 xs,
-                ys,
+                ys_min,
                 linewidth=2.2,
                 marker="o",
                 markersize=4.8,
-                label=_group_label(used_group, float(grp_val)),
+                linestyle="-",
+                label=f"{group_label} — DOCmin",
             )
 
-            for x0, y0 in zip(xs.tolist(), ys.tolist()):
-                if np.isfinite(x0) and np.isfinite(y0):
-                    label_candidates.append(
-                        (float(x0), float(y0), f"{float(y0):.2f}", str(grp_val))
-                    )
+            ax.plot(
+                xs,
+                ys_notch,
+                linewidth=2.2,
+                marker="s",
+                markersize=4.6,
+                linestyle="--",
+                label=f"{group_label} — DOCnotch",
+            )
+
+            y_all.extend(ys_min.tolist())
+            y_all.extend(ys_notch.tolist())
+
+            if show_point_labels:
+                for x0, y0 in zip(xs.tolist(), ys_min.tolist()):
+                    if np.isfinite(x0) and np.isfinite(y0):
+                        label_candidates.append((float(x0), float(y0), f"{float(y0):.2f}", f"{grp_val}_min"))
+
+                for x0, y0 in zip(xs.tolist(), ys_notch.tolist()):
+                    if np.isfinite(x0) and np.isfinite(y0):
+                        label_candidates.append((float(x0), float(y0), f"{float(y0):.2f}", f"{grp_val}_notch"))
 
         if show_point_labels:
             _label_points_global_dedup(
@@ -1685,34 +1716,51 @@ def _plot_doc_vs_grouped(
             )
 
         ax.legend(loc="best")
-        y_for_limits = g["DOCmin"].to_numpy(float)
 
     else:
         g = (
-            df.groupby(x_col, as_index=False)[docmin_col]
+            df.groupby(x_col, as_index=False)[["DOCmin_EurPerNM", "DOCnotch_EurPerNM"]]
             .median()
-            .rename(columns={docmin_col: "DOCmin"})
+            .rename(
+                columns={
+                    "DOCmin_EurPerNM": "DOCmin",
+                    "DOCnotch_EurPerNM": "DOCnotch",
+                }
+            )
             .sort_values(x_col)
         )
 
         xs = g[x_col].to_numpy(float)
-        ys = g["DOCmin"].to_numpy(float)
+        ys_min = g["DOCmin"].to_numpy(float)
+        ys_notch = g["DOCnotch"].to_numpy(float)
 
-        ax.plot(xs, ys, linewidth=2.2, color="darkred")
-        ax.scatter(xs, ys, s=26, color="darkred")
+        ax.plot(xs, ys_min, linewidth=2.2, marker="o", color="darkred", label="DOCmin")
+        ax.plot(xs, ys_notch, linewidth=2.2, marker="s", linestyle="--", color="dodgerblue", label="DOCnotch")
+
+        y_all.extend(ys_min.tolist())
+        y_all.extend(ys_notch.tolist())
 
         if show_point_labels:
             _label_points_with_overlap_avoidance(
                 ax,
                 xs,
-                ys,
+                ys_min,
                 fmt="{:.2f}",
                 y_offset_pts=6,
                 fontsize=7,
             )
+            _label_points_with_overlap_avoidance(
+                ax,
+                xs,
+                ys_notch,
+                fmt="{:.2f}",
+                y_offset_pts=18,
+                fontsize=7,
+            )
 
-        y_for_limits = ys
+        ax.legend(loc="best")
 
+    y_for_limits = np.asarray(y_all, float)
     y_for_limits = y_for_limits[np.isfinite(y_for_limits)]
     if y_for_limits.size:
         y_min = float(np.nanmin(y_for_limits))
@@ -1729,7 +1777,7 @@ def _plot_doc_vs_grouped(
 
     ax.set_title(title)
     ax.set_xlabel(x_label)
-    ax.set_ylabel("DOCmin (EUR/NM)")
+    ax.set_ylabel("DOC (EUR/NM)")
     _add_axis_arrows(ax)
     fig.tight_layout()
     return fig
@@ -1780,6 +1828,7 @@ def _build_interpolated_sweep_table(
                 "ISA_C": isa_c,
                 "WIND_kt": wind_kt,
                 "DOCmin_EurPerNM": float(qres.docmin_eur_per_nm),
+                "DOCnotch_EurPerNM": float(qres.docnotch_eur_per_nm),
                 "BreakEven_TIME_COST_EurPerHr": float(qres.be_time_cost_eur_per_hr),
                 "BreakEven_FUEL_PRICE_EurPerKg": float(qres.be_fuel_price_eur_per_kg),
             }
@@ -2564,10 +2613,10 @@ if mode == "Scenarijus":
         x_name_lt = meta["x_name_lt"]
 
         doc_graph_titles = {
-            "d1": "Grafikas 2 — DOCmin (eur/nm) vs Vėjo komponentė (kt)",
-            "d2": "Grafikas 3 — DOCmin (eur/nm) vs Masė (kg)",
-            "d3": "Grafikas 4 — DOCmin (eur/nm) vs Skrydžio aukštis (ft)",
-            "d4": "Grafikas 5 — DOCmin (eur/nm) vs ISA nuokrypis (°C)",
+            "d1": "Grafikas 2 — DOC (eur/nm) vs Vėjo komponentė (kt)",
+            "d2": "Grafikas 3 — DOC (eur/nm) vs Masė (kg)",
+            "d3": "Grafikas 4 — DOC (eur/nm) vs Skrydžio aukštis (ft)",
+            "d4": "Grafikas 5 — DOC (eur/nm) vs ISA nuokrypis (°C)",
         }
         exp_title = doc_graph_titles[gid]
         open_key = f"open_{gid}"
@@ -2596,7 +2645,7 @@ if mode == "Scenarijus":
                     st.session_state[fig_key] = _plot_doc_vs_grouped(
                         filtered_local,
                         x_col=x_col,
-                        title=f"DOCmin priklausomybė nuo {x_name_lt}",
+                        title=f"DOC priklausomybė nuo {x_name_lt}",
                         x_label=x_label,
                         group_col=group_col,
                         show_point_labels=True,
@@ -2704,10 +2753,10 @@ else:
         x_name_lt = meta["x_name_lt"]
 
         doc_graph_titles = {
-            "d1": "Grafikas 2 — DOCmin (eur/nm) vs Vėjo komponentė (kt)",
-            "d2": "Grafikas 3 — DOCmin (eur/nm) vs Masė (kg)",
-            "d3": "Grafikas 4 — DOCmin (eur/nm) vs Skrydžio aukštis (ft)",
-            "d4": "Grafikas 5 — DOCmin (eur/nm) vs ISA nuokrypis (°C)",
+            "d1": "Grafikas 2 — DOC (eur/nm) vs Vėjo komponentė (kt)",
+            "d2": "Grafikas 3 — DOC (eur/nm) vs Masė (kg)",
+            "d3": "Grafikas 4 — DOC (eur/nm) vs Skrydžio aukštis (ft)",
+            "d4": "Grafikas 5 — DOC (eur/nm) vs ISA nuokrypis (°C)",
         }
         exp_title = doc_graph_titles[gid]
         open_key = f"open_{gid}"
@@ -2755,7 +2804,7 @@ else:
                     st.session_state[fig_key] = _plot_doc_vs_grouped(
                         filtered_local,
                         x_col=x_col,
-                        title=f"DOCmin priklausomybė nuo {x_name_lt}",
+                        title=f"DOC priklausomybė nuo {x_name_lt}",
                         x_label=x_label,
                         group_col=group_col,
                         show_point_labels=True,

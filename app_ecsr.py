@@ -1467,34 +1467,34 @@ def _filter_label_candidates_by_min_delta(
     min_delta: float,
 ) -> List[Tuple[float, float, str, str]]:
     """
-    Keep labels only if values are sufficiently separated.
+    Keep labels only if values are sufficiently separated inside each group/series
+    across neighboring x-points.
 
-    Applied in 2 stages:
-    1) within each group/series across neighboring x-points
-    2) across groups at the same x-position
-
-    Rules:
-    - if all neighboring y-differences inside one group are < min_delta -> that group gets no labels
-    - otherwise, inside that group keep only points that differ from at least one neighbor by >= min_delta
-    - then, for each x-position across all groups:
-        * if all neighboring y-differences are < min_delta -> keep no labels at that x
-        * otherwise keep only labels whose y differs from at least one neighbor at that x by >= min_delta
+    This function does NOT compare different groups against each other.
+    Cross-group suppression is handled later in _label_points_global_dedup().
     """
     if not candidates or not np.isfinite(min_delta) or float(min_delta) <= 0.0:
         return candidates
 
     thr = float(min_delta)
 
-    def _filter_rows_by_neighbor_gap(rows: List[Tuple[float, float, str, str]], sort_key):
-        rows = sorted(rows, key=sort_key)
+    groups: Dict[str, List[Tuple[float, float, str, str]]] = {}
+    for row in candidates:
+        groups.setdefault(str(row[3]), []).append(row)
+
+    kept: List[Tuple[float, float, str, str]] = []
+
+    for rows in groups.values():
+        rows = sorted(rows, key=lambda r: float(r[0]))
         if len(rows) == 1:
-            return rows
+            kept.extend(rows)
+            continue
 
         ys = [float(r[1]) for r in rows]
         diffs = [abs(ys[i + 1] - ys[i]) for i in range(len(ys) - 1)]
 
         if not any(d >= thr for d in diffs):
-            return []
+            continue
 
         keep_mask = [False] * len(rows)
         for i in range(len(rows)):
@@ -1503,31 +1503,9 @@ def _filter_label_candidates_by_min_delta(
             if left_ok or right_ok:
                 keep_mask[i] = True
 
-        return [row for row, keep in zip(rows, keep_mask) if keep]
+        kept.extend([row for row, keep in zip(rows, keep_mask) if keep])
 
-    # Stage 1: filter inside each series
-    by_group: Dict[str, List[Tuple[float, float, str, str]]] = {}
-    for row in candidates:
-        by_group.setdefault(str(row[3]), []).append(row)
-
-    stage1: List[Tuple[float, float, str, str]] = []
-    for grp_rows in by_group.values():
-        stage1.extend(_filter_rows_by_neighbor_gap(grp_rows, sort_key=lambda r: float(r[0])))
-
-    if not stage1:
-        return []
-
-    # Stage 2: filter across groups at the same x
-    by_x: Dict[float, List[Tuple[float, float, str, str]]] = {}
-    for row in stage1:
-        x = float(row[0])
-        by_x.setdefault(x, []).append(row)
-
-    final_kept: List[Tuple[float, float, str, str]] = []
-    for x_rows in by_x.values():
-        final_kept.extend(_filter_rows_by_neighbor_gap(x_rows, sort_key=lambda r: float(r[1])))
-
-    return final_kept
+    return kept
 
 def _label_points_global_dedup(
     ax,
@@ -1540,6 +1518,13 @@ def _label_points_global_dedup(
     close_y_delta: float = 0.1,
     color: str = "black",
 ) -> None:
+    """
+    Deduplicate labels across groups at the same x-position.
+
+    If two groups have at least one shared x where their y-values differ by
+    <= close_y_delta, they are considered part of the same family. Only one
+    representative group from that family keeps labels.
+    """
     if not candidates:
         return
 
@@ -1562,33 +1547,18 @@ def _label_points_global_dedup(
     for grp in group_points:
         group_points[grp] = sorted(group_points[grp], key=lambda r: r[0])
 
-    group_xy: Dict[str, Dict[float, float]] = {}
-    for grp, pts in group_points.items():
-        xy_map: Dict[float, float] = {}
-        for x, y, _txt in pts:
-            xy_map[x] = y
-        group_xy[grp] = xy_map
-
     groups = list(group_points.keys())
 
     def _groups_are_close(grp_a: str, grp_b: str) -> bool:
-        xa = group_xy[grp_a]
-        xb = group_xy[grp_b]
+        pts_a = group_points[grp_a]
+        pts_b = group_points[grp_b]
 
-        shared_x = []
-        for x1 in xa.keys():
-            for x2 in xb.keys():
+        for x1, y1, _ in pts_a:
+            for x2, y2, _ in pts_b:
                 if abs(float(x1) - float(x2)) <= float(same_x_tol):
-                    shared_x.append((float(x1), float(x2)))
-
-        if not shared_x:
-            return False
-
-        for x1, x2 in shared_x:
-            if abs(float(xa[x1]) - float(xb[x2])) > float(close_y_delta):
-                return False
-
-        return True
+                    if abs(float(y1) - float(y2)) <= float(close_y_delta):
+                        return True
+        return False
 
     families: List[List[str]] = []
     visited: set[str] = set()
@@ -1616,7 +1586,6 @@ def _label_points_global_dedup(
         families.append(family)
 
     representative_groups: set[str] = set()
-
     for family in families:
         best_grp = max(
             family,
@@ -1625,14 +1594,13 @@ def _label_points_global_dedup(
         representative_groups.add(best_grp)
 
     kept_bboxes: List[Any] = []
-
     label_rows: List[Tuple[float, float, str, str]] = []
+
     for grp in sorted(representative_groups):
         for x, y, txt in group_points[grp]:
             label_rows.append((x, y, txt, grp))
 
     label_rows = sorted(label_rows, key=lambda r: (r[0], -r[1], r[3]))
-
     va = "bottom" if int(y_offset_pts) >= 0 else "top"
 
     for x0, y0, txt, _grp in label_rows:
@@ -1672,7 +1640,6 @@ def _label_points_global_dedup(
             continue
 
         kept_bboxes.append(bb)
-
 
 def _plot_saving_vs_grouped(
     summary_tbl: pd.DataFrame,
@@ -1872,6 +1839,7 @@ def _plot_breakpoint_vs_grouped(
                 overlap_frac=0.80,
                 y_offset_pts=6,
                 fontsize=7,
+                close_y_delta=float(min_label_delta),
             )
 
         ax.legend(loc="best")
@@ -1902,6 +1870,7 @@ def _plot_breakpoint_vs_grouped(
                 overlap_frac=0.80,
                 y_offset_pts=6,
                 fontsize=7,
+                close_y_delta=float(min_label_delta),
             )
 
         y_for_limits = ys

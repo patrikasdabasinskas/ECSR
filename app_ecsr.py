@@ -1514,6 +1514,8 @@ def _plot_doc_vs_grouped(
     show_point_labels: bool = False,
     show_docnotch: bool = False,
 ) -> Any:
+    import matplotlib.ticker as mticker
+
     fig, ax = _mpl_academic_fig()
 
     df = summary_tbl.copy()
@@ -1697,23 +1699,8 @@ def _plot_doc_vs_grouped(
             ax.set_ylim(y_min - bot_pad, y_max + top_pad)
 
     if show_docnotch and y_for_limits.size:
-        import matplotlib.ticker as mticker
-
-        y0, y1 = ax.get_ylim()
-        yr = float(y1 - y0)
-
-        if yr <= 0:
-            step = 0.005
-        elif yr <= 0.03:
-            step = 0.002
-        elif yr <= 0.06:
-            step = 0.005
-        elif yr <= 0.12:
-            step = 0.01
-        else:
-            step = 0.02
-
-        ax.yaxis.set_major_locator(mticker.MultipleLocator(step))
+        ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=8))
+        ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
 
     ax.set_title(title)
     ax.set_xlabel(x_label)

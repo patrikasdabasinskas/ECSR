@@ -1302,16 +1302,14 @@ def _label_points_with_overlap_avoidance(
     fmt: str,
     y_offset_pts: int = 6,
     fontsize: int = 7,
+    color: str = "black",
 ) -> None:
-    """
-    Simple/old style:
-    Put every label above its dot with a short connector line.
-    No overlap-avoidance logic (stable, predictable).
-    """
     xs = np.asarray(xs, float).reshape(-1)
     ys = np.asarray(ys, float).reshape(-1)
     if xs.size == 0:
         return
+
+    va = "bottom" if int(y_offset_pts) >= 0 else "top"
 
     for x0, y0 in zip(xs.tolist(), ys.tolist()):
         if not (np.isfinite(x0) and np.isfinite(y0)):
@@ -1324,12 +1322,13 @@ def _label_points_with_overlap_avoidance(
             xytext=(0, int(y_offset_pts)),
             textcoords="offset points",
             ha="center",
-            va="bottom",
+            va=va,
             fontsize=int(fontsize),
+            color=color,
             arrowprops={
                 "arrowstyle": "-",
-                "linewidth": 0.6,
-                "color": "black",
+                "linewidth": 0.8,
+                "color": color,
                 "shrinkA": 6,
                 "shrinkB": 6,
             },
@@ -1369,17 +1368,8 @@ def _label_points_global_dedup(
     fontsize: int = 7,
     same_x_tol: float = 1e-9,
     close_y_delta: float = 0.1,
+    color: str = "black",
 ) -> None:
-    """
-    Label policy for grouped graphs:
-
-    - Labels are decided per whole group/line, not per individual point.
-    - If several groups are close to each other at the same x (|dy| <= close_y_delta),
-      only one representative group from that close family is labeled.
-    - For the chosen representative group, labels are shown on all its points
-      (subject only to bbox-overlap suppression for unreadable exact collisions).
-    """
-
     if not candidates:
         return
 
@@ -1395,9 +1385,6 @@ def _label_points_global_dedup(
     if not rows:
         return
 
-    # -----------------------------
-    # 1) Build per-group full lines
-    # -----------------------------
     group_points: Dict[str, List[Tuple[float, float, str]]] = {}
     for x, y, txt, grp in rows:
         group_points.setdefault(grp, []).append((x, y, txt))
@@ -1405,7 +1392,6 @@ def _label_points_global_dedup(
     for grp in group_points:
         group_points[grp] = sorted(group_points[grp], key=lambda r: r[0])
 
-    # Helper: map x -> y for each group
     group_xy: Dict[str, Dict[float, float]] = {}
     for grp, pts in group_points.items():
         xy_map: Dict[float, float] = {}
@@ -1416,10 +1402,6 @@ def _label_points_global_dedup(
     groups = list(group_points.keys())
 
     def _groups_are_close(grp_a: str, grp_b: str) -> bool:
-        """
-        Two groups belong to the same close family if, on every shared x,
-        their y-values differ by <= close_y_delta, and they share at least one x.
-        """
         xa = group_xy[grp_a]
         xb = group_xy[grp_b]
 
@@ -1438,9 +1420,6 @@ def _label_points_global_dedup(
 
         return True
 
-    # -----------------------------
-    # 2) Build close families
-    # -----------------------------
     families: List[List[str]] = []
     visited: set[str] = set()
 
@@ -1466,10 +1445,6 @@ def _label_points_global_dedup(
 
         families.append(family)
 
-    # -----------------------------
-    # 3) Choose one representative line per family
-    #    Rule: choose the upper line (highest mean y)
-    # -----------------------------
     representative_groups: set[str] = set()
 
     for family in families:
@@ -1479,10 +1454,6 @@ def _label_points_global_dedup(
         )
         representative_groups.add(best_grp)
 
-    # -----------------------------
-    # 4) Label ALL points only for representative groups
-    #    Keep bbox-overlap suppression only for exact unreadable collisions
-    # -----------------------------
     kept_bboxes: List[Any] = []
 
     label_rows: List[Tuple[float, float, str, str]] = []
@@ -1490,8 +1461,9 @@ def _label_points_global_dedup(
         for x, y, txt in group_points[grp]:
             label_rows.append((x, y, txt, grp))
 
-    # Stable ordering: left-to-right, and higher y first
     label_rows = sorted(label_rows, key=lambda r: (r[0], -r[1], r[3]))
+
+    va = "bottom" if int(y_offset_pts) >= 0 else "top"
 
     for x0, y0, txt, _grp in label_rows:
         ann = ax.annotate(
@@ -1501,12 +1473,13 @@ def _label_points_global_dedup(
             xytext=(0, int(y_offset_pts)),
             textcoords="offset points",
             ha="center",
-            va="bottom",
+            va=va,
             fontsize=int(fontsize),
+            color=color,
             arrowprops={
                 "arrowstyle": "-",
-                "linewidth": 0.6,
-                "color": "black",
+                "linewidth": 0.8,
+                "color": color,
                 "shrinkA": 6,
                 "shrinkB": 6,
             },
@@ -1626,19 +1599,24 @@ def _plot_doc_vs_grouped(
     x_label: str,
     group_col: Optional[str],
     show_point_labels: bool = False,
+    show_docnotch: bool = False,
 ) -> Any:
     fig, ax = _mpl_academic_fig()
 
     df = summary_tbl.copy()
     df[x_col] = pd.to_numeric(df[x_col], errors="coerce")
     df["DOCmin_EurPerNM"] = pd.to_numeric(df["DOCmin_EurPerNM"], errors="coerce")
-    df["DOCnotch_EurPerNM"] = pd.to_numeric(df["DOCnotch_EurPerNM"], errors="coerce")
 
-    keep = (
-        np.isfinite(df[x_col])
-        & np.isfinite(df["DOCmin_EurPerNM"])
-        & np.isfinite(df["DOCnotch_EurPerNM"])
-    )
+    if show_docnotch:
+        df["DOCnotch_EurPerNM"] = pd.to_numeric(df["DOCnotch_EurPerNM"], errors="coerce")
+        keep = (
+            np.isfinite(df[x_col])
+            & np.isfinite(df["DOCmin_EurPerNM"])
+            & np.isfinite(df["DOCnotch_EurPerNM"])
+        )
+    else:
+        keep = np.isfinite(df[x_col]) & np.isfinite(df["DOCmin_EurPerNM"])
+
     df = df.loc[keep].copy()
     if df.empty:
         raise ValueError("Nėra duomenų po filtravimo.")
@@ -1653,26 +1631,16 @@ def _plot_doc_vs_grouped(
     y_all: List[float] = []
 
     if used_group:
-        g = (
-            df.groupby([used_group, x_col], as_index=False)[["DOCmin_EurPerNM", "DOCnotch_EurPerNM"]]
-            .median()
-            .rename(
-                columns={
-                    "DOCmin_EurPerNM": "DOCmin",
-                    "DOCnotch_EurPerNM": "DOCnotch",
-                }
-            )
-        )
+        agg_cols = ["DOCmin_EurPerNM"] + (["DOCnotch_EurPerNM"] if show_docnotch else [])
+        g = df.groupby([used_group, x_col], as_index=False)[agg_cols].median()
 
-        label_candidates: List[Tuple[float, float, str, str]] = []
+        label_candidates_min: List[Tuple[float, float, str, str]] = []
+        label_candidates_notch: List[Tuple[float, float, str, str]] = []
 
         for grp_val, sub in g.groupby(used_group, sort=True):
             sub = sub.sort_values(x_col)
             xs = sub[x_col].to_numpy(float)
-            ys_min = sub["DOCmin"].to_numpy(float)
-            ys_notch = sub["DOCnotch"].to_numpy(float)
-
-            group_label = _group_label(used_group, float(grp_val))
+            ys_min = sub["DOCmin_EurPerNM"].to_numpy(float)
 
             ax.plot(
                 xs,
@@ -1681,64 +1649,89 @@ def _plot_doc_vs_grouped(
                 marker="o",
                 markersize=4.8,
                 linestyle="-",
-                label=f"{group_label} — DOCmin",
-            )
-
-            ax.plot(
-                xs,
-                ys_notch,
-                linewidth=2.2,
-                marker="s",
-                markersize=4.6,
-                linestyle="--",
-                label=f"{group_label} — DOCnotch",
+                color="darkred",
+                label=f"{_group_label(used_group, float(grp_val))} — DOCmin",
             )
 
             y_all.extend(ys_min.tolist())
-            y_all.extend(ys_notch.tolist())
 
             if show_point_labels:
                 for x0, y0 in zip(xs.tolist(), ys_min.tolist()):
                     if np.isfinite(x0) and np.isfinite(y0):
-                        label_candidates.append((float(x0), float(y0), f"{float(y0):.2f}", f"{grp_val}_min"))
+                        label_candidates_min.append((float(x0), float(y0), f"{float(y0):.2f}", f"{grp_val}_min"))
 
-                for x0, y0 in zip(xs.tolist(), ys_notch.tolist()):
-                    if np.isfinite(x0) and np.isfinite(y0):
-                        label_candidates.append((float(x0), float(y0), f"{float(y0):.2f}", f"{grp_val}_notch"))
+            if show_docnotch:
+                ys_notch = sub["DOCnotch_EurPerNM"].to_numpy(float)
+
+                ax.plot(
+                    xs,
+                    ys_notch,
+                    linewidth=2.2,
+                    marker="s",
+                    markersize=4.6,
+                    linestyle="--",
+                    color="dodgerblue",
+                    label=f"{_group_label(used_group, float(grp_val))} — DOCnotch",
+                )
+
+                y_all.extend(ys_notch.tolist())
+
+                if show_point_labels:
+                    for x0, y0 in zip(xs.tolist(), ys_notch.tolist()):
+                        if np.isfinite(x0) and np.isfinite(y0):
+                            label_candidates_notch.append((float(x0), float(y0), f"{float(y0):.2f}", f"{grp_val}_notch"))
 
         if show_point_labels:
-            _label_points_global_dedup(
-                ax,
-                label_candidates,
-                overlap_frac=0.80,
-                y_offset_pts=6,
-                fontsize=7,
-            )
+            if label_candidates_notch:
+                _label_points_global_dedup(
+                    ax,
+                    label_candidates_notch,
+                    overlap_frac=0.80,
+                    y_offset_pts=8,
+                    fontsize=7,
+                    color="dodgerblue",
+                )
+
+            if label_candidates_min:
+                for x0, y0, txt, _grp in label_candidates_min:
+                    ax.annotate(
+                        txt,
+                        xy=(x0, y0),
+                        xycoords="data",
+                        xytext=(0, -10),
+                        textcoords="offset points",
+                        ha="center",
+                        va="top",
+                        fontsize=7,
+                        color="darkred",
+                        arrowprops={
+                            "arrowstyle": "-",
+                            "linewidth": 0.8,
+                            "color": "darkred",
+                            "shrinkA": 6,
+                            "shrinkB": 6,
+                        },
+                        bbox={
+                            "boxstyle": "round,pad=0.08",
+                            "facecolor": "white",
+                            "edgecolor": "none",
+                            "alpha": 0.80,
+                        },
+                        clip_on=False,
+                        zorder=50,
+                    )
 
         ax.legend(loc="best")
 
     else:
-        g = (
-            df.groupby(x_col, as_index=False)[["DOCmin_EurPerNM", "DOCnotch_EurPerNM"]]
-            .median()
-            .rename(
-                columns={
-                    "DOCmin_EurPerNM": "DOCmin",
-                    "DOCnotch_EurPerNM": "DOCnotch",
-                }
-            )
-            .sort_values(x_col)
-        )
+        agg_cols = ["DOCmin_EurPerNM"] + (["DOCnotch_EurPerNM"] if show_docnotch else [])
+        g = df.groupby(x_col, as_index=False)[agg_cols].median().sort_values(x_col)
 
         xs = g[x_col].to_numpy(float)
-        ys_min = g["DOCmin"].to_numpy(float)
-        ys_notch = g["DOCnotch"].to_numpy(float)
+        ys_min = g["DOCmin_EurPerNM"].to_numpy(float)
 
         ax.plot(xs, ys_min, linewidth=2.2, marker="o", color="darkred", label="DOCmin")
-        ax.plot(xs, ys_notch, linewidth=2.2, marker="s", linestyle="--", color="dodgerblue", label="DOCnotch")
-
         y_all.extend(ys_min.tolist())
-        y_all.extend(ys_notch.tolist())
 
         if show_point_labels:
             _label_points_with_overlap_avoidance(
@@ -1746,17 +1739,26 @@ def _plot_doc_vs_grouped(
                 xs,
                 ys_min,
                 fmt="{:.2f}",
-                y_offset_pts=6,
+                y_offset_pts=-10,
                 fontsize=7,
+                color="darkred",
             )
-            _label_points_with_overlap_avoidance(
-                ax,
-                xs,
-                ys_notch,
-                fmt="{:.2f}",
-                y_offset_pts=18,
-                fontsize=7,
-            )
+
+        if show_docnotch:
+            ys_notch = g["DOCnotch_EurPerNM"].to_numpy(float)
+            ax.plot(xs, ys_notch, linewidth=2.2, marker="s", linestyle="--", color="dodgerblue", label="DOCnotch")
+            y_all.extend(ys_notch.tolist())
+
+            if show_point_labels:
+                _label_points_with_overlap_avoidance(
+                    ax,
+                    xs,
+                    ys_notch,
+                    fmt="{:.2f}",
+                    y_offset_pts=8,
+                    fontsize=7,
+                    color="dodgerblue",
+                )
 
         ax.legend(loc="best")
 
@@ -1772,7 +1774,7 @@ def _plot_doc_vs_grouped(
             ax.set_ylim(y_min - pad, y_max + pad)
         else:
             top_pad = max(0.25 * rng, 0.12 * max(abs(y_max), 1.0), 0.20)
-            bot_pad = max(0.15 * rng, 0.06 * max(abs(y_min), 1.0), 0.10)
+            bot_pad = max(0.25 * rng, 0.12 * max(abs(y_min), 1.0), 0.20)
             ax.set_ylim(y_min - bot_pad, y_max + top_pad)
 
     ax.set_title(title)
@@ -1793,6 +1795,7 @@ def _build_interpolated_sweep_table(
 
     For each available x-axis value in summary_tbl[x_col], interpolate:
     - DOCmin_EurPerNM
+    - DOCnotch_EurPerNM
     - BreakEven_TIME_COST_EurPerHr
     - BreakEven_FUEL_PRICE_EurPerKg
 
@@ -2639,7 +2642,17 @@ if mode == "Scenarijus":
             if not ok:
                 st.error(msg)
 
-            if st.button("Generuoti grafiką", key=f"btn_{gid}_doc", disabled=not ok):
+            cc1, cc2 = st.columns([1.3, 1.0], gap="medium")
+            with cc1:
+                show_docnotch = st.checkbox(
+                    "Rodyti DOCnotch kreivę",
+                    key=f"{gid}_show_docnotch_scn",
+                )
+            with cc2:
+                st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
+                run_graph = st.button("Generuoti grafiką", key=f"btn_{gid}_doc", disabled=not ok)
+
+            if run_graph:
                 st.session_state[open_key] = True
                 try:
                     st.session_state[fig_key] = _plot_doc_vs_grouped(
@@ -2649,6 +2662,7 @@ if mode == "Scenarijus":
                         x_label=x_label,
                         group_col=group_col,
                         show_point_labels=True,
+                        show_docnotch=show_docnotch,
                     )
                     st.session_state[cap_key] = _conditions_sentence_from_filters(fixed, x_col=x_col, grouped_by=group_col)
                     st.session_state[err_key] = ""
@@ -2798,7 +2812,17 @@ else:
             if not ok and msg:
                 st.error(msg)
 
-            if st.button("Generuoti grafiką", key=f"btn_{gid}_doc_input", disabled=not ok):
+            cc1, cc2 = st.columns([1.3, 1.0], gap="medium")
+            with cc1:
+                show_docnotch = st.checkbox(
+                    "Rodyti DOCnotch kreivę",
+                    key=f"{gid}_show_docnotch_input",
+                )
+            with cc2:
+                st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
+                run_graph = st.button("Generuoti grafiką", key=f"btn_{gid}_doc_input", disabled=not ok)
+
+            if run_graph:
                 st.session_state[open_key] = True
                 try:
                     st.session_state[fig_key] = _plot_doc_vs_grouped(
@@ -2808,6 +2832,7 @@ else:
                         x_label=x_label,
                         group_col=group_col,
                         show_point_labels=True,
+                        show_docnotch=show_docnotch,
                     )
                     st.session_state[cap_key] = _conditions_sentence_from_filters(
                         fixed_in,

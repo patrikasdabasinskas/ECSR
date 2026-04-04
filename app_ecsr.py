@@ -1461,8 +1461,52 @@ def _bbox_overlap_frac(a, b) -> float:
     area_b = max((b.x1 - b.x0) * (b.y1 - b.y0), 1e-9)
     return float(inter / min(area_a, area_b))
 
+def _filter_label_candidates_by_min_delta(
+    candidates: List[Tuple[float, float, str, str]],
+    *,
+    min_delta: float,
+) -> List[Tuple[float, float, str, str]]:
+    """
+    Keep labels only if values are sufficiently separated inside each group.
+    Rule:
+    - if all neighboring y-differences in the group are < min_delta -> keep none
+    - otherwise keep only points that differ from at least one neighbor by >= min_delta
+    """
+    if not candidates or not np.isfinite(min_delta) or float(min_delta) <= 0.0:
+        return candidates
 
-# File: app_ecsr.py
+    groups: Dict[str, List[Tuple[float, float, str, str]]] = {}
+    for row in candidates:
+        groups.setdefault(str(row[3]), []).append(row)
+
+    kept: List[Tuple[float, float, str, str]] = []
+
+    for grp, rows in groups.items():
+        rows = sorted(rows, key=lambda r: float(r[0]))
+        ys = [float(r[1]) for r in rows]
+
+        if len(rows) == 1:
+            kept.extend(rows)
+            continue
+
+        diffs: List[float] = []
+        for i in range(len(ys) - 1):
+            diffs.append(abs(ys[i + 1] - ys[i]))
+
+        if not any(d >= float(min_delta) for d in diffs):
+            continue
+
+        keep_mask = [False] * len(rows)
+
+        for i in range(len(rows)):
+            left_ok = i > 0 and abs(ys[i] - ys[i - 1]) >= float(min_delta)
+            right_ok = i < len(rows) - 1 and abs(ys[i + 1] - ys[i]) >= float(min_delta)
+            if left_ok or right_ok:
+                keep_mask[i] = True
+
+        kept.extend([row for row, flag in zip(rows, keep_mask) if flag])
+
+    return kept
 
 def _label_points_global_dedup(
     ax,
@@ -1757,6 +1801,7 @@ def _plot_breakpoint_vs_grouped(
     group_col: Optional[str],
     fmt: str,
     show_point_labels: bool = False,
+    min_label_delta: float = 0.0,
 ) -> Any:
     fig, ax = _mpl_academic_fig()
 
@@ -1796,7 +1841,17 @@ def _plot_breakpoint_vs_grouped(
 
         # GLOBAL label placement with overlap dedup across groups
         if show_point_labels:
-            _label_points_global_dedup(ax, label_candidates, overlap_frac=0.80, y_offset_pts=6, fontsize=7)
+            label_candidates = _filter_label_candidates_by_min_delta(
+                label_candidates,
+                min_delta=float(min_label_delta),
+            )
+            _label_points_global_dedup(
+                ax,
+                label_candidates,
+                overlap_frac=0.80,
+                y_offset_pts=6,
+                fontsize=7,
+            )
 
         ax.legend(loc="best")
         y_for_limits = g["BE"].to_numpy(float)
@@ -1811,7 +1866,22 @@ def _plot_breakpoint_vs_grouped(
 
         # Single series: old labeling is fine (or you can also use global_dedup)
         if show_point_labels:
-            _label_points_with_overlap_avoidance(ax, xs, ys, fmt=fmt, y_offset_pts=6, fontsize=7)
+            single_candidates = [
+                (float(x0), float(y0), fmt.format(float(y0)), "__single__")
+                for x0, y0 in zip(xs.tolist(), ys.tolist())
+                if np.isfinite(x0) and np.isfinite(y0)
+            ]
+            single_candidates = _filter_label_candidates_by_min_delta(
+                single_candidates,
+                min_delta=float(min_label_delta),
+            )
+            _label_points_global_dedup(
+                ax,
+                single_candidates,
+                overlap_frac=0.80,
+                y_offset_pts=6,
+                fontsize=7,
+            )
 
         y_for_limits = ys
 
@@ -3046,6 +3116,7 @@ for gid, meta in _BP_GRAPHS.items():
                         group_col=group_col,
                         fmt="{:.0f} €/h",
                         show_point_labels=True,
+                        min_label_delta=40.0,
                     )
 
                     st.session_state[fig_key_fuel] = _plot_breakpoint_vs_grouped(
@@ -3114,16 +3185,17 @@ for gid, meta in _BP_GRAPHS.items():
                 st.session_state[open_key] = True
                 try:
                     st.session_state[fig_key_time] = _plot_breakpoint_vs_grouped(
-                        filtered_local,
-                        y_col="BreakEven_TIME_COST_EurPerHr",
-                        y_label="Laiko sąnaudos (€/h)",
-                        x_col=x_col,
-                        title=f"Laiko lūžio taško priklausomybė nuo {x_name_lt}",
-                        x_label=x_label,
-                        group_col=group_col,
-                        fmt="{:.0f} €/h",
-                        show_point_labels=True,
-                    )
+                    filtered_local,
+                    y_col="BreakEven_TIME_COST_EurPerHr",
+                    y_label="Laiko sąnaudos (€/h)",
+                    x_col=x_col,
+                    title=f"Laiko lūžio taško priklausomybė nuo {x_name_lt}",
+                    x_label=x_label,
+                    group_col=group_col,
+                    fmt="{:.0f} €/h",
+                    show_point_labels=True,
+                    min_label_delta=40.0,
+                )
                     st.session_state[fig_key_fuel] = _plot_breakpoint_vs_grouped(
                         filtered_local,
                         y_col="BreakEven_FUEL_PRICE_EurPerKg",

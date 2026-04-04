@@ -3137,6 +3137,7 @@ for gid, meta in _BP_GRAPHS.items():
                         group_col=group_col,
                         fmt="{:.2f} €/kg",
                         show_point_labels=True,
+                        min_label_delta=0.05,
                     )
 
                     st.session_state[cap_key] = _conditions_sentence_from_filters(
@@ -3214,6 +3215,7 @@ for gid, meta in _BP_GRAPHS.items():
                         group_col=group_col,
                         fmt="{:.2f} €/kg",
                         show_point_labels=True,
+                        min_label_delta=0.05,
                     )
 
                     st.session_state[cap_key] = _conditions_sentence_from_filters(

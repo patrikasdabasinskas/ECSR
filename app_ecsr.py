@@ -944,14 +944,14 @@ def _compute_input_doc_curve_knn(
     k_use = min(30, len(usable))
     min_nb = min(8, max(3, len(usable) // 2))
 
-    x_coarse = np.linspace(ias_lo, ias_hi, 1200, dtype=float)
-    y_coarse, _diag1 = interpolate_curve_knn_from_scenarios(
+    x_full = np.linspace(ias_lo, ias_hi, 500, dtype=float)
+    y_full, _diag1 = interpolate_curve_knn_from_scenarios(
         usable,
         fl_ft=float(fl_ft),
         weight_kg=float(wt_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
-        x_grid=x_coarse,
+        x_grid=x_full,
         x_vec_key="docIASVec",
         y_vec_key="docVec",
         k=k_use,
@@ -959,27 +959,27 @@ def _compute_input_doc_curve_knn(
         min_neighbors=min_nb,
     )
 
-    x_coarse = np.asarray(x_coarse, float)
-    y_coarse = np.asarray(y_coarse, float)
+    x_full = np.asarray(x_full, float)
+    y_full = np.asarray(y_full, float)
 
-    ok = np.isfinite(x_coarse) & np.isfinite(y_coarse)
+    ok = np.isfinite(x_full) & np.isfinite(y_full)
     if int(ok.sum()) < 80:
         raise ValueError("Nepakanka duomenų DOC kreivei nubraižyti.")
 
-    x_coarse = x_coarse[ok]
-    y_coarse = y_coarse[ok]
+    x_full = x_full[ok]
+    y_full = y_full[ok]
 
-    j0 = int(np.nanargmin(y_coarse))
+    j0 = int(np.nanargmin(y_full))
 
     left_i = max(0, j0 - 3)
-    right_i = min(len(x_coarse) - 1, j0 + 3)
+    right_i = min(len(x_full) - 1, j0 + 3)
 
-    x_left = float(x_coarse[left_i])
-    x_right = float(x_coarse[right_i])
+    x_left = float(x_full[left_i])
+    x_right = float(x_full[right_i])
 
     if not np.isfinite(x_left) or not np.isfinite(x_right) or x_right <= x_left:
-        x_left = float(max(ias_lo, x_coarse[j0] - 2.0))
-        x_right = float(min(ias_hi, x_coarse[j0] + 2.0))
+        x_left = float(max(ias_lo, x_full[j0] - 2.0))
+        x_right = float(min(ias_hi, x_full[j0] + 2.0))
 
     x_fine = np.linspace(x_left, x_right, 800, dtype=float)
     y_fine, _diag2 = interpolate_curve_knn_from_scenarios(
@@ -1000,20 +1000,21 @@ def _compute_input_doc_curve_knn(
     y_fine = np.asarray(y_fine, float)
 
     ok2 = np.isfinite(x_fine) & np.isfinite(y_fine)
-    if int(ok2.sum()) < 80:
-        x = x_coarse
-        y = y_coarse
-    else:
-        x = x_fine[ok2]
-        y = y_fine[ok2]
 
-    j = int(np.nanargmin(y))
-    v_opt = float(x[j])
-    doc_opt = float(y[j])
+    if int(ok2.sum()) >= 80:
+        x_min_search = x_fine[ok2]
+        y_min_search = y_fine[ok2]
+    else:
+        x_min_search = x_full
+        y_min_search = y_full
+
+    j = int(np.nanargmin(y_min_search))
+    v_opt = float(x_min_search[j])
+    doc_opt = float(y_min_search[j])
 
     return {
-        "IAS_grid": x,
-        "DOC_grid_per_nm": y,
+        "IAS_grid": x_full,
+        "DOC_grid_per_nm": y_full,
         "IAS_opt": v_opt,
         "DOC_opt_per_nm": doc_opt,
     }

@@ -320,29 +320,6 @@ def _normalize_ui_error(exc: Exception) -> str:
     return "Nepakanka duomenų interpolacijai arba įvestis už leistinų ribų."
 
 
-def _validate_breakpoint_fixed_inputs(
-    summary_tbl: pd.DataFrame,
-    *,
-    fixed: Dict[str, Optional[float]],
-    x_col: str,
-) -> Optional[str]:
-    for col in ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt"]:
-        if col == x_col:
-            continue
-        val = fixed.get(col, None)
-        if val is None:
-            continue
-        label, unit = _GROUP_META.get(col, (col, ""))
-        msg = _validate_value_in_bounds(
-            label=label,
-            value=float(val),
-            bounds=_numeric_bounds(summary_tbl, col),
-            unit=unit,
-        )
-        if msg:
-            return msg
-    return None
-
 
 # ------------------------- economical scenarios table -------------------------
 
@@ -951,7 +928,7 @@ def _plot_doc_vs_ias_input_knn(
         and sc.get("docIASVec").size >= 2 and sc.get("docVec").size >= 2
     ]
     if len(usable) < 8:
-        raise ValueError("Nepakanka scenarijų DOC(KNN) interpolacijai (reikia bent 8 su DOC vektoriais).")
+        raise ValueError("Nepakanka scenarijų DOC interpolacijai (reikia bent 8 su DOC vektoriais).")
 
     # Common IAS grid (no extrapolation outside available IAS ranges)
     ias_lo = min(float(np.nanmin(sc["docIASVec"])) for sc in usable)
@@ -981,7 +958,7 @@ def _plot_doc_vs_ias_input_knn(
 
     ok = np.isfinite(x) & np.isfinite(y)
     if int(ok.sum()) < 50:
-        raise ValueError("Nepakanka duomenų DOC kreivei nubraižyti (KNN).")
+        raise ValueError("Nepakanka duomenų DOC kreivei nubraižyti.")
 
     x = x[ok]
     y = y[ok]
@@ -1005,7 +982,7 @@ def _plot_doc_vs_ias_input_knn(
     same = (v_opt >= (v_notch - 1.0))
 
     fig, ax = _mpl_academic_fig()
-    ax.plot(x, y, linewidth=2.2, color="darkred", label="DOC kreivė (KNN)")
+    ax.plot(x, y, linewidth=2.2, color="darkred", label="DOC kreivė")
 
     econ_kt = int(round(v_opt))
     notch_kt = int(round(v_notch))
@@ -1031,7 +1008,7 @@ def _plot_doc_vs_ias_input_knn(
         _annotate_tiny_above(ax, v_notch, y_notch, f"IASnotch {notch_kt} kt",
                              color="dodgerblue", dx_pts=14)
 
-    ax.set_title("DOC priklausomybė nuo IAS — Įvestis (KNN)")
+    ax.set_title("DOC priklausomybė nuo IAS")
     ax.set_xlabel("IAS (kt)")
     ax.set_ylabel("DOC (EUR/NM)")
     _add_axis_arrows(ax)
@@ -1757,44 +1734,58 @@ def _plot_doc_vs_grouped(
     fig.tight_layout()
     return fig
 
-def _nearest_available(summary_tbl: pd.DataFrame, col: str, target: float) -> float:
-    vals = pd.to_numeric(summary_tbl.get(col, pd.Series([], dtype=float)), errors="coerce").to_numpy(float)
-    vals = vals[np.isfinite(vals)]
-    if vals.size == 0:
-        raise ValueError(f"Nėra reikšmių '{col}' stulpelyje.")
-    uniq = np.array(sorted(set(float(v) for v in vals)), dtype=float)
-    j = int(np.nanargmin(np.abs(uniq - float(target))))
-    return float(uniq[j])
-
-
-def _filter_summary_snapped(
+def _build_interpolated_sweep_table(
     summary_tbl: pd.DataFrame,
     *,
-    fixed: Dict[str, Optional[float]],
     x_col: str,
-) -> Tuple[pd.DataFrame, Dict[str, float]]:
-    msg = _validate_breakpoint_fixed_inputs(summary_tbl, fixed=fixed, x_col=x_col)
-    if msg:
-        raise ValueError(msg)
+    fixed: Dict[str, Optional[float]],
+) -> pd.DataFrame:
+    """
+    Build an interpolated sweep table for Įvestis mode graphs.
 
-    snapped: Dict[str, float] = {}
-    for col in ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt"]:
-        if col == x_col:
-            continue
-        v = fixed.get(col, None)
-        if v is None:
-            continue
-        snapped[col] = _nearest_available(summary_tbl, col, float(v))
+    For each available x-axis value in summary_tbl[x_col], interpolate:
+    - DOCmin_EurPerNM
+    - BreakEven_TIME_COST_EurPerHr
+    - BreakEven_FUEL_PRICE_EurPerKg
 
-    df = _filter_summary_by_constants(
-        summary_tbl,
-        zp_ft=snapped.get("ZP_ft"),
-        weight_kg=snapped.get("WEIGHT_kg"),
-        isa_c=snapped.get("ISA_C"),
-        wind_kt=snapped.get("WIND_kt"),
-    )
-    return df, snapped
+    using the user's fixed values for the other 3 dimensions and the current x value.
+    """
+    if summary_tbl is None or summary_tbl.empty:
+        return pd.DataFrame()
 
+    x_vals = _unique_sorted(summary_tbl[x_col])
+    if not x_vals:
+        return pd.DataFrame()
+
+    rows: List[Dict[str, float]] = []
+
+    for x_val in x_vals:
+        zp_ft = float(x_val) if x_col == "ZP_ft" else float(fixed["ZP_ft"])
+        weight_kg = float(x_val) if x_col == "WEIGHT_kg" else float(fixed["WEIGHT_kg"])
+        isa_c = float(x_val) if x_col == "ISA_C" else float(fixed["ISA_C"])
+        wind_kt = float(x_val) if x_col == "WIND_kt" else float(fixed["WIND_kt"])
+
+        qres = compute_quick_metrics_interpolated(
+            summary_tbl,
+            fl_ft=zp_ft,
+            weight_kg=weight_kg,
+            isa_c=isa_c,
+            wind_kt=wind_kt,
+        )
+
+        rows.append(
+            {
+                "ZP_ft": zp_ft,
+                "WEIGHT_kg": weight_kg,
+                "ISA_C": isa_c,
+                "WIND_kt": wind_kt,
+                "DOCmin_EurPerNM": float(qres.docmin_eur_per_nm),
+                "BreakEven_TIME_COST_EurPerHr": float(qres.be_time_cost_eur_per_hr),
+                "BreakEven_FUEL_PRICE_EurPerKg": float(qres.be_fuel_price_eur_per_kg),
+            }
+        )
+
+    return pd.DataFrame(rows)
 
 # ------------------------- Break-even formatting (UI) -------------------------
 
@@ -2727,17 +2718,29 @@ else:
         with st.expander(exp_title, expanded=st.session_state.get(open_key, False)):
             fixed_in = _bp_filter_ui_input(gid)
 
-            candidates = [c for c in _BP_OTHER_COLS if c != x_col]
             ok = True
             group_col = None
             msg = ""
-            snapped: Dict[str, float] = {}
 
             try:
-                filtered_local, snapped = _filter_summary_snapped(summary_tbl, fixed=fixed_in, x_col=x_col)
+                for col in _BP_OTHER_COLS:
+                    if col == x_col:
+                        continue
+                    if fixed_in.get(col, None) is None:
+                        raise ValueError("Įvestis režime reikia fiksuoti visus parametrus, išskyrus x ašį.")
+
+                filtered_local = _build_interpolated_sweep_table(
+                    summary_tbl,
+                    x_col=x_col,
+                    fixed=fixed_in,
+                )
+
                 if filtered_local.empty:
-                    raise ValueError("Nėra duomenų pagal pasirinktas fiksuotas reikšmes.")
-                ok, group_col, msg = _validate_breakpoint_request(filtered_local, x_col=x_col, candidates=candidates)
+                    raise ValueError("Nepakanka duomenų interpoliuotam grafikui sudaryti.")
+
+                ok = True
+                group_col = None
+                msg = ""
             except Exception as e:
                 ok = False
                 msg = _normalize_ui_error(e)
@@ -2757,14 +2760,10 @@ else:
                         group_col=group_col,
                         show_point_labels=True,
                     )
-                    fixed_for_caption: Dict[str, Optional[float]] = dict(fixed_in)
-                    for k, v in snapped.items():
-                        fixed_for_caption[k] = v
-
                     st.session_state[cap_key] = _conditions_sentence_from_filters(
-                        fixed_for_caption,
+                        fixed_in,
                         x_col=x_col,
-                        grouped_by=group_col,
+                        grouped_by=None,
                     )
                     st.session_state[err_key] = ""
                 except Exception as e:
@@ -2933,17 +2932,29 @@ for gid, meta in _BP_GRAPHS.items():
         else:
             fixed_in = _bp_filter_ui_input(gid)
 
-            candidates = [c for c in _BP_OTHER_COLS if c != x_col]
             ok = True
             group_col = None
             msg = ""
-            snapped: Dict[str, float] = {}
 
             try:
-                filtered_local, snapped = _filter_summary_snapped(summary_tbl, fixed=fixed_in, x_col=x_col)
+                for col in _BP_OTHER_COLS:
+                    if col == x_col:
+                        continue
+                    if fixed_in.get(col, None) is None:
+                        raise ValueError("Įvestis režime reikia fiksuoti visus parametrus, išskyrus x ašį.")
+
+                filtered_local = _build_interpolated_sweep_table(
+                    summary_tbl,
+                    x_col=x_col,
+                    fixed=fixed_in,
+                )
+
                 if filtered_local.empty:
-                    raise ValueError("Nėra duomenų pagal pasirinktas fiksuotas reikšmes.")
-                ok, group_col, msg = _validate_breakpoint_request(filtered_local, x_col=x_col, candidates=candidates)
+                    raise ValueError("Nepakanka duomenų interpoliuotam grafikui sudaryti.")
+
+                ok = True
+                group_col = None
+                msg = ""
             except Exception as e:
                 ok = False
                 msg = _normalize_ui_error(e)
@@ -2978,14 +2989,10 @@ for gid, meta in _BP_GRAPHS.items():
                         show_point_labels=True,
                     )
 
-                    fixed_for_caption: Dict[str, Optional[float]] = dict(fixed_in)
-                    for k, v in snapped.items():
-                        fixed_for_caption[k] = v
-
                     st.session_state[cap_key] = _conditions_sentence_from_filters(
-                        fixed_for_caption,
+                        fixed_in,
                         x_col=x_col,
-                        grouped_by=group_col,
+                        grouped_by=None,
                     )
                     st.session_state[err_key] = ""
                 except Exception as e:

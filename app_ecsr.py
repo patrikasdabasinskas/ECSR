@@ -2653,7 +2653,12 @@ else:
             _show_result_card(shown_value, shown_unit)
 
 
-def _bp_filter_ui_scenario(graph_id: str, *, summary_tbl0: pd.DataFrame) -> Dict[str, Optional[float]]:
+def _bp_filter_ui_scenario(
+    graph_id: str,
+    *,
+    summary_tbl0: pd.DataFrame,
+    allow_unfixed: bool = True,
+) -> Dict[str, Optional[float]]:
     meta = _BP_GRAPHS.get(graph_id) or _DOC_GRAPHS[graph_id]
     x_col = meta["x_col"]
     fixed: Dict[str, Optional[float]] = {}
@@ -2664,46 +2669,28 @@ def _bp_filter_ui_scenario(graph_id: str, *, summary_tbl0: pd.DataFrame) -> Dict
     for i, col in enumerate(other_cols):
         label, unit = _GROUP_META.get(col, (col, ""))
         values = _unique_sorted(summary_tbl0[col]) if col in summary_tbl0.columns else []
-        options = ["nefiksuoti"] + [_fmt_num(v) for v in values] if values else ["nefiksuoti"]
+
+        if allow_unfixed:
+            options = ["nefiksuoti"] + [_fmt_num(v) for v in values] if values else ["nefiksuoti"]
+        else:
+            options = [_fmt_num(v) for v in values] if values else []
+
         with cols[i % 3]:
+            if not options:
+                st.error(f"Nėra galimų reikšmių parametrui: {label}")
+                fixed[col] = None
+                continue
+
             pick = st.selectbox(
                 f"Fiksuoti {label} ({unit})" if unit else f"Fiksuoti {label}",
                 options,
-                key=f"{graph_id}_flt_{col}",
+                key=f"{graph_id}_flt_{col}_{'u' if allow_unfixed else 'f'}",
             )
-        fixed[col] = None if pick == "nefiksuoti" else float(pick)
 
-    fixed[x_col] = None
-    return fixed
-
-def _doc_filter_ui_scenario_fixed_only(graph_id: str, *, summary_tbl0: pd.DataFrame) -> Dict[str, Optional[float]]:
-    meta = _DOC_GRAPHS.get(graph_id) or _BP_GRAPHS[graph_id]
-    x_col = meta["x_col"]
-    fixed: Dict[str, Optional[float]] = {}
-
-    cols = st.columns(3, gap="medium")
-    other_cols = [c for c in _BP_OTHER_COLS if c != x_col]
-
-    for i, col in enumerate(other_cols):
-        label, unit = _GROUP_META.get(col, (col, ""))
-        values = _unique_sorted(summary_tbl0[col]) if col in summary_tbl0.columns else []
-
-        if not values:
-            st.error(f"Nėra galimų reikšmių parametrui: {label}")
+        if allow_unfixed and pick == "nefiksuoti":
             fixed[col] = None
-            continue
-
-        options = [_fmt_num(v) for v in values]
-
-        with cols[i % 3]:
-            pick = st.selectbox(
-                f"Fiksuoti {label} ({unit})" if unit else f"Fiksuoti {label}",
-                options,
-                index=0,
-                key=f"{graph_id}_flt_doconly_{col}",
-            )
-
-        fixed[col] = float(pick)
+        else:
+            fixed[col] = float(pick)
 
     fixed[x_col] = None
     return fixed
@@ -2790,7 +2777,7 @@ if mode == "Scenarijus":
         err_key = f"err_{gid}"
 
         with st.expander(exp_title, expanded=st.session_state.get(open_key, False)):
-            fixed = _bp_filter_ui_scenario(gid, summary_tbl0=summary_tbl)
+            fixed = _bp_filter_ui_scenario(gid, summary_tbl0=summary_tbl, allow_unfixed=False)
             filtered_local = _filter_summary_by_constants(
                 summary_tbl,
                 zp_ft=fixed.get("ZP_ft"),
@@ -3120,7 +3107,7 @@ for gid, meta in _BP_GRAPHS.items():
 
     with st.expander(exp_title, expanded=st.session_state.get(open_key, False)):
         if mode == "Scenarijus":
-            fixed = _doc_filter_ui_scenario_fixed_only(gid, summary_tbl0=summary_tbl)
+            fixed = _bp_filter_ui_scenario(gid, summary_tbl0=summary_tbl)
             filtered_local = _filter_summary_by_constants(
                 summary_tbl,
                 zp_ft=fixed.get("ZP_ft"),

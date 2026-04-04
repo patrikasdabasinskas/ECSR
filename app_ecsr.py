@@ -38,14 +38,14 @@ _GROUP_META: Dict[str, Tuple[str, str]] = {
 
 # Breakpoint graphs meta
 _BP_GRAPHS: Dict[str, Dict[str, Any]] = {
-    "g4": {"x_col": "WIND_kt", "x_name_lt": "vėjo", "x_label": "Vėjo komponentė (kt)"},
+    "g4": {"x_col": "WIND_kt", "x_name_lt": "vėjo", "x_label": "Vėjo dedamoji (kt)"},
     "g5": {"x_col": "WEIGHT_kg", "x_name_lt": "masės", "x_label": "Masė (kg)"},
     "g6": {"x_col": "ZP_ft", "x_name_lt": "skrydžio aukščio", "x_label": "Skrydžio aukštis (ft)"},
     "g7": {"x_col": "ISA_C", "x_name_lt": "ISA nuokrypio", "x_label": "ISA nuokrypis (°C)"},
 }
 
 _DOC_GRAPHS: Dict[str, Dict[str, Any]] = {
-    "d1": {"x_col": "WIND_kt", "x_name_lt": "vėjo", "x_label": "Vėjo komponentė (kt)"},
+    "d1": {"x_col": "WIND_kt", "x_name_lt": "vėjo", "x_label": "Vėjo dedamoji (kt)"},
     "d2": {"x_col": "WEIGHT_kg", "x_name_lt": "masės", "x_label": "Masė (kg)"},
     "d3": {"x_col": "ZP_ft", "x_name_lt": "skrydžio aukščio", "x_label": "Skrydžio aukštis (ft)"},
     "d4": {"x_col": "ISA_C", "x_name_lt": "ISA nuokrypio", "x_label": "ISA nuokrypis (°C)"},
@@ -2490,7 +2490,7 @@ if mode == "Scenarijus":
                 _render_result_card(v, "EUR" if v else "", "DOCnotch rezultatas", max_width_px=190)
             with r3:
                 v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else ""
-                _render_result_card(v, "EUR" if v else "", "Sutaupymas (DOCnotch − DOCmin)", max_width_px=220)
+                _render_result_card(v, "EUR" if v else "", "Sutaupymas", max_width_px=220)
         else:
             _show_result_card(shown_value, shown_unit)
 
@@ -2506,7 +2506,7 @@ else:
     with c3:
         in_isa = st.number_input("ISA nuokrypis (°C)", step=1.0, key="in_isa")
     with c4:
-        in_wind = st.number_input("Vėjo greitis skrydžio kryptimi (kt)", step=1.0, key="in_wind")
+        in_wind = st.number_input("Vėjo dedamoji skrydžio kryptimi (kt)", step=1.0, key="in_wind")
 
     pick_metric_label = st.selectbox("Pasirinkite rodiklį", list(metric_map.keys()), index=0, key="in_metric")
     col_key = metric_map[pick_metric_label]
@@ -2638,7 +2638,7 @@ else:
                 _render_result_card(v, "EUR" if v else "", "DOCnotch rezultatas", max_width_px=190)
             with r3:
                 v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else ""
-                _render_result_card(v, "EUR" if v else "", "Sutaupymas (DOCnotch − DOCmin)", max_width_px=220)
+                _render_result_card(v, "EUR" if v else "", "Sutaupymas", max_width_px=220)
         else:
             _show_result_card(shown_value, shown_unit)
 
@@ -2887,7 +2887,7 @@ else:
         with c3:
             isa = st.number_input("ISA nuokrypis (°C)", value=float(st.session_state["in_isa"]), step=1.0, key="g1i_isa")
         with c4:
-            wind = st.number_input("Vėjo greitis skrydžio kryptimi (kt)", value=float(st.session_state["in_wind"]), step=1.0, key="g1i_wind")
+            wind = st.number_input("Vėjo dedamoji skrydžio kryptimi (kt)", value=float(st.session_state["in_wind"]), step=1.0, key="g1i_wind")
         with c5:
             st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
             if st.button("Generuoti grafiką", key="btn_g1i", use_container_width=True):
@@ -3018,7 +3018,7 @@ else:
         with c3:
             isa = st.number_input("ISA nuokrypis (°C)", value=float(st.session_state["in_isa"]), step=1.0, key="g2i_isa")
         with c4:
-            wind = st.number_input("Vėjo greitis skrydžio kryptimi (kt)", value=float(st.session_state["in_wind"]), step=1.0, key="g2i_wind")
+            wind = st.number_input("Vėjo dedamoji skrydžio kryptimi (kt)", value=float(st.session_state["in_wind"]), step=1.0, key="g2i_wind")
         with c5:
             st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
             if st.button("Generuoti grafiką", key="btn_g2i", use_container_width=True):
@@ -3052,7 +3052,7 @@ else:
         with c3:
             isa = st.number_input("ISA nuokrypis (°C)", value=float(st.session_state["in_isa"]), step=1.0, key="g3i_isa")
         with c4:
-            wind = st.number_input("Vėjo greitis skrydžio kryptimi (kt)", value=float(st.session_state["in_wind"]), step=1.0, key="g3i_wind")
+            wind = st.number_input("Vėjo dedamoji skrydžio kryptimi (kt)", value=float(st.session_state["in_wind"]), step=1.0, key="g3i_wind")
         with c5:
             st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
             if st.button("Generuoti grafiką", key="btn_g3i", use_container_width=True):
@@ -3429,7 +3429,7 @@ if st.session_state["show_glossary"]:
             """
 **IAS** – nurodomasis oro greitis, **kt**  
 **TAS** – tikrasis oro greitis, **kt**  
-**WIND** – vėjo komponentė skrydžio kryptimi (teigiamas – pavejui, neigiamas – priešinis vėjas), **kt**
+**WIND** – vėjo dedamoji skrydžio kryptimi (teigiamas – pavejui, neigiamas – priešinis vėjas), **kt**
 
 **DOC** – tiesioginės eksploatacinės sąnaudos, **EUR** / Gali būti matuojamos ir 1 jūrmylei - tuomet **EUR/NM**  
 **DOCmin_perNM** – minimalios DOC sąnaudos per **1 jūrmylią**, **EUR/NM**  

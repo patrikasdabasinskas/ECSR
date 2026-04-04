@@ -1630,6 +1630,8 @@ def _plot_doc_vs_grouped(
 
     y_all: List[float] = []
 
+    docmin_label_color = "darkred" if show_docnotch else "black"
+
     if used_group:
         agg_cols = ["DOCmin_EurPerNM"] + (["DOCnotch_EurPerNM"] if show_docnotch else [])
         g = df.groupby([used_group, x_col], as_index=False)[agg_cols].median()
@@ -1658,7 +1660,9 @@ def _plot_doc_vs_grouped(
             if show_point_labels:
                 for x0, y0 in zip(xs.tolist(), ys_min.tolist()):
                     if np.isfinite(x0) and np.isfinite(y0):
-                        label_candidates_min.append((float(x0), float(y0), f"{float(y0):.2f}", f"{grp_val}_min"))
+                        label_candidates_min.append(
+                            (float(x0), float(y0), f"{float(y0):.2f}", f"{grp_val}_min")
+                        )
 
             if show_docnotch:
                 ys_notch = sub["DOCnotch_EurPerNM"].to_numpy(float)
@@ -1679,7 +1683,9 @@ def _plot_doc_vs_grouped(
                 if show_point_labels:
                     for x0, y0 in zip(xs.tolist(), ys_notch.tolist()):
                         if np.isfinite(x0) and np.isfinite(y0):
-                            label_candidates_notch.append((float(x0), float(y0), f"{float(y0):.2f}", f"{grp_val}_notch"))
+                            label_candidates_notch.append(
+                                (float(x0), float(y0), f"{float(y0):.2f}", f"{grp_val}_notch")
+                            )
 
         if show_point_labels:
             if label_candidates_notch:
@@ -1693,33 +1699,14 @@ def _plot_doc_vs_grouped(
                 )
 
             if label_candidates_min:
-                for x0, y0, txt, _grp in label_candidates_min:
-                    ax.annotate(
-                        txt,
-                        xy=(x0, y0),
-                        xycoords="data",
-                        xytext=(0, -10),
-                        textcoords="offset points",
-                        ha="center",
-                        va="top",
-                        fontsize=7,
-                        color="darkred",
-                        arrowprops={
-                            "arrowstyle": "-",
-                            "linewidth": 0.8,
-                            "color": "darkred",
-                            "shrinkA": 6,
-                            "shrinkB": 6,
-                        },
-                        bbox={
-                            "boxstyle": "round,pad=0.08",
-                            "facecolor": "white",
-                            "edgecolor": "none",
-                            "alpha": 0.80,
-                        },
-                        clip_on=False,
-                        zorder=50,
-                    )
+                _label_points_global_dedup(
+                    ax,
+                    label_candidates_min,
+                    overlap_frac=0.80,
+                    y_offset_pts=-10,
+                    fontsize=7,
+                    color=docmin_label_color,
+                )
 
         ax.legend(loc="best")
 
@@ -1730,7 +1717,14 @@ def _plot_doc_vs_grouped(
         xs = g[x_col].to_numpy(float)
         ys_min = g["DOCmin_EurPerNM"].to_numpy(float)
 
-        ax.plot(xs, ys_min, linewidth=2.2, marker="o", color="darkred", label="DOCmin")
+        ax.plot(
+            xs,
+            ys_min,
+            linewidth=2.2,
+            marker="o",
+            color="darkred",
+            label="DOCmin",
+        )
         y_all.extend(ys_min.tolist())
 
         if show_point_labels:
@@ -1741,12 +1735,20 @@ def _plot_doc_vs_grouped(
                 fmt="{:.2f}",
                 y_offset_pts=-10,
                 fontsize=7,
-                color="darkred",
+                color=docmin_label_color,
             )
 
         if show_docnotch:
             ys_notch = g["DOCnotch_EurPerNM"].to_numpy(float)
-            ax.plot(xs, ys_notch, linewidth=2.2, marker="s", linestyle="--", color="dodgerblue", label="DOCnotch")
+            ax.plot(
+                xs,
+                ys_notch,
+                linewidth=2.2,
+                marker="s",
+                linestyle="--",
+                color="dodgerblue",
+                label="DOCnotch",
+            )
             y_all.extend(ys_notch.tolist())
 
             if show_point_labels:
@@ -2545,6 +2547,7 @@ def _bp_filter_ui_input(graph_id: str) -> Dict[str, Optional[float]]:
 
     cols = st.columns(3, gap="medium")
     other_cols = [c for c in _BP_OTHER_COLS if c != x_col]
+
     defaults = {
         "ZP_ft": float(st.session_state.get("in_fl", 0.0)),
         "WEIGHT_kg": float(st.session_state.get("in_wt", 0.0)),
@@ -2554,27 +2557,18 @@ def _bp_filter_ui_input(graph_id: str) -> Dict[str, Optional[float]]:
 
     for i, col in enumerate(other_cols):
         label, unit = _GROUP_META.get(col, (col, ""))
-        unfix_key = f"inputmode_{graph_id}_unfix_{col}"
         input_key = f"inputmode_{graph_id}_in_{col}"
 
-        st.session_state.setdefault(unfix_key, False)
         st.session_state.setdefault(input_key, float(defaults.get(col, 0.0)))
 
         with cols[i % 3]:
-            unfixed = st.checkbox(
-                f"Pažymėkite, jeigu norite „{label}“ vertės nefiksuoti",
-                key=unfix_key,
+            value = st.number_input(
+                f"{label} ({unit})" if unit else f"{label}",
+                value=float(st.session_state[input_key]),
+                step=1.0 if col in {"ISA_C", "WIND_kt"} else 500.0,
+                key=input_key,
             )
-
-            if unfixed:
-                fixed[col] = None
-            else:
-                value = st.number_input(
-                    f"{label} ({unit})" if unit else f"{label}",
-                    step=1.0 if col in {"ISA_C", "WIND_kt"} else 500.0,
-                    key=input_key,
-                )
-                fixed[col] = float(value)
+            fixed[col] = float(value)
 
     return fixed
 
@@ -2642,15 +2636,19 @@ if mode == "Scenarijus":
             if not ok:
                 st.error(msg)
 
-            cc1, cc2 = st.columns([1.3, 1.0], gap="medium")
+            cc1, cc2 = st.columns([2.2, 1.0], gap="small")
             with cc1:
                 show_docnotch = st.checkbox(
                     "Rodyti DOCnotch kreivę",
                     key=f"{gid}_show_docnotch_scn",
                 )
             with cc2:
-                st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
-                run_graph = st.button("Generuoti grafiką", key=f"btn_{gid}_doc", disabled=not ok)
+                run_graph = st.button(
+                    "Generuoti grafiką",
+                    key=f"btn_{gid}_doc",
+                    disabled=not ok,
+                    use_container_width=True,
+                )
 
             if run_graph:
                 st.session_state[open_key] = True
@@ -2786,12 +2784,6 @@ else:
             msg = ""
 
             try:
-                for col in _BP_OTHER_COLS:
-                    if col == x_col:
-                        continue
-                    if fixed_in.get(col, None) is None:
-                        raise ValueError("Įvestis režime reikia fiksuoti visus parametrus, išskyrus x ašį.")
-
                 filtered_local = _build_interpolated_sweep_table(
                     summary_tbl,
                     x_col=x_col,
@@ -2812,15 +2804,19 @@ else:
             if not ok and msg:
                 st.error(msg)
 
-            cc1, cc2 = st.columns([1.3, 1.0], gap="medium")
+            cc1, cc2 = st.columns([2.2, 1.0], gap="small")
             with cc1:
                 show_docnotch = st.checkbox(
                     "Rodyti DOCnotch kreivę",
                     key=f"{gid}_show_docnotch_input",
                 )
             with cc2:
-                st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
-                run_graph = st.button("Generuoti grafiką", key=f"btn_{gid}_doc_input", disabled=not ok)
+                run_graph = st.button(
+                    "Generuoti grafiką",
+                    key=f"btn_{gid}_doc_input",
+                    disabled=not ok,
+                    use_container_width=True,
+                )
 
             if run_graph:
                 st.session_state[open_key] = True
@@ -3011,12 +3007,6 @@ for gid, meta in _BP_GRAPHS.items():
             msg = ""
 
             try:
-                for col in _BP_OTHER_COLS:
-                    if col == x_col:
-                        continue
-                    if fixed_in.get(col, None) is None:
-                        raise ValueError("Įvestis režime reikia fiksuoti visus parametrus, išskyrus x ašį.")
-
                 filtered_local = _build_interpolated_sweep_table(
                     summary_tbl,
                     x_col=x_col,

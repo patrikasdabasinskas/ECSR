@@ -1512,6 +1512,7 @@ def _plot_saving_vs_grouped(
     x_label: str,
     group_col: Optional[str],
     show_point_labels: bool = False,
+    distance_nm: float = 1.0,
 ) -> Any:
     fig, ax = _mpl_academic_fig()
 
@@ -1529,7 +1530,8 @@ def _plot_saving_vs_grouped(
     if df.empty:
         raise ValueError("Nėra duomenų po filtravimo.")
 
-    df["Saving_EurPerNM"] = df["DOCnotch_EurPerNM"] - df["DOCmin_EurPerNM"]
+    dist_nm = max(float(distance_nm), 0.0)
+    df["Saving_Eur"] = ((df["DOCnotch_EurPerNM"] - df["DOCmin_EurPerNM"]).clip(lower=0.0)) * dist_nm
 
     used_group = None
     if group_col and group_col in df.columns:
@@ -1542,9 +1544,9 @@ def _plot_saving_vs_grouped(
 
     if used_group:
         g = (
-            df.groupby([used_group, x_col], as_index=False)["Saving_EurPerNM"]
+            df.groupby([used_group, x_col], as_index=False)["Saving_Eur"]
             .median()
-            .rename(columns={"Saving_EurPerNM": "Saving"})
+            .rename(columns={"Saving_Eur": "Saving"})
         )
 
         label_candidates: List[Tuple[float, float, str, str]] = []
@@ -1571,7 +1573,7 @@ def _plot_saving_vs_grouped(
                 for x0, y0 in zip(xs.tolist(), ys.tolist()):
                     if np.isfinite(x0) and np.isfinite(y0):
                         label_candidates.append(
-                            (float(x0), float(y0), f"{float(y0):.3f}", str(grp_val))
+                            (float(x0), float(y0), f"{float(y0):.2f}", str(grp_val))
                         )
 
         if show_point_labels and label_candidates:
@@ -1581,16 +1583,16 @@ def _plot_saving_vs_grouped(
                 overlap_frac=0.80,
                 y_offset_pts=6,
                 fontsize=7,
-                color="darkred",
+                color="black",
             )
 
         ax.legend(loc="best")
 
     else:
         g = (
-            df.groupby(x_col, as_index=False)["Saving_EurPerNM"]
+            df.groupby(x_col, as_index=False)["Saving_Eur"]
             .median()
-            .rename(columns={"Saving_EurPerNM": "Saving"})
+            .rename(columns={"Saving_Eur": "Saving"})
             .sort_values(x_col)
         )
 
@@ -1612,10 +1614,10 @@ def _plot_saving_vs_grouped(
                 ax,
                 xs,
                 ys,
-                fmt="{:.3f}",
+                fmt="{:.2f}",
                 y_offset_pts=6,
                 fontsize=7,
-                color="darkred",
+                color="black",
             )
 
     y_for_limits = np.asarray(y_all, float)
@@ -1635,7 +1637,7 @@ def _plot_saving_vs_grouped(
 
     ax.set_title(title)
     ax.set_xlabel(x_label)
-    ax.set_ylabel("Sutaupymas (EUR/NM)")
+    ax.set_ylabel(f"Sutaupymas (Eur) per {int(round(dist_nm))} NM" if dist_nm > 0 else "Sutaupymas (Eur)")
     _add_axis_arrows(ax)
     fig.tight_layout()
     return fig
@@ -2553,10 +2555,10 @@ if mode == "Scenarijus":
         x_name_lt = meta["x_name_lt"]
 
         doc_graph_titles = {
-            "d1": "Grafikas 2 — Sutaupymas (eur/nm) vs Vėjo komponentė (kt)",
-            "d2": "Grafikas 3 — Sutaupymas (eur/nm) vs Masė (kg)",
-            "d3": "Grafikas 4 — Sutaupymas (eur/nm) vs Skrydžio aukštis (ft)",
-            "d4": "Grafikas 5 — Sutaupymas (eur/nm) vs ISA nuokrypis (°C)",
+            "d1": "Grafikas 2 — Sutaupymas (Eur) vs Vėjo komponentė (kt)",
+            "d2": "Grafikas 3 — Sutaupymas (Eur) vs Masė (kg)",
+            "d3": "Grafikas 4 — Sutaupymas (Eur) vs Skrydžio aukštis (ft)",
+            "d4": "Grafikas 5 — Sutaupymas (Eur) vs ISA nuokrypis (°C)",
         }
         exp_title = doc_graph_titles[gid]
         open_key = f"open_{gid}"
@@ -2579,7 +2581,20 @@ if mode == "Scenarijus":
             if not ok:
                 st.error(msg)
 
-            _, cc2 = st.columns([2.2, 1.0], gap="small")
+            cc1, cc2 = st.columns([2.2, 1.0], gap="small")
+            with cc1:
+                use_distance = st.checkbox(
+                    "Atstumas sutaupymui",
+                    key=f"{gid}_use_distance_scn",
+                )
+                saving_distance_nm = 1.0
+                if use_distance:
+                    saving_distance_nm = st.number_input(
+                        "Atstumas (NM)",
+                        min_value=0.0,
+                        step=10.0,
+                        key=f"{gid}_distance_scn",
+                    )
             with cc2:
                 run_graph = st.button(
                     "Generuoti grafiką",
@@ -2598,6 +2613,7 @@ if mode == "Scenarijus":
                         x_label=x_label,
                         group_col=group_col,
                         show_point_labels=True,
+                        distance_nm=float(saving_distance_nm),
                     )
                     st.session_state[cap_key] = _conditions_sentence_from_filters(fixed, x_col=x_col, grouped_by=group_col)
                     st.session_state[err_key] = ""
@@ -2702,10 +2718,10 @@ else:
         x_name_lt = meta["x_name_lt"]
 
         doc_graph_titles = {
-            "d1": "Grafikas 2 — Sutaupymas (eur/nm) vs Vėjo komponentė (kt)",
-            "d2": "Grafikas 3 — Sutaupymas (eur/nm) vs Masė (kg)",
-            "d3": "Grafikas 4 — Sutaupymas (eur/nm) vs Skrydžio aukštis (ft)",
-            "d4": "Grafikas 5 — Sutaupymas (eur/nm) vs ISA nuokrypis (°C)",
+            "d1": "Grafikas 2 — Sutaupymas (Eur) vs Vėjo komponentė (kt)",
+            "d2": "Grafikas 3 — Sutaupymas (Eur) vs Masė (kg)",
+            "d3": "Grafikas 4 — Sutaupymas (Eur) vs Skrydžio aukštis (ft)",
+            "d4": "Grafikas 5 — Sutaupymas (Eur) vs ISA nuokrypis (°C)",
         }
         exp_title = doc_graph_titles[gid]
         open_key = f"open_{gid}"
@@ -2741,7 +2757,20 @@ else:
             if not ok and msg:
                 st.error(msg)
 
-            _, cc2 = st.columns([2.2, 1.0], gap="small")
+            cc1, cc2 = st.columns([2.2, 1.0], gap="small")
+            with cc1:
+                use_distance = st.checkbox(
+                    "Atstumas sutaupymui",
+                    key=f"{gid}_use_distance_input",
+                )
+                saving_distance_nm = 1.0
+                if use_distance:
+                    saving_distance_nm = st.number_input(
+                        "Atstumas (NM)",
+                        min_value=0.0,
+                        step=10.0,
+                        key=f"{gid}_distance_input",
+                    )
             with cc2:
                 run_graph = st.button(
                     "Generuoti grafiką",
@@ -2760,6 +2789,7 @@ else:
                         x_label=x_label,
                         group_col=group_col,
                         show_point_labels=True,
+                        distance_nm=float(saving_distance_nm),
                     )
                     st.session_state[cap_key] = _conditions_sentence_from_filters(
                         fixed_in,

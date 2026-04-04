@@ -1536,6 +1536,9 @@ def _plot_doc_vs_grouped(
     if df.empty:
         raise ValueError("Nėra duomenų po filtravimo.")
 
+    scale = 100.0 if show_docnotch else 1.0
+    y_label = "DOC (EUR/100NM)" if show_docnotch else "DOC (EUR/NM)"
+
     used_group = None
     if group_col and group_col in df.columns:
         df[group_col] = pd.to_numeric(df[group_col], errors="coerce")
@@ -1556,7 +1559,7 @@ def _plot_doc_vs_grouped(
         for grp_val, sub in g.groupby(used_group, sort=True):
             sub = sub.sort_values(x_col)
             xs = sub[x_col].to_numpy(float)
-            ys_min = sub["DOCmin_EurPerNM"].to_numpy(float)
+            ys_min = sub["DOCmin_EurPerNM"].to_numpy(float) * scale
 
             ax.plot(
                 xs,
@@ -1579,7 +1582,7 @@ def _plot_doc_vs_grouped(
                         )
 
             if show_docnotch:
-                ys_notch = sub["DOCnotch_EurPerNM"].to_numpy(float)
+                ys_notch = sub["DOCnotch_EurPerNM"].to_numpy(float) * scale
 
                 ax.plot(
                     xs,
@@ -1629,7 +1632,7 @@ def _plot_doc_vs_grouped(
         g = df.groupby(x_col, as_index=False)[agg_cols].median().sort_values(x_col)
 
         xs = g[x_col].to_numpy(float)
-        ys_min = g["DOCmin_EurPerNM"].to_numpy(float)
+        ys_min = g["DOCmin_EurPerNM"].to_numpy(float) * scale
 
         ax.plot(
             xs,
@@ -1653,7 +1656,7 @@ def _plot_doc_vs_grouped(
             )
 
         if show_docnotch:
-            ys_notch = g["DOCnotch_EurPerNM"].to_numpy(float)
+            ys_notch = g["DOCnotch_EurPerNM"].to_numpy(float) * scale
             ax.plot(
                 xs,
                 ys_notch,
@@ -1690,8 +1693,8 @@ def _plot_doc_vs_grouped(
             ax.set_ylim(y_min - pad, y_max + pad)
         else:
             if show_docnotch:
-                top_pad = max(0.03 * rng, 0.01)
-                bot_pad = max(0.03 * rng, 0.01)
+                top_pad = max(0.12 * rng, 0.04 * max(abs(y_max), 1.0), 0.05)
+                bot_pad = max(0.12 * rng, 0.04 * max(abs(y_min), 1.0), 0.05)
             else:
                 top_pad = max(0.25 * rng, 0.12 * max(abs(y_max), 1.0), 0.20)
                 bot_pad = max(0.25 * rng, 0.12 * max(abs(y_min), 1.0), 0.20)
@@ -1699,12 +1702,12 @@ def _plot_doc_vs_grouped(
             ax.set_ylim(y_min - bot_pad, y_max + top_pad)
 
     if show_docnotch and y_for_limits.size:
-        ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=12))
+        ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=8))
         ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
 
     ax.set_title(title)
     ax.set_xlabel(x_label)
-    ax.set_ylabel("DOC (EUR/NM)")
+    ax.set_ylabel(y_label)
     _add_axis_arrows(ax)
     fig.tight_layout()
     return fig

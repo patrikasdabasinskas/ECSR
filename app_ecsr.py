@@ -870,6 +870,7 @@ def _plot_econ_vs_fuel_price(
     if not row.empty:
         be = float(pd.to_numeric(row["BreakEven_FUEL_PRICE_EurPerKg"], errors="coerce").iloc[0])
 
+
     def _econ_at(price: float) -> float:
         return float(np.interp(float(price), fp, econ))
 
@@ -906,6 +907,117 @@ def _plot_econ_vs_fuel_price(
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
     return fig
 
+def _compute_input_doc_curve_knn(
+    scenarios: List[Dict[str, Any]],
+    summary_tbl: pd.DataFrame,
+    *,
+    fl_ft: float,
+    wt_kg: float,
+    isa_c: float,
+    wind_kt: float,
+) -> Dict[str, Any]:
+    msg = _validate_interp_inputs(
+        summary_tbl,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+    )
+    if msg:
+        raise ValueError(msg)
+
+    usable = [
+        sc for sc in scenarios
+        if isinstance(sc.get("docIASVec"), np.ndarray)
+        and isinstance(sc.get("docVec"), np.ndarray)
+        and sc.get("docIASVec").size >= 2
+        and sc.get("docVec").size >= 2
+    ]
+    if len(usable) < 8:
+        raise ValueError("Nepakanka scenarijų DOC interpolacijai (reikia bent 8 su DOC vektoriais).")
+
+    ias_lo = min(float(np.nanmin(sc["docIASVec"])) for sc in usable)
+    ias_hi = max(float(np.nanmax(sc["docIASVec"])) for sc in usable)
+    if not np.isfinite(ias_lo) or not np.isfinite(ias_hi) or ias_hi <= ias_lo:
+        raise ValueError("Nepavyko nustatyti galiojančio IAS intervalo DOC kreivei.")
+
+    k_use = min(30, len(usable))
+    min_nb = min(8, max(3, len(usable) // 2))
+
+    x_coarse = np.linspace(ias_lo, ias_hi, 1200, dtype=float)
+    y_coarse, _diag1 = interpolate_curve_knn_from_scenarios(
+        usable,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+        x_grid=x_coarse,
+        x_vec_key="docIASVec",
+        y_vec_key="docVec",
+        k=k_use,
+        power=2.0,
+        min_neighbors=min_nb,
+    )
+
+    x_coarse = np.asarray(x_coarse, float)
+    y_coarse = np.asarray(y_coarse, float)
+
+    ok = np.isfinite(x_coarse) & np.isfinite(y_coarse)
+    if int(ok.sum()) < 80:
+        raise ValueError("Nepakanka duomenų DOC kreivei nubraižyti.")
+
+    x_coarse = x_coarse[ok]
+    y_coarse = y_coarse[ok]
+
+    j0 = int(np.nanargmin(y_coarse))
+
+    left_i = max(0, j0 - 3)
+    right_i = min(len(x_coarse) - 1, j0 + 3)
+
+    x_left = float(x_coarse[left_i])
+    x_right = float(x_coarse[right_i])
+
+    if not np.isfinite(x_left) or not np.isfinite(x_right) or x_right <= x_left:
+        x_left = float(max(ias_lo, x_coarse[j0] - 2.0))
+        x_right = float(min(ias_hi, x_coarse[j0] + 2.0))
+
+    x_fine = np.linspace(x_left, x_right, 800, dtype=float)
+    y_fine, _diag2 = interpolate_curve_knn_from_scenarios(
+        usable,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+        x_grid=x_fine,
+        x_vec_key="docIASVec",
+        y_vec_key="docVec",
+        k=k_use,
+        power=2.0,
+        min_neighbors=min_nb,
+    )
+
+    x_fine = np.asarray(x_fine, float)
+    y_fine = np.asarray(y_fine, float)
+
+    ok2 = np.isfinite(x_fine) & np.isfinite(y_fine)
+    if int(ok2.sum()) < 80:
+        x = x_coarse
+        y = y_coarse
+    else:
+        x = x_fine[ok2]
+        y = y_fine[ok2]
+
+    j = int(np.nanargmin(y))
+    v_opt = float(x[j])
+    doc_opt = float(y[j])
+
+    return {
+        "IAS_grid": x,
+        "DOC_grid_per_nm": y,
+        "IAS_opt": v_opt,
+        "DOC_opt_per_nm": doc_opt,
+    }
+
 def _plot_doc_vs_ias_input_knn(
     scenarios: List[Dict[str, Any]],
     summary_tbl: pd.DataFrame,
@@ -916,59 +1028,20 @@ def _plot_doc_vs_ias_input_knn(
     wind_kt: float,
     cfg: Config,
 ):
-    # Validate 4D inputs exactly like other input-graphs
-    msg = _validate_interp_inputs(summary_tbl, fl_ft=fl_ft, weight_kg=wt_kg, isa_c=isa_c, wind_kt=wind_kt)
-    if msg:
-        raise ValueError(msg)
-
-    # Use precomputed per-scenario DOC(IAS) vectors (computed right after run_pipeline)
-    usable = [
-        sc for sc in scenarios
-        if isinstance(sc.get("docIASVec"), np.ndarray) and isinstance(sc.get("docVec"), np.ndarray)
-        and sc.get("docIASVec").size >= 2 and sc.get("docVec").size >= 2
-    ]
-    if len(usable) < 8:
-        raise ValueError("Nepakanka scenarijų DOC interpolacijai (reikia bent 8 su DOC vektoriais).")
-
-    # Common IAS grid (no extrapolation outside available IAS ranges)
-    ias_lo = min(float(np.nanmin(sc["docIASVec"])) for sc in usable)
-    ias_hi = max(float(np.nanmax(sc["docIASVec"])) for sc in usable)
-    x_grid = np.linspace(ias_lo, ias_hi, 500, dtype=float)
-
-    # Same neighbor philosophy as Graph 2/3: nearest scenarios in (FL, WT, ISA, WIND)
-    k_use = min(30, len(usable))
-    min_nb = min(8, max(3, len(usable) // 2))
-
-    y_grid, _diag = interpolate_curve_knn_from_scenarios(
-        usable,
+    cur = _compute_input_doc_curve_knn(
+        scenarios,
+        summary_tbl,
         fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
+        wt_kg=float(wt_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
-        x_grid=x_grid,
-        x_vec_key="docIASVec",
-        y_vec_key="docVec",
-        k=k_use,
-        power=2.0,
-        min_neighbors=min_nb,
     )
 
-    x = np.asarray(x_grid, float)
-    y = np.asarray(y_grid, float)
+    x = np.asarray(cur["IAS_grid"], float)
+    y = np.asarray(cur["DOC_grid_per_nm"], float)
+    v_opt = float(cur["IAS_opt"])
+    doc_opt = float(cur["DOC_opt_per_nm"])
 
-    ok = np.isfinite(x) & np.isfinite(y)
-    if int(ok.sum()) < 50:
-        raise ValueError("Nepakanka duomenų DOC kreivei nubraižyti.")
-
-    x = x[ok]
-    y = y[ok]
-
-    # ECON from DOC minimum on interpolated curve
-    j = int(np.nanargmin(y))
-    v_opt = float(x[j])
-    doc_opt = float(y[j])
-
-    # IASnotch from interpolated quick metrics (same source as other input results)
     qres = compute_quick_metrics_interpolated(
         summary_tbl,
         fl_ft=float(fl_ft),
@@ -978,7 +1051,6 @@ def _plot_doc_vs_ias_input_knn(
     )
     v_notch = float(qres.v_notch_kt)
 
-    # Clamp display logic: if ECON is within 1 kt of IASnotch OR exceeds it -> show ONE black marker at IASnotch
     same = (v_opt >= (v_notch - 1.0))
 
     fig, ax = _mpl_academic_fig()
@@ -988,25 +1060,58 @@ def _plot_doc_vs_ias_input_knn(
     notch_kt = int(round(v_notch))
 
     if same:
-        # One black marker at IASnotch
         y_notch = float(np.interp(v_notch, x, y))
-        ax.scatter([v_notch], [y_notch], s=95, marker="x", color="black",
-                   label=f"ECON / IASnotch ({notch_kt} kt)")
-        _annotate_tiny_above(ax, v_notch, y_notch,
-                             f"ECON = IASnotch = {notch_kt} kt",
-                             color="black")
+        ax.scatter(
+            [v_notch],
+            [y_notch],
+            s=95,
+            marker="x",
+            color="black",
+            label=f"ECON / IASnotch ({notch_kt} kt)",
+        )
+        _annotate_tiny_above(
+            ax,
+            v_notch,
+            y_notch,
+            f"ECON = IASnotch = {notch_kt} kt",
+            color="black",
+        )
     else:
-        # Two markers (ECON orange, IASnotch blue)
-        ax.scatter([v_opt], [doc_opt], s=95, marker="x", color="orange",
-                   label=f"ECON ({econ_kt} kt)")
-        _annotate_tiny_above(ax, v_opt, doc_opt, f"ECON {econ_kt} kt",
-                             color="orange", dx_pts=-60, dy_pts=40)
+        ax.scatter(
+            [v_opt],
+            [doc_opt],
+            s=95,
+            marker="x",
+            color="orange",
+            label=f"ECON ({econ_kt} kt)",
+        )
+        _annotate_tiny_above(
+            ax,
+            v_opt,
+            doc_opt,
+            f"ECON {econ_kt} kt",
+            color="orange",
+            dx_pts=-60,
+            dy_pts=40,
+        )
 
         y_notch = float(np.interp(v_notch, x, y))
-        ax.scatter([v_notch], [y_notch], s=95, marker="x", color="dodgerblue",
-                   label=f"IASnotch ({notch_kt} kt)")
-        _annotate_tiny_above(ax, v_notch, y_notch, f"IASnotch {notch_kt} kt",
-                             color="dodgerblue", dx_pts=14)
+        ax.scatter(
+            [v_notch],
+            [y_notch],
+            s=95,
+            marker="x",
+            color="dodgerblue",
+            label=f"IASnotch ({notch_kt} kt)",
+        )
+        _annotate_tiny_above(
+            ax,
+            v_notch,
+            y_notch,
+            f"IASnotch {notch_kt} kt",
+            color="dodgerblue",
+            dx_pts=14,
+        )
 
     ax.set_title("DOC priklausomybė nuo IAS")
     ax.set_xlabel("IAS (kt)")
@@ -1015,7 +1120,6 @@ def _plot_doc_vs_ias_input_knn(
     ax.legend(loc="best")
     fig.tight_layout()
     return fig
-
 
 def _plot_econ_vs_time_cost_input_knn(
     scenarios: List[Dict[str, Any]],
@@ -2421,24 +2525,42 @@ else:
                 else:
                     diff_total = float("nan")
             else:
-                mapping = {
-                    "V_ECSR_kt": (res_in.v_ecsr_kt, "kt"),
-                    "V_notch_kt": (res_in.v_notch_kt, "kt"),
-                    "DOCmin_EurPerNM": (res_in.docmin_eur_per_nm, "EUR/NM"),
-                    "DOCnotch_EurPerNM": (res_in.docnotch_eur_per_nm, "EUR/NM"),
-                }
-                if col_key in mapping:
-                    val, unit = mapping[col_key]
-                    if np.isfinite(val):
-                        if unit == "kt":
-                            shown_value = f"{int(round(float(val)))}"
-                        elif unit == "EUR/NM":
-                            shown_value = f"{float(val):.3f}"
-                        elif unit == "EUR/h":
-                            shown_value = f"{float(val):.1f}"
-                        else:
-                            shown_value = f"{float(val):g}"
-                        shown_unit = unit
+                if col_key == "V_ECSR_kt":
+                    try:
+                        doc_curve_res = _compute_input_doc_curve_knn(
+                            scenarios,
+                            summary_tbl,
+                            fl_ft=float(in_fl),
+                            wt_kg=float(in_wt),
+                            isa_c=float(in_isa),
+                            wind_kt=float(in_wind),
+                        )
+                        econ_val = float(doc_curve_res["IAS_opt"])
+                    except Exception:
+                        econ_val = float(res_in.v_ecsr_kt)
+
+                    if np.isfinite(econ_val):
+                        shown_value = f"{int(round(econ_val))}"
+                        shown_unit = "kt"
+
+                else:
+                    mapping = {
+                        "V_notch_kt": (res_in.v_notch_kt, "kt"),
+                        "DOCmin_EurPerNM": (res_in.docmin_eur_per_nm, "EUR/NM"),
+                        "DOCnotch_EurPerNM": (res_in.docnotch_eur_per_nm, "EUR/NM"),
+                    }
+                    if col_key in mapping:
+                        val, unit = mapping[col_key]
+                        if np.isfinite(val):
+                            if unit == "kt":
+                                shown_value = f"{int(round(float(val)))}"
+                            elif unit == "EUR/NM":
+                                shown_value = f"{float(val):.3f}"
+                            elif unit == "EUR/h":
+                                shown_value = f"{float(val):.1f}"
+                            else:
+                                shown_value = f"{float(val):g}"
+                            shown_unit = unit
     st.markdown("<div style='height: 26px'></div>", unsafe_allow_html=True)
 
     if show_placeholder:

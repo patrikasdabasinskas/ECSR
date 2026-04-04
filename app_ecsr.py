@@ -1900,6 +1900,7 @@ def _build_interpolated_sweep_table(
     *,
     x_col: str,
     fixed: Dict[str, Optional[float]],
+    include_x_value: Optional[float] = None,
 ) -> pd.DataFrame:
     """
     Build an interpolated sweep table for Įvestis mode graphs.
@@ -1910,12 +1911,16 @@ def _build_interpolated_sweep_table(
     - BreakEven_TIME_COST_EurPerHr
     - BreakEven_FUEL_PRICE_EurPerKg
 
-    using the user's fixed values for the other 3 dimensions and the current x value.
+    Also optionally include one exact user x-value so the graph contains
+    the same point as Greita peržiūra.
     """
     if summary_tbl is None or summary_tbl.empty:
         return pd.DataFrame()
 
     x_vals = _unique_sorted(summary_tbl[x_col])
+    if include_x_value is not None and np.isfinite(float(include_x_value)):
+        x_vals = sorted(set([*x_vals, float(include_x_value)]))
+
     if not x_vals:
         return pd.DataFrame()
 
@@ -2937,10 +2942,18 @@ else:
             msg = ""
 
             try:
+                current_x_value = {
+                    "ZP_ft": float(st.session_state.get("inputmode_" + gid + "_in_ZP_ft", st.session_state.get("in_fl", 0.0))),
+                    "WEIGHT_kg": float(st.session_state.get("inputmode_" + gid + "_in_WEIGHT_kg", st.session_state.get("in_wt", 0.0))),
+                    "ISA_C": float(st.session_state.get("inputmode_" + gid + "_in_ISA_C", st.session_state.get("in_isa", 0.0))),
+                    "WIND_kt": float(st.session_state.get("inputmode_" + gid + "_in_WIND_kt", st.session_state.get("in_wind", 0.0))),
+                }[x_col]
+
                 filtered_local = _build_interpolated_sweep_table(
                     summary_tbl,
                     x_col=x_col,
                     fixed=fixed_in,
+                    include_x_value=current_x_value,
                 )
 
                 if filtered_local.empty:
@@ -3170,10 +3183,18 @@ for gid, meta in _BP_GRAPHS.items():
             msg = ""
 
             try:
+                current_x_value = {
+                    "ZP_ft": float(st.session_state.get("inputmode_" + gid + "_in_ZP_ft", st.session_state.get("in_fl", 0.0))),
+                    "WEIGHT_kg": float(st.session_state.get("inputmode_" + gid + "_in_WEIGHT_kg", st.session_state.get("in_wt", 0.0))),
+                    "ISA_C": float(st.session_state.get("inputmode_" + gid + "_in_ISA_C", st.session_state.get("in_isa", 0.0))),
+                    "WIND_kt": float(st.session_state.get("inputmode_" + gid + "_in_WIND_kt", st.session_state.get("in_wind", 0.0))),
+                }[x_col]
+
                 filtered_local = _build_interpolated_sweep_table(
                     summary_tbl,
                     x_col=x_col,
                     fixed=fixed_in,
+                    include_x_value=current_x_value,
                 )
 
                 if filtered_local.empty:

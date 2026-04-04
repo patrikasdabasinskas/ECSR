@@ -1391,7 +1391,7 @@ def _label_points_global_dedup(
     y_offset_pts: int = 6,
     fontsize: int = 7,
     same_x_tol: float = 1e-9,
-    close_y_delta: float = 0.2,
+    close_y_delta: float = 0.1,
 ) -> None:
     """
     Label policy for grouped graphs:

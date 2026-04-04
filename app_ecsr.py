@@ -1690,8 +1690,8 @@ def _plot_doc_vs_grouped(
             ax.set_ylim(y_min - pad, y_max + pad)
         else:
             if show_docnotch:
-                top_pad = max(0.12 * rng, 0.04 * max(abs(y_max), 1.0), 0.05)
-                bot_pad = max(0.12 * rng, 0.04 * max(abs(y_min), 1.0), 0.05)
+                top_pad = max(0.03 * rng, 0.01)
+                bot_pad = max(0.03 * rng, 0.01)
             else:
                 top_pad = max(0.25 * rng, 0.12 * max(abs(y_max), 1.0), 0.20)
                 bot_pad = max(0.25 * rng, 0.12 * max(abs(y_min), 1.0), 0.20)
@@ -1699,7 +1699,7 @@ def _plot_doc_vs_grouped(
             ax.set_ylim(y_min - bot_pad, y_max + top_pad)
 
     if show_docnotch and y_for_limits.size:
-        ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=8))
+        ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=12))
         ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
 
     ax.set_title(title)

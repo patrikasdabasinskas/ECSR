@@ -581,6 +581,55 @@ def process_scenario_file(file_path: Path, cfg: Config) -> Tuple[Dict[str, Any],
 
 # ========================= CORE ECONOMICS =========================
 
+def _econ_from_docmin_with_notch_rule(
+    v_docmin: float,
+    v_notch: float,
+    *,
+    min_gap_kt: float = 1.0,
+) -> float:
+    """
+    ECON rule used by UI and core:
+    - start from true DOC-min speed
+    - if DOC-min is less than 1 kt below IASnotch, treat ECON as IASnotch
+    - otherwise keep DOC-min speed
+    """
+    if not np.isfinite(v_docmin):
+        return float("nan")
+    if not np.isfinite(v_notch):
+        return float(v_docmin)
+
+    if float(v_docmin) >= float(v_notch) - float(min_gap_kt):
+        return float(v_notch)
+
+    return float(v_docmin)
+
+
+def _disp_econ_kt(v: Any) -> np.ndarray:
+    x = np.asarray(v, float)
+    out = np.full(x.shape, np.nan, dtype=float)
+    ok = np.isfinite(x)
+    out[ok] = np.ceil(x[ok])
+    return out
+
+
+def _disp_notch_kt(v: Any) -> np.ndarray:
+    x = np.asarray(v, float)
+    out = np.full(x.shape, np.nan, dtype=float)
+    ok = np.isfinite(x)
+    out[ok] = np.floor(x[ok])
+    return out
+
+
+def _display_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:
+    """
+    Breakpoint/saving rule must follow displayed speeds:
+    IASnotch display = floor(v_notch)
+    ECON display = ceil(v_econ)
+    """
+    vn = _disp_notch_kt(v_notch)
+    ve = _disp_econ_kt(v_econ)
+    return np.isfinite(vn) & np.isfinite(ve) & ((vn - ve) >= float(min_gap_kt))
+
 
 def unique_x(x: np.ndarray, a1: np.ndarray, a2: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     x = np.asarray(x).reshape(-1)
@@ -666,8 +715,15 @@ def compute_doc_curve_pchip(sc: Dict[str, Any], tc: float, cfg: Config, *, ngrid
     if not np.isfinite(v_notch):
         raise ValueError("Scenarijuje nėra korektiško 'V_notch'.")
 
-    v_opt = float(min(v_opt_raw, v_notch))
-    doc_opt = float(cfg.fuel_price_eur_per_kg * fuel_itp(np.array([v_opt]))[0] + float(tc) * time_itp(np.array([v_opt]))[0])
+    v_opt = _econ_from_docmin_with_notch_rule(
+        v_opt_raw,
+        v_notch,
+        min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+    )
+    doc_opt = float(
+        cfg.fuel_price_eur_per_kg * fuel_itp(np.array([v_opt]))[0]
+        + float(tc) * time_itp(np.array([v_opt]))[0]
+    )
 
     doc_notch = float(cfg.fuel_price_eur_per_kg * fuel_itp(np.array([v_notch]))[0] + float(tc) * time_itp(np.array([v_notch]))[0])
     doc_raw = cfg.fuel_price_eur_per_kg * fuel_raw + float(tc) * time_raw
@@ -697,8 +753,12 @@ def compute_optimum_at_time_cost(sc: Dict[str, Any], tc: float, cfg: Config) -> 
 
     j = int(np.nanargmin(doc_grid))
     v_opt_raw = float(ias_grid[j])
-    v_opt = float(min(v_opt_raw, v_notch))
-    doc_min = float(doc_at(np.array([v_opt]))[0])   
+    v_opt = _econ_from_docmin_with_notch_rule(
+        v_opt_raw,
+        v_notch,
+        min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+    )
+    doc_min = float(doc_at(np.array([v_opt]))[0])
     doc_notch = float(doc_at(np.array([v_notch]))[0])
 
     return {"IAS_opt_kt": v_opt, "DOC_min_EurPerNM": doc_min, "DOC_notch_EurPerNM": doc_notch}
@@ -725,7 +785,11 @@ def run_parametric_sweep(sc: Dict[str, Any], time_cost_vec: np.ndarray, cfg: Con
         doc_grid = doc_at(ias_grid, float(tc))
         j = int(np.nanargmin(doc_grid))
         v_opt_raw = float(ias_grid[j])
-        v_opt = float(min(v_opt_raw, v_notch))
+        v_opt = _econ_from_docmin_with_notch_rule(
+            v_opt_raw,
+            v_notch,
+            min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+        )
 
         ias_opt[i] = v_opt
         doc_min[i] = float(doc_at(np.array([v_opt]), float(tc))[0])
@@ -759,7 +823,11 @@ def run_fuel_price_sweep(sc: Dict[str, Any], fuel_price_vec: np.ndarray, cfg: Co
         doc_grid = doc_at(ias_grid, float(fp))
         j = int(np.nanargmin(doc_grid))
         v_opt_raw = float(ias_grid[j])
-        v_opt = float(min(v_opt_raw, v_notch))
+        v_opt = _econ_from_docmin_with_notch_rule(
+            v_opt_raw,
+            v_notch,
+            min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+        )
 
         ias_opt[i] = v_opt
         doc_min[i] = float(doc_at(np.array([v_opt]), float(fp))[0])
@@ -937,9 +1005,13 @@ def compute_ecsr_band_interpolated(
     v_notch = float(itp_v_notch(q)[0])
 
     if not (np.isfinite(v) and np.isfinite(lo) and np.isfinite(hi) and np.isfinite(v_notch)):
-        raise ValueError("Negalima interpoliuoti šioms sąlygoms: trūksta duomenų (už convex hull).")
+        raise ValueError("Negalima interpoliuoti šioms sąlygoms: trūksta duomenų.")
 
-    v = float(min(v, v_notch))
+    v = _econ_from_docmin_with_notch_rule(
+        v,
+        v_notch,
+        min_gap_kt=float(1.0),
+    )
     lo = float(min(lo, v_notch))
     hi = float(min(hi, v_notch))
 
@@ -958,7 +1030,7 @@ def _interp_scalar_4d(pts: np.ndarray, q: np.ndarray, y: np.ndarray, *, name: st
     itp = LinearNDInterpolator(pts, y, fill_value=np.nan)
     v = float(itp(q)[0])
     if not np.isfinite(v):
-        raise ValueError(f"Negalima interpoliuoti '{name}' šioms sąlygoms: trūksta duomenų (už convex hull).")
+        raise ValueError(f"Negalima interpoliuoti šioms sąlygoms: trūksta duomenų.")
     return v
 
 
@@ -1025,7 +1097,11 @@ def compute_quick_metrics_interpolated(
     be_tc_v = _interp_scalar_4d(pts, q, be_tc, name="BreakEven_TIME_COST_EurPerHr")
     be_fp_v = _interp_scalar_4d(pts, q, be_fp, name="BreakEven_FUEL_PRICE_EurPerKg")
 
-    v_ecsr_v = float(min(v_ecsr_v, v_notch_v))
+    v_ecsr_v = _econ_from_docmin_with_notch_rule(
+        v_ecsr_v,
+        v_notch_v,
+        min_gap_kt=float(1.0),
+    )
     lo_v = float(min(lo_v, v_notch_v))
     hi_v = float(min(hi_v, v_notch_v))
 
@@ -1181,8 +1257,25 @@ def compute_doc_curve_interpolated_from_cloud(
 
     doc_grid = float(fuel_price_eur_per_kg) * fuel_grid2 + float(time_cost_eur_per_hr) * time_grid2
     j = int(np.nanargmin(doc_grid))
-    v_opt = float(ias_grid2[j])
-    doc_opt = float(doc_grid[j])
+    v_opt_raw = float(ias_grid2[j])
+
+    v_notch_candidates = pd.to_numeric(cloud["IAS"], errors="coerce").to_numpy(float)
+    v_notch_candidates = v_notch_candidates[np.isfinite(v_notch_candidates)]
+    v_notch = float(np.nanmax(v_notch_candidates)) if v_notch_candidates.size else float("nan")
+
+    v_opt = _econ_from_docmin_with_notch_rule(
+        v_opt_raw,
+        v_notch,
+        min_gap_kt=1.0,
+    )
+    doc_opt = float(
+        float(fuel_price_eur_per_kg) * itp_fuel(
+            np.array([[float(fl_ft), float(weight_kg), float(isa_c), float(wind_kt), v_opt]], dtype=float)
+        )[0]
+        + float(time_cost_eur_per_hr) * itp_time(
+            np.array([[float(fl_ft), float(weight_kg), float(isa_c), float(wind_kt), v_opt]], dtype=float)
+        )[0]
+    )
 
     return {
         "IAS_grid": ias_grid2,
@@ -1412,9 +1505,10 @@ def _use_money_gate(cfg: Config) -> bool:
     return str(cfg.breakpoint_saving_mode).strip().lower() in {"per_nm", "per_hour_trip"}
 
 def _raw_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:
-    vn = np.asarray(v_notch, float)
-    ve = np.asarray(v_econ, float)
-    return np.isfinite(vn) & np.isfinite(ve) & ((vn - ve) >= float(min_gap_kt))
+    """
+    Kept for backward compatibility, but now follows displayed-speed logic.
+    """
+    return _display_speed_gap_ok(v_notch, v_econ, min_gap_kt)
 
 
 def _doc_advantage_ok(doc_notch: Any, doc_econ: Any, *, atol: float = 1e-12) -> np.ndarray:
@@ -1545,7 +1639,11 @@ def _optimum_at_fuel_price(sc: Dict[str, Any], fp: float, cfg: Config) -> Tuple[
     doc_grid = float(fp) * fuel_itp(ias_grid) + tc_op * time_itp(ias_grid)
     j = int(np.nanargmin(doc_grid))
     v_opt_raw = float(ias_grid[j])
-    v_opt = float(min(v_opt_raw, v_notch))
+    v_opt = _econ_from_docmin_with_notch_rule(
+        v_opt_raw,
+        v_notch,
+        min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+    )
     doc_min = float(float(fp) * fuel_itp(np.array([v_opt]))[0] + tc_op * time_itp(np.array([v_opt]))[0])
     doc_notch = float(float(fp) * fuel_itp(np.array([v_notch]))[0] + tc_op * time_itp(np.array([v_notch]))[0])
     return v_opt, doc_min, doc_notch
@@ -1730,7 +1828,11 @@ def build_summary_table(scenarios: List[Dict[str, Any]], cfg: Config) -> pd.Data
 
         opt = compute_optimum_at_time_cost(sc, tc_op, cfg)
         v_notch = float(sc["V_notch"])
-        v_ecsr = float(min(float(opt["IAS_opt_kt"]), v_notch))
+        v_ecsr = _econ_from_docmin_with_notch_rule(
+            float(opt["IAS_opt_kt"]),
+            v_notch,
+            min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+        )
         docmin = float(opt["DOC_min_EurPerNM"])
         docnotch = float(opt["DOC_notch_EurPerNM"])
 

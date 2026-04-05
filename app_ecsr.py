@@ -2575,14 +2575,14 @@ if mode == "Scenarijus":
         st.error(err)
 
     res = st.session_state.get("ecsr_calc_last", None)
-if isinstance(res, EcsrInterpResult):
-    rng_txt = _ecsr_range_str_simple(
-        res.ecsr_low_kt,
-        res.ecsr_high_kt,
-    )
-    _, mid, _ = st.columns([2.2, 1.2, 2.2], gap="large")
-    with mid:
-        _render_result_card(rng_txt, "kt", "ECSR")
+    if isinstance(res, EcsrInterpResult):
+        rng_txt = _ecsr_range_str_simple(
+            res.ecsr_low_kt,
+            res.ecsr_high_kt,
+        )
+        _, mid, _ = st.columns([2.2, 1.2, 2.2], gap="large")
+        with mid:
+            _render_result_card(rng_txt, "kt", "ECSR")
 
     st.divider()
 

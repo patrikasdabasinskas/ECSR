@@ -241,9 +241,18 @@ def _safe_display_econ_kt(v_econ: float, v_notch: float) -> Optional[int]:
     return min(econ_i, notch_i)
 
 
-def _fmt_speed_econ_safe(v_econ: float, v_notch: float) -> str:
-    x = _safe_display_econ_kt(v_econ, v_notch)
-    return "" if x is None else str(x)
+def _fmt_speed_econ_safe(v_econ: float, v_notch: float, *, min_gap_kt: float = 1.0) -> str:
+    econ_i = _safe_display_econ_kt(v_econ, v_notch)
+    notch_i = _disp_notch_kt(v_notch)
+    if econ_i is None:
+        return ""
+
+    # Avoid a UI paradox where savings are positive (raw gap >= min_gap_kt),
+    # but rounded ECON and IASnotch appear identical.
+    if notch_i is not None and int(econ_i) == int(notch_i) and _raw_speeds_differ(v_notch, v_econ, min_gap_kt=float(min_gap_kt)):
+        return f"{float(v_econ):.1f}"
+
+    return str(econ_i)
 
 def _ecsr_range_str(
     lo: float,
@@ -2817,7 +2826,11 @@ if mode == "Scenarijus":
                         if sc is not None:
                             v_econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
                             v_notch_ui = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
-                            shown_value = _fmt_speed_econ_safe(v_econ_docmin, v_notch_ui)
+                            shown_value = _fmt_speed_econ_safe(
+                                v_econ_docmin,
+                                v_notch_ui,
+                                min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+                            )
                             shown_unit = "kt" if shown_value else ""
                     elif col_key == "V_notch_kt":
                         shown_value = _fmt_speed_notch(val)
@@ -2983,7 +2996,11 @@ else:
                         fallback_v_notch=float(res_in.v_notch_kt),
                     )
                     if np.isfinite(econ_val):
-                        shown_value = _fmt_speed_econ_safe(econ_val, float(res_in.v_notch_kt))
+                        shown_value = _fmt_speed_econ_safe(
+                            econ_val,
+                            float(res_in.v_notch_kt),
+                            min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+                        )
                         shown_unit = "kt" if shown_value else ""
 
                 else:
@@ -3773,7 +3790,13 @@ if "ECON, kt" in display_tbl.columns and "IASnotch, kt" in display_tbl.columns:
         if sc is not None:
             try:
                 econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
-                econ_display_vals.append(_fmt_speed_econ_safe(econ_docmin, notch_val))
+                econ_display_vals.append(
+                    _fmt_speed_econ_safe(
+                        econ_docmin,
+                        notch_val,
+                        min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+                    )
+                )
             except Exception:
                 econ_display_vals.append("")
         else:

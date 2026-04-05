@@ -2799,14 +2799,10 @@ if mode == "Scenarijus":
                 v_min_per_nm = float(pd.to_numeric(row.get("DOCmin_EurPerNM", np.nan), errors="coerce"))
                 v_notch_per_nm = float(pd.to_numeric(row.get("DOCnotch_EurPerNM", np.nan), errors="coerce"))
                 v_notch_raw = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
+                v_econ_raw = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
                 dist = float(distance_nm)
 
-                sc = _scenario_lookup(scenarios, pick_scn)
-                v_econ_docmin = float("nan")
-                if sc is not None:
-                    v_econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
-
-                if _raw_speeds_differ(v_notch_raw, v_econ_docmin, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
+                if _raw_speeds_differ(v_notch_raw, v_econ_raw, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
                     if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
                         diff_total = round(float((v_notch_per_nm - v_min_per_nm) * dist), 1)
                     else:
@@ -2964,20 +2960,9 @@ else:
             elif col_key == "__SAVING_PER_X__":
                 dist = float(distance_nm)
                 v_notch_ui = float(res_in.v_notch_kt)
+                v_econ_ui = float(res_in.v_ecsr_kt)
 
-                econ_for_ui = _input_docmin_econ_kt(
-                    scenarios,
-                    summary_tbl,
-                    cfg,
-                    fl_ft=float(in_fl),
-                    wt_kg=float(in_wt),
-                    isa_c=float(in_isa),
-                    wind_kt=float(in_wind),
-                    fallback_v_econ=float(res_in.v_ecsr_kt),
-                    fallback_v_notch=float(v_notch_ui),
-                )
-
-                if _raw_speeds_differ(v_notch_ui, econ_for_ui, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
+                if _raw_speeds_differ(v_notch_ui, v_econ_ui, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
                     if np.isfinite(res_in.docmin_eur_per_nm) and np.isfinite(res_in.docnotch_eur_per_nm):
                         diff_total = round(float((res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm) * dist), 1)
                     else:

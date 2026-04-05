@@ -218,12 +218,6 @@ def _disp_speeds_differ(v_notch: float, v_econ: float, min_gap_kt: int = 1) -> b
     return gap is not None and gap >= int(min_gap_kt)
 
 
-def _raw_speeds_differ(v_notch: float, v_econ: float, min_gap_kt: float = 1.0) -> bool:
-    if not (np.isfinite(v_notch) and np.isfinite(v_econ)):
-        return False
-    return (float(v_notch) - float(v_econ)) >= float(min_gap_kt)
-
-
 def _fmt_speed_econ(v: float) -> str:
     x = _disp_econ_kt(v)
     return "" if x is None else str(x)
@@ -241,18 +235,9 @@ def _safe_display_econ_kt(v_econ: float, v_notch: float) -> Optional[int]:
     return min(econ_i, notch_i)
 
 
-def _fmt_speed_econ_safe(v_econ: float, v_notch: float, *, min_gap_kt: float = 1.0) -> str:
-    econ_i = _safe_display_econ_kt(v_econ, v_notch)
-    notch_i = _disp_notch_kt(v_notch)
-    if econ_i is None:
-        return ""
-
-    # Avoid a UI paradox where savings are positive (raw gap >= min_gap_kt),
-    # but rounded ECON and IASnotch appear identical.
-    if notch_i is not None and int(econ_i) == int(notch_i) and _raw_speeds_differ(v_notch, v_econ, min_gap_kt=float(min_gap_kt)):
-        return f"{float(v_econ):.1f}"
-
-    return str(econ_i)
+def _fmt_speed_econ_safe(v_econ: float, v_notch: float) -> str:
+    x = _safe_display_econ_kt(v_econ, v_notch)
+    return "" if x is None else str(x)
 
 def _ecsr_range_str(
     lo: float,
@@ -293,6 +278,13 @@ def _ecsr_range_str(
 
     return f"{lo_i}" if lo_i == hi_i else f"{lo_i}–{hi_i}"
 
+
+def _scenario_docmin_raw_kt(
+    sc: Dict[str, Any],
+    cfg: Config,
+) -> float:
+    cur = compute_doc_curve_pchip(sc, float(cfg.time_cost_operational), cfg, ngrid=700)
+    return float(cur["IAS_opt_raw"])
 
 def _scenario_docmin_econ_kt(
     sc: Dict[str, Any],
@@ -548,8 +540,7 @@ def _build_economical_scenarios_table(
             econ_docmin_vals.append(None)
 
     df["ECON_safe_disp_kt"] = econ_docmin_vals
-    df["DeltaV_disp_kt"] = df["IASnotch_disp_kt"] - df["ECON_safe_disp_kt"]
-    df["DeltaV_raw_kt"] = pd.to_numeric(df["V_notch_kt"], errors="coerce") - pd.to_numeric(df["V_ECSR_kt"], errors="coerce")
+    df["DeltaV_kt"] = df["IASnotch_disp_kt"] - df["ECON_safe_disp_kt"]
     df["DocDiff_EurPerNM"] = df["DOCnotch_EurPerNM"] - df["DOCmin_EurPerNM"]
 
     for d in dist_cols:
@@ -558,7 +549,7 @@ def _build_economical_scenarios_table(
         if min_col in df.columns and notch_col in df.columns:
             df[f"DocDiff_{d}NM_EUR"] = df[notch_col] - df[min_col]
 
-    df = df.loc[(df["DeltaV_raw_kt"] >= float(cfg.breakpoint_speed_tol_kt)) & (df["DocDiff_EurPerNM"] > 0.0)].copy()
+    df = df.loc[(df["DeltaV_kt"] >= 1) & (df["DocDiff_EurPerNM"] > 0.0)].copy()
     if df.empty:
         return pd.DataFrame()
 
@@ -581,7 +572,7 @@ def _build_economical_scenarios_table(
             )
         ],
         "IASnotch (kt)": df["IASnotch_disp_kt"],
-        "ΔV (kt)": df["DeltaV_raw_kt"].map(lambda v: f"{float(v):.1f}" if np.isfinite(v) else ""),
+        "ΔV (kt)": df["DeltaV_kt"].round(0).astype(int),
         "DOC ECON (EUR/NM)": df["DOCmin_EurPerNM"].map(lambda v: f"{float(v):.3f}" if np.isfinite(v) else ""),
         "DOC IASnotch (EUR/NM)": df["DOCnotch_EurPerNM"].map(lambda v: f"{float(v):.3f}" if np.isfinite(v) else ""),
         "DOC skirtumas (EUR/NM)": df["DocDiff_EurPerNM"].map(lambda v: f"{float(v):.3f}" if np.isfinite(v) else ""),
@@ -1221,11 +1212,14 @@ def _compute_input_doc_curve_knn(
         v_notch,
         min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
     )
+    doc_opt_raw = float(np.interp(v_opt_raw, x_full, y_full))
     doc_opt = float(np.interp(v_opt, x_full, y_full))
 
     return {
         "IAS_grid": x_full,
         "DOC_grid_per_nm": y_full,
+        "IAS_opt_raw": v_opt_raw,
+        "DOC_opt_raw_per_nm": doc_opt_raw,
         "IAS_opt": v_opt,
         "DOC_opt_per_nm": doc_opt,
     }
@@ -1894,7 +1888,7 @@ def _plot_saving_vs_grouped(
 
     speed_gap_ok = []
     for ve, vn in zip(v_econ.tolist(), v_notch.tolist()):
-        speed_gap_ok.append(_raw_speeds_differ(float(vn), float(ve), min_gap_kt=float(cfg.breakpoint_speed_tol_kt)))
+        speed_gap_ok.append(_disp_speeds_differ(float(vn), float(ve), min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt)))))
 
     speed_gap_ok = pd.Series(speed_gap_ok, index=df.index)
 
@@ -2152,7 +2146,7 @@ def _find_valid_breakpoint_from_curve(
         return float("nan")
 
     valid = np.array(
-        [_raw_speeds_differ(float(v_notch), float(v), min_gap_kt=float(cfg.breakpoint_speed_tol_kt)) for v in y],
+        [_disp_speeds_differ(float(v_notch), float(v), min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt)))) for v in y],
         dtype=bool,
     )
 
@@ -2808,10 +2802,14 @@ if mode == "Scenarijus":
                 v_min_per_nm = float(pd.to_numeric(row.get("DOCmin_EurPerNM", np.nan), errors="coerce"))
                 v_notch_per_nm = float(pd.to_numeric(row.get("DOCnotch_EurPerNM", np.nan), errors="coerce"))
                 v_notch_raw = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
-                v_econ_raw = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
                 dist = float(distance_nm)
 
-                if _raw_speeds_differ(v_notch_raw, v_econ_raw, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
+                sc = _scenario_lookup(scenarios, pick_scn)
+                v_econ_docmin = float("nan")
+                if sc is not None:
+                    v_econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
+
+                if _disp_speeds_differ(v_notch_raw, v_econ_docmin, min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt)))):
                     if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
                         diff_total = round(float((v_notch_per_nm - v_min_per_nm) * dist), 1)
                     else:
@@ -2822,18 +2820,10 @@ if mode == "Scenarijus":
                 val = float(pd.to_numeric(row.get(col_key, np.nan), errors="coerce"))
                 if np.isfinite(val):
                     if col_key == "V_ECSR_kt":
-                        v_econ_docmin = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
-                        v_notch_ui = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
-                        if np.isfinite(v_econ_docmin) and np.isfinite(v_notch_ui):
-                            shown_value = _fmt_speed_econ_safe(
-                                v_econ_docmin,
-                                v_notch_ui,
-                                min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
-                            )
-                                v_econ_docmin,
-                                v_notch_ui,
-                                min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
-                            )
+                        sc = _scenario_lookup(scenarios, pick_scn)
+                        if sc is not None:
+                            v_econ_raw = _scenario_docmin_raw_kt(sc, cfg)
+                            shown_value = _fmt_speed_econ(v_econ_raw)
                             shown_unit = "kt" if shown_value else ""
                     elif col_key == "V_notch_kt":
                         shown_value = _fmt_speed_notch(val)
@@ -2948,24 +2938,70 @@ else:
                 )
                 shown_unit = "kt" if shown_value else ""
             elif col_key == "__BREAK_TIME__":
+                v_notch_ui = float(res_in.v_notch_kt)
+
+                try:
+                    doc_curve_res = _compute_input_doc_curve_knn(
+                        scenarios,
+                        summary_tbl,
+                        cfg,
+                        fl_ft=float(in_fl),
+                        wt_kg=float(in_wt),
+                        isa_c=float(in_isa),
+                        wind_kt=float(in_wind),
+                    )
+                    econ_for_ui = float(doc_curve_res["IAS_opt"])
+                except Exception:
+                    econ_for_ui = float(res_in.v_ecsr_kt)
+
+                if np.isfinite(econ_for_ui) and np.isfinite(v_notch_ui):
+                    econ_for_ui = min(econ_for_ui, v_notch_ui)
+
                 v = float(res_in.be_time_cost_eur_per_hr)
                 valid_break = (
                     np.isfinite(v)
                     and (float(cfg.time_cost_min) - 1e-9 <= v <= float(cfg.time_cost_max) + 1e-9)
+                    and _disp_speeds_differ(v_notch_ui, econ_for_ui, min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt))))
+                    and np.isfinite(res_in.docmin_eur_per_nm)
+                    and np.isfinite(res_in.docnotch_eur_per_nm)
+                    and float(res_in.docnotch_eur_per_nm) > float(res_in.docmin_eur_per_nm)
                 )
-                
+
                 if valid_break:
-                    shown_value = f"{v:.2f}"
-                    shown_unit = "€/kg"
+                    shown_value = f"{int(round(v))}"
+                    shown_unit = "€/h"
                 else:
                     shown_value = "Nėra lūžio taško"
                     shown_unit = ""
             elif col_key == "__BREAK_FUEL__":
+                v_notch_ui = float(res_in.v_notch_kt)
+
+                try:
+                    doc_curve_res = _compute_input_doc_curve_knn(
+                        scenarios,
+                        summary_tbl,
+                        cfg,
+                        fl_ft=float(in_fl),
+                        wt_kg=float(in_wt),
+                        isa_c=float(in_isa),
+                        wind_kt=float(in_wind),
+                    )
+                    econ_for_ui = float(doc_curve_res["IAS_opt"])
+                except Exception:
+                    econ_for_ui = float(res_in.v_ecsr_kt)
+
+                if np.isfinite(econ_for_ui) and np.isfinite(v_notch_ui):
+                    econ_for_ui = min(econ_for_ui, v_notch_ui)
+
                 v = float(res_in.be_fuel_price_eur_per_kg)
                 valid_break = (
                     np.isfinite(v)
                     and v <= float(fuel_ceiling) + 1e-12
-                ) 
+                    and _disp_speeds_differ(v_notch_ui, econ_for_ui, min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt))))
+                    and np.isfinite(res_in.docmin_eur_per_nm)
+                    and np.isfinite(res_in.docnotch_eur_per_nm)
+                    and float(res_in.docnotch_eur_per_nm) > float(res_in.docmin_eur_per_nm)
+                )
 
                 if valid_break:
                     shown_value = f"{v:.2f}"
@@ -2976,9 +3012,20 @@ else:
             elif col_key == "__SAVING_PER_X__":
                 dist = float(distance_nm)
                 v_notch_ui = float(res_in.v_notch_kt)
-                v_econ_ui = float(res_in.v_ecsr_kt)
 
-                if _raw_speeds_differ(v_notch_ui, v_econ_ui, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
+                econ_for_ui = _input_docmin_econ_kt(
+                    scenarios,
+                    summary_tbl,
+                    cfg,
+                    fl_ft=float(in_fl),
+                    wt_kg=float(in_wt),
+                    isa_c=float(in_isa),
+                    wind_kt=float(in_wind),
+                    fallback_v_econ=float(res_in.v_ecsr_kt),
+                    fallback_v_notch=float(v_notch_ui),
+                )
+
+                if _disp_speeds_differ(v_notch_ui, econ_for_ui, min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt)))):
                     if np.isfinite(res_in.docmin_eur_per_nm) and np.isfinite(res_in.docnotch_eur_per_nm):
                         diff_total = round(float((res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm) * dist), 1)
                     else:
@@ -2987,14 +3034,19 @@ else:
                     diff_total = 0.0
             else:
                 if col_key == "V_ECSR_kt":
-                    econ_val = float(res_in.v_ecsr_kt)
-                    notch_val = float(res_in.v_notch_kt)
-                    if np.isfinite(econ_val) and np.isfinite(notch_val):
-                        shown_value = _fmt_speed_econ_safe(
-                            econ_val,
-                            notch_val,
-                            min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
-                        )
+                    econ_val = _input_docmin_econ_kt(
+                        scenarios,
+                        summary_tbl,
+                        cfg,
+                        fl_ft=float(in_fl),
+                        wt_kg=float(in_wt),
+                        isa_c=float(in_isa),
+                        wind_kt=float(in_wind),
+                        fallback_v_econ=float(res_in.v_ecsr_kt),
+                        fallback_v_notch=float(res_in.v_notch_kt),
+                    )
+                    if np.isfinite(econ_val):
+                        shown_value = _fmt_speed_econ_safe(econ_val, float(res_in.v_notch_kt))
                         shown_unit = "kt" if shown_value else ""
 
                 else:
@@ -3784,13 +3836,7 @@ if "ECON, kt" in display_tbl.columns and "IASnotch, kt" in display_tbl.columns:
         if sc is not None:
             try:
                 econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
-                econ_display_vals.append(
-                    _fmt_speed_econ_safe(
-                        econ_docmin,
-                        notch_val,
-                        min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
-                    )
-                )
+                econ_display_vals.append(_fmt_speed_econ_safe(econ_docmin, notch_val))
             except Exception:
                 econ_display_vals.append("")
         else:

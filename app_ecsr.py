@@ -2822,11 +2822,14 @@ if mode == "Scenarijus":
                 val = float(pd.to_numeric(row.get(col_key, np.nan), errors="coerce"))
                 if np.isfinite(val):
                     if col_key == "V_ECSR_kt":
-                        sc = _scenario_lookup(scenarios, pick_scn)
-                        if sc is not None:
-                            v_econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
-                            v_notch_ui = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
+                        v_econ_docmin = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
+                        v_notch_ui = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
+                        if np.isfinite(v_econ_docmin) and np.isfinite(v_notch_ui):
                             shown_value = _fmt_speed_econ_safe(
+                                v_econ_docmin,
+                                v_notch_ui,
+                                min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+                            )
                                 v_econ_docmin,
                                 v_notch_ui,
                                 min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
@@ -2984,21 +2987,12 @@ else:
                     diff_total = 0.0
             else:
                 if col_key == "V_ECSR_kt":
-                    econ_val = _input_docmin_econ_kt(
-                        scenarios,
-                        summary_tbl,
-                        cfg,
-                        fl_ft=float(in_fl),
-                        wt_kg=float(in_wt),
-                        isa_c=float(in_isa),
-                        wind_kt=float(in_wind),
-                        fallback_v_econ=float(res_in.v_ecsr_kt),
-                        fallback_v_notch=float(res_in.v_notch_kt),
-                    )
-                    if np.isfinite(econ_val):
+                    econ_val = float(res_in.v_ecsr_kt)
+                    notch_val = float(res_in.v_notch_kt)
+                    if np.isfinite(econ_val) and np.isfinite(notch_val):
                         shown_value = _fmt_speed_econ_safe(
                             econ_val,
-                            float(res_in.v_notch_kt),
+                            notch_val,
                             min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
                         )
                         shown_unit = "kt" if shown_value else ""

@@ -540,7 +540,6 @@ def process_scenario_file(file_path: Path, cfg: Config) -> Tuple[Dict[str, Any],
 
     base = file_path.stem + "".join(file_path.suffixes[1:])
     scenario_name = sanitize_name(base)
-
     outliers = build_outliers_table(
         df.loc[~valid].copy(),
         file_path,
@@ -622,30 +621,12 @@ def _disp_notch_kt(v: Any) -> np.ndarray:
 
 def _display_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:
     """
-    Display-only speed-gap check:
+    Breakpoint/saving rule must follow displayed speeds:
     IASnotch display = floor(v_notch)
     ECON display = ceil(v_econ)
     """
     vn = _disp_notch_kt(v_notch)
     ve = _disp_econ_kt(v_econ)
-    return np.isfinite(vn) & np.isfinite(ve) & ((vn - ve) >= float(min_gap_kt))
-
-
-def _continuous_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:
-    """
-    Economic/computational speed-gap rule on raw values (no display rounding).
-    """
-    vn = np.asarray(v_notch, float)
-    ve = np.asarray(v_econ, float)
-    return np.isfinite(vn) & np.isfinite(ve) & ((vn - ve) >= float(min_gap_kt))
-
-
-def _continuous_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:
-    """
-    Economic/computational speed-gap rule on raw values (no display rounding).
-    """
-    vn = np.asarray(v_notch, float)
-    ve = np.asarray(v_econ, float)
     return np.isfinite(vn) & np.isfinite(ve) & ((vn - ve) >= float(min_gap_kt))
 
 
@@ -738,17 +719,24 @@ def compute_doc_curve_pchip(sc: Dict[str, Any], tc: float, cfg: Config, *, ngrid
         v_notch,
         min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
     )
+
+    doc_opt_raw = float(
+        cfg.fuel_price_eur_per_kg * fuel_itp(np.array([v_opt_raw]))[0]
+        + float(tc) * time_itp(np.array([v_opt_raw]))[0]
+    )
+
     doc_opt = float(
         cfg.fuel_price_eur_per_kg * fuel_itp(np.array([v_opt]))[0]
         + float(tc) * time_itp(np.array([v_opt]))[0]
     )
-
     doc_notch = float(cfg.fuel_price_eur_per_kg * fuel_itp(np.array([v_notch]))[0] + float(tc) * time_itp(np.array([v_notch]))[0])
     doc_raw = cfg.fuel_price_eur_per_kg * fuel_raw + float(tc) * time_raw
 
     return {
         "IAS_grid": ias_grid,
         "DOC_grid_per_nm": np.asarray(doc_grid, float),
+        "IAS_opt_raw": v_opt_raw,
+        "DOC_opt_raw_per_nm": doc_opt_raw,
         "IAS_opt": v_opt,
         "DOC_opt_per_nm": doc_opt,
         "IAS_notch": v_notch,
@@ -1524,9 +1512,9 @@ def _use_money_gate(cfg: Config) -> bool:
 
 def _raw_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:
     """
-    Computational gate for break-even/saving logic (raw speeds, no UI rounding).
+    Kept for backward compatibility, but now follows displayed-speed logic.
     """
-    return _continuous_speed_gap_ok(v_notch, v_econ, min_gap_kt)
+    return _display_speed_gap_ok(v_notch, v_econ, min_gap_kt)
 
 
 def _doc_advantage_ok(doc_notch: Any, doc_econ: Any, *, atol: float = 1e-12) -> np.ndarray:

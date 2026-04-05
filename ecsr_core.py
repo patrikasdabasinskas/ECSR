@@ -1,737 +1,600 @@
 # =========================
-# File: app_ecsr.py
+# File: ecsr_core.py
 # =========================
 from __future__ import annotations
 
 import re
-import tempfile
-import textwrap
-from dataclasses import replace
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
-import streamlit as st
-import streamlit.components.v1 as components
+from scipy.interpolate import LinearNDInterpolator, PchipInterpolator
 
-from ecsr_core import (
-    Config,
-    EcsrInterpResult,
-    InterpQuickResult,
-    build_longform_fuel_table,
-    compute_doc_curve_pchip,
-    compute_ecsr_band_interpolated,
-    compute_quick_metrics_interpolated,
-    default_config,
-    interpolate_curve_knn_from_scenarios,
-    run_pipeline,
-    write_excel_results,
-)
-if __package__:
-    from .ecsr_core import (
-        Config,
-        EcsrInterpResult,
-        InterpQuickResult,
-        build_longform_fuel_table,
-        compute_doc_curve_pchip,
-        compute_ecsr_band_interpolated,
-        compute_quick_metrics_interpolated,
-        default_config,
-        interpolate_curve_knn_from_scenarios,
-        run_pipeline,
-        write_excel_results,
+# ========================= CONFIG =========================
+
+
+@dataclass(frozen=True)
+class KeyCfg:
+    round_zp_ft: float = 10
+    round_weight_kg: float = 10
+    round_isa_c: float = 1
+    round_wind_kt: float = 1
+    hash_len: int = 10
+
+
+@dataclass(frozen=True)
+class ParseCfg:
+    use_magnitude_hints: bool = True
+    weight_typical_min: float = 12000
+    weight_typical_max: float = 30000
+    zp_typical_min: float = 0
+    zp_typical_max: float = 30000
+
+
+@dataclass(frozen=True)
+class ExportCfg:
+    write_excel: bool = True
+    excel_filename: str = "ECSR_results.xlsx"
+    write_csv: bool = False
+    include_audit_cols: bool = False
+
+
+@dataclass(frozen=True)
+class BreakSearchCfg:
+    """
+    Auto break-even search settings (used for fuel break-even when grid sweep doesn't find it).
+    """
+
+    fuel_ceiling_eur_per_kg: float = 50.0
+    fuel_expand_factor: float = 2.0
+    fuel_bisect_abs_tol: float = 0.01
+    fuel_bisect_max_iter: int = 40
+
+
+@dataclass(frozen=True)
+class Config:
+    fuel_price_eur_per_kg: float = 0.575
+
+    time_cost_min = 100
+    time_cost_max: float = 5000
+    time_cost_step: float = 10
+
+    fuel_price_min: float = 0.20
+    fuel_price_max: float = 3.00
+    fuel_price_step: float = 0.02
+
+    time_cost_operational: float = 1300.0
+    epsilon_break_even: float = 0.01
+
+    breakpoint_speed_tol_kt: float = 1.0
+    breakpoint_saving_mode: str = "default"  # "default" | "per_nm" | "per_hour_trip"
+    breakpoint_saving_eur_per_nm: float = 0.0
+    breakpoint_saving_eur_per_hour: float = 0.0
+    breakpoint_trip_distance_nm: float = 0.0
+
+    delim_scan_lines: int = 25
+    delim_candidates: Tuple[str, ...] = (",", ";", "\t")
+    delim_trial_max_rows: int = 40
+
+    required_columns: Tuple[str, ...] = (
+        "ZP",
+        "ISA",
+        "WEIGHT",
+        "IAS",
+        "TAS",
+        "WIND",
+        "WFE",
+        "TQ",
+        "SHP",
+        "SR",
+        "SPEED_CODE",
     )
-else:
-    from ecsr_core import (
-        Config,
-        EcsrInterpResult,
-        InterpQuickResult,
-        build_longform_fuel_table,
-        compute_doc_curve_pchip,
-        compute_ecsr_band_interpolated,
-        compute_quick_metrics_interpolated,
-        default_config,
-        interpolate_curve_knn_from_scenarios,
-        run_pipeline,
-        write_excel_results,
-    )
+    delim_numeric_key_cols: Tuple[str, ...] = ("IAS", "TAS", "WIND", "WFE", "SPEED_CODE")
 
-_GROUP_META: Dict[str, Tuple[str, str]] = {
-    "ISA_C": ("ISA", "°C"),
-    "WIND_kt": ("Vėjas", "kt"),
-    "WEIGHT_kg": ("Masė", "kg"),
-    "ZP_ft": ("Aukštis", "ft"),
-}
+    min_gs_kt: float = 50
+    max_gs_kt: float = 450
+    min_fuel_kg_per_nm: float = 0.05
+    max_fuel_kg_per_nm: float = 15
+    min_rows: int = 5
 
-# Breakpoint graphs meta
-_BP_GRAPHS: Dict[str, Dict[str, Any]] = {
-    "g4": {"x_col": "WIND_kt", "x_name_lt": "vėjo", "x_label": "Vėjo dedamoji (kt)"},
-    "g5": {"x_col": "WEIGHT_kg", "x_name_lt": "masės", "x_label": "Masė (kg)"},
-    "g6": {"x_col": "ZP_ft", "x_name_lt": "skrydžio aukščio", "x_label": "Skrydžio aukštis (ft)"},
-    "g7": {"x_col": "ISA_C", "x_name_lt": "ISA nuokrypio", "x_label": "ISA nuokrypis (°C)"},
-}
+    speed_code_bad_values: Tuple[float, ...] = (1.0, 0.99, 999.0)
+    speed_code_tol: float = 1e-6
 
-_DOC_GRAPHS: Dict[str, Dict[str, Any]] = {
-    "d1": {"x_col": "WIND_kt", "x_name_lt": "vėjo", "x_label": "Vėjo dedamoji (kt)"},
-    "d2": {"x_col": "WEIGHT_kg", "x_name_lt": "masės", "x_label": "Masė (kg)"},
-    "d3": {"x_col": "ZP_ft", "x_name_lt": "skrydžio aukščio", "x_label": "Skrydžio aukštis (ft)"},
-    "d4": {"x_col": "ISA_C", "x_name_lt": "ISA nuokrypio", "x_label": "ISA nuokrypis (°C)"},
-}
+    distances_nm: Tuple[int, ...] = (100, 150, 200, 250, 300)
 
-_BP_OTHER_COLS = ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt"]
-
-@@ -191,75 +206,90 @@ def _econ_from_docmin_with_notch_rule(v_docmin: float, v_notch: float, *, min_ga
-    if float(v_docmin) >= float(v_notch) - float(min_gap_kt):
-        return float(v_notch)
-
-    return float(v_docmin)
-
-def _disp_econ_kt(v: float) -> Optional[int]:
-    if not np.isfinite(v):
-        return None
-    return int(np.ceil(float(v)))
+    key: KeyCfg = KeyCfg()
+    parse: ParseCfg = ParseCfg()
+    export: ExportCfg = ExportCfg()
+    break_search: BreakSearchCfg = BreakSearchCfg()
 
 
-def _disp_notch_kt(v: float) -> Optional[int]:
-    if not np.isfinite(v):
-        return None
-    return int(np.floor(float(v)))
+def default_config() -> Config:
+    return Config()
 
 
-def _disp_gap_kt(v_notch: float, v_econ: float) -> Optional[int]:
-    notch_i = _disp_notch_kt(v_notch)
-    econ_i = _disp_econ_kt(v_econ)
-    if notch_i is None or econ_i is None:
-        return None
-    return int(notch_i - econ_i)
+# ========================= SORT =========================
 
 
-def _disp_speeds_differ(v_notch: float, v_econ: float, min_gap_kt: int = 1) -> bool:
-    gap = _disp_gap_kt(v_notch, v_econ)
-    return gap is not None and gap >= int(min_gap_kt)
+def _scenario_sort_key(name: str) -> Tuple[int, str]:
+    m = re.search(r"(\d+)", str(name))
+    num = int(m.group(1)) if m else 10**12
+    return (num, str(name))
 
 
-def _fmt_speed_econ(v: float) -> str:
-def _disp_speeds_differ(v_notch: float, v_econ: float, min_gap_kt: int = 1) -> bool:
-    gap = _disp_gap_kt(v_notch, v_econ)
-    return gap is not None and gap >= int(min_gap_kt)
+def _sort_tables_for_export(summary_tbl: pd.DataFrame, longform_tbl: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    if "ScenarioName" in summary_tbl.columns:
+        summary_tbl = summary_tbl.sort_values(by="ScenarioName", key=lambda s: s.map(_scenario_sort_key)).reset_index(drop=True)
 
-
-def _raw_speeds_differ(v_notch: float, v_econ: float, min_gap_kt: float = 1.0) -> bool:
-    if not (np.isfinite(v_notch) and np.isfinite(v_econ)):
-        return False
-    return (float(v_notch) - float(v_econ)) >= float(min_gap_kt)
-
-
-def _fmt_speed_econ(v: float) -> str:
-    x = _disp_econ_kt(v)
-    return "" if x is None else str(x)
-
-
-def _fmt_speed_notch(v: float) -> str:
-    x = _disp_notch_kt(v)
-    return "" if x is None else str(x)
-
-def _safe_display_econ_kt(v_econ: float, v_notch: float) -> Optional[int]:
-    econ_i = _disp_econ_kt(v_econ)
-    notch_i = _disp_notch_kt(v_notch)
-    if econ_i is None or notch_i is None:
-        return None
-    return min(econ_i, notch_i)
-
-
-def _fmt_speed_econ_safe(v_econ: float, v_notch: float) -> str:
-    x = _safe_display_econ_kt(v_econ, v_notch)
-    return "" if x is None else str(x)
-def _fmt_speed_econ_safe(v_econ: float, v_notch: float, *, min_gap_kt: float = 1.0) -> str:
-    econ_i = _safe_display_econ_kt(v_econ, v_notch)
-    notch_i = _disp_notch_kt(v_notch)
-    if econ_i is None:
-        return ""
-
-    # Avoid a UI paradox where savings are positive (raw gap >= min_gap_kt),
-    # but rounded ECON and IASnotch appear identical.
-    if notch_i is not None and int(econ_i) == int(notch_i) and _raw_speeds_differ(v_notch, v_econ, min_gap_kt=float(min_gap_kt)):
-        return f"{float(v_econ):.1f}"
-
-    return str(econ_i)
-
-def _ecsr_range_str(
-    lo: float,
-    hi: float,
-    v_notch: Optional[float] = None,
-    v_econ: Optional[float] = None,
-) -> str:
-    if not (np.isfinite(lo) and np.isfinite(hi)):
-        return ""
-
-    lo_raw = float(min(lo, hi))
-    hi_raw = float(max(lo, hi))
-
-    lo_i = _disp_econ_kt(lo_raw)
-    hi_i = _disp_notch_kt(hi_raw)
-
-    if lo_i is None or hi_i is None:
-        return ""
-
-    notch_i = None
-    if v_notch is not None and np.isfinite(v_notch):
-        notch_i = _disp_notch_kt(float(v_notch))
-        if notch_i is not None:
-            hi_i = min(hi_i, notch_i)
-
-@@ -511,83 +541,84 @@ def _build_economical_scenarios_table(
-
-    df = summary_tbl[need].copy()
-    for col in need[1:]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df = df.loc[np.isfinite(df["V_ECSR_kt"]) & np.isfinite(df["V_notch_kt"])].copy()
-    if df.empty:
-        return pd.DataFrame()
-
-    df["IASnotch_disp_kt"] = df["V_notch_kt"].map(_disp_notch_kt)
-
-    econ_docmin_vals: List[Optional[int]] = []
-    for _, row in df.iterrows():
-        sc = _scenario_lookup(scenarios, str(row["ScenarioName"])) if "ScenarioName" in row else None
-        if sc is not None:
-            try:
-                v_econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
-                v_notch = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
-                econ_docmin_vals.append(_safe_display_econ_kt(v_econ_docmin, v_notch))
-            except Exception:
-                econ_docmin_vals.append(None)
-        else:
-            econ_docmin_vals.append(None)
-
-    df["ECON_safe_disp_kt"] = econ_docmin_vals
-    df["DeltaV_kt"] = df["IASnotch_disp_kt"] - df["ECON_safe_disp_kt"]
-    df["DeltaV_disp_kt"] = df["IASnotch_disp_kt"] - df["ECON_safe_disp_kt"]
-    df["DeltaV_raw_kt"] = pd.to_numeric(df["V_notch_kt"], errors="coerce") - pd.to_numeric(df["V_ECSR_kt"], errors="coerce")
-    df["DocDiff_EurPerNM"] = df["DOCnotch_EurPerNM"] - df["DOCmin_EurPerNM"]
-
-    for d in dist_cols:
-        min_col = f"DOCmin_{d}NM_EUR"
-        notch_col = f"DOCnotch_{d}NM_EUR"
-        if min_col in df.columns and notch_col in df.columns:
-            df[f"DocDiff_{d}NM_EUR"] = df[notch_col] - df[min_col]
-
-    df = df.loc[(df["DeltaV_kt"] >= 1) & (df["DocDiff_EurPerNM"] > 0.0)].copy()
-    df = df.loc[(df["DeltaV_raw_kt"] >= float(cfg.breakpoint_speed_tol_kt)) & (df["DocDiff_EurPerNM"] > 0.0)].copy()
-    if df.empty:
-        return pd.DataFrame()
-
-    df = df.sort_values(by="ScenarioName", key=lambda s: s.map(_scenario_sort_key)).reset_index(drop=True)
-
-    out_data: Dict[str, Any] = {
-        "Bandymas": df["ScenarioName"].map(_scenario_trial_label),
-        "ECON (kt)": df["ECON_safe_disp_kt"],
-        "ECSR": [
-            _ecsr_range_str(lo, hi, vn, ve_docmin if ve_docmin is not None else np.nan)
-            for lo, hi, vn, ve_docmin in zip(
-                df["ECSR_low_kt"].tolist(),
-                df["ECSR_high_kt"].tolist(),
-                df["V_notch_kt"].tolist(),
-                [
-                    _scenario_docmin_econ_kt(_scenario_lookup(scenarios, str(sc_name)), cfg)
-                    if _scenario_lookup(scenarios, str(sc_name)) is not None else np.nan
-                    for sc_name in df["ScenarioName"].tolist()
-                ],
+    if "ScenarioName" in longform_tbl.columns:
+        lf = longform_tbl.copy()
+        lf["_TIME_COST_NUM"] = pd.to_numeric(lf.get("TIME_COST", np.nan), errors="coerce")
+        lf = (
+            lf.sort_values(
+                by=["ScenarioName", "_TIME_COST_NUM"],
+                key=lambda s: s.map(_scenario_sort_key) if s.name == "ScenarioName" else s,
             )
-        ],
-        "IASnotch (kt)": df["IASnotch_disp_kt"],
-        "ΔV (kt)": df["DeltaV_kt"].round(0).astype(int),
-        "ΔV (kt)": df["DeltaV_raw_kt"].map(lambda v: f"{float(v):.1f}" if np.isfinite(v) else ""),
-        "DOC ECON (EUR/NM)": df["DOCmin_EurPerNM"].map(lambda v: f"{float(v):.3f}" if np.isfinite(v) else ""),
-        "DOC IASnotch (EUR/NM)": df["DOCnotch_EurPerNM"].map(lambda v: f"{float(v):.3f}" if np.isfinite(v) else ""),
-        "DOC skirtumas (EUR/NM)": df["DocDiff_EurPerNM"].map(lambda v: f"{float(v):.3f}" if np.isfinite(v) else ""),
-    }
-
-    for d in dist_cols:
-        min_col = f"DOCmin_{d}NM_EUR"
-        notch_col = f"DOCnotch_{d}NM_EUR"
-        diff_col = f"DocDiff_{d}NM_EUR"
-
-        if min_col in df.columns:
-            out_data[f"DOC ECON {d}NM (EUR)"] = df[min_col].map(lambda v: f"{float(v):.1f}" if np.isfinite(v) else "")
-        if notch_col in df.columns:
-            out_data[f"DOC IASnotch {d}NM (EUR)"] = df[notch_col].map(lambda v: f"{float(v):.1f}" if np.isfinite(v) else "")
-        if diff_col in df.columns:
-            out_data[f"DOC skirtumas {d}NM (EUR)"] = df[diff_col].map(lambda v: f"{float(v):.1f}" if np.isfinite(v) else "")
-
-    return pd.DataFrame(out_data)
-
-
-# ------------------------- Result card -------------------------
-
-def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int = 170, box_height_px: int = 42) -> str:
-    safe_value = (value or "").strip()
-    value_html = safe_value if safe_value else "&nbsp;"
-@@ -1856,51 +1887,51 @@ def _plot_saving_vs_grouped(
-    show_point_labels: bool = False,
-    distance_nm: float = 1.0,
-) -> Any:
-    fig, ax = _mpl_academic_fig()
-
-    df = summary_tbl.copy()
-    df[x_col] = pd.to_numeric(df[x_col], errors="coerce")
-    df["DOCmin_EurPerNM"] = pd.to_numeric(df["DOCmin_EurPerNM"], errors="coerce")
-    df["DOCnotch_EurPerNM"] = pd.to_numeric(df["DOCnotch_EurPerNM"], errors="coerce")
-
-    keep = (
-        np.isfinite(df[x_col])
-        & np.isfinite(df["DOCmin_EurPerNM"])
-        & np.isfinite(df["DOCnotch_EurPerNM"])
-    )
-    df = df.loc[keep].copy()
-    if df.empty:
-        raise ValueError("Nėra duomenų po filtravimo.")
-
-    dist_nm = max(float(distance_nm), 0.0)
-    v_econ = pd.to_numeric(df["V_ECSR_kt"], errors="coerce")
-    v_notch = pd.to_numeric(df["V_notch_kt"], errors="coerce")
-
-    speed_gap_ok = []
-    for ve, vn in zip(v_econ.tolist(), v_notch.tolist()):
-        speed_gap_ok.append(_disp_speeds_differ(float(vn), float(ve), min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt)))))
-        speed_gap_ok.append(_raw_speeds_differ(float(vn), float(ve), min_gap_kt=float(cfg.breakpoint_speed_tol_kt)))
-
-    speed_gap_ok = pd.Series(speed_gap_ok, index=df.index)
-
-    raw_saving = (df["DOCnotch_EurPerNM"] - df["DOCmin_EurPerNM"]).clip(lower=0.0)
-    df["Saving_Eur"] = np.where(speed_gap_ok, raw_saving * dist_nm, 0.0)
-
-    used_group = None
-    if group_col and group_col in df.columns:
-        df[group_col] = pd.to_numeric(df[group_col], errors="coerce")
-        df = df.loc[np.isfinite(df[group_col])].copy()
-        if not df.empty and int(df[group_col].nunique()) > 1:
-            used_group = group_col
-
-    y_all: List[float] = []
-
-    if used_group:
-        g = (
-            df.groupby([used_group, x_col], as_index=False)["Saving_Eur"]
-            .median()
-            .rename(columns={"Saving_Eur": "Saving"})
+            .drop(columns=["_TIME_COST_NUM"])
+            .reset_index(drop=True)
         )
+        longform_tbl = lf
 
-        label_candidates: List[Tuple[float, float, str, str]] = []
+    return summary_tbl, longform_tbl
 
-        for grp_val, sub in g.groupby(used_group, sort=True):
-@@ -2114,51 +2145,51 @@ def _find_valid_breakpoint_from_curve(
-    x_vals: np.ndarray,
-    econ_vals: np.ndarray,
-    v_notch: float,
-    docmin_per_nm: float,
-    docnotch_per_nm: float,
-    cfg: Config,
-) -> float:
-    x = np.asarray(x_vals, float)
-    y = np.asarray(econ_vals, float)
 
-    ok = np.isfinite(x) & np.isfinite(y)
-    x = x[ok]
-    y = y[ok]
+# ========================= FILE DISCOVERY =========================
 
-    if x.size == 0 or not np.isfinite(v_notch):
-        return float("nan")
 
-    if not (
-        np.isfinite(docmin_per_nm)
-        and np.isfinite(docnotch_per_nm)
-        and float(docnotch_per_nm) > float(docmin_per_nm)
-    ):
-        return float("nan")
+def list_scenario_files(root_dir: Path) -> List[Dict[str, str]]:
+    patterns = ("*.csv", "*.CSV", "*.txt", "*.TXT", "*.csv.txt", "*.CSV.TXT")
+    found: List[Path] = []
+    for pat in patterns:
+        found.extend(root_dir.glob(pat))
 
-    valid = np.array(
-        [_disp_speeds_differ(float(v_notch), float(v), min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt)))) for v in y],
-        [_raw_speeds_differ(float(v_notch), float(v), min_gap_kt=float(cfg.breakpoint_speed_tol_kt)) for v in y],
-        dtype=bool,
+    found = [p for p in found if p.is_file()]
+    unique_paths: List[Path] = []
+    seen = set()
+    for p in found:
+        rp = str(p.resolve())
+        if rp not in seen:
+            seen.add(rp)
+            unique_paths.append(p)
+
+    return [{"name": p.name, "fullpath": str(p)} for p in unique_paths]
+
+
+# ========================= DELIMITER DETECTION =========================
+
+
+def detect_delimiter_heuristic_fgetl(file_path: Path, scan_lines: int) -> str:
+    lines: List[str] = []
+    with file_path.open("r", encoding="utf-8", errors="ignore") as f:
+        for _ in range(scan_lines):
+            line = f.readline()
+            if not line:
+                break
+            line = line.replace("\ufeff", "").strip()
+            if line:
+                lines.append(line)
+
+    if not lines:
+        raise ValueError("Empty file.")
+
+    candidates = [",", ";", "\t"]
+    best = ","
+    best_score = -1e18
+    for d in candidates:
+        counts = np.array([ln.count(d) + 1 for ln in lines], dtype=float)
+        score = float(counts.mean() - 0.25 * counts.std(ddof=0))
+        if score > best_score:
+            best_score = score
+            best = d
+    return best
+
+
+def _trial_read_table(file_path: Path, delim: str, max_rows: int) -> pd.DataFrame:
+    return pd.read_csv(
+        file_path,
+        sep=delim,
+        header=0,
+        skiprows=[1],
+        nrows=max_rows,
+        engine="python",
+        dtype=str,
+        keep_default_na=False,
+        na_values=[],
+        skipinitialspace=True,
     )
 
-    if not np.any(valid):
+
+def normalize_variable_names(df: pd.DataFrame) -> pd.DataFrame:
+    vn = [str(c).upper() for c in df.columns]
+    vn = [re.sub(r"[^A-Z0-9]+", "_", c) for c in vn]
+    vn = [re.sub(r"_+", "_", c) for c in vn]
+    vn = [re.sub(r"^_|_$", "", c) for c in vn]
+
+    mapping = {
+        "G_WT": "WEIGHT",
+        "GW": "WEIGHT",
+        "WEI_GHT": "WEIGHT",
+        "WEIGHT_KG": "WEIGHT",
+        "ZP_FT": "ZP",
+        "ALT": "ZP",
+        "ALTITUDE": "ZP",
+        "IAS_KT": "IAS",
+        "TAS_KT": "TAS",
+        "WIND_KT": "WIND",
+        "FF": "WFE",
+        "FUEL_FLOW": "WFE",
+        "TORQUE": "TQ",
+        "SHAFT_HP": "SHP",
+        "SPEEDCODE": "SPEED_CODE",
+        "SPD_CODE": "SPEED_CODE",
+        "SPEED_CODE_": "SPEED_CODE",
+        "SPEED_CODE__": "SPEED_CODE",
+        "SPDCD": "SPEED_CODE",
+    }
+    vn = [mapping.get(c, c) for c in vn]
+    out = df.copy()
+    out.columns = vn
+    return out
+
+
+def should_treat_as_decimal(val_thousands: float, col_name: str, cfg: Config) -> bool:
+    if not np.isfinite(val_thousands):
+        return False
+    cn = str(col_name).upper()
+    if cn == "WEIGHT":
+        return bool(val_thousands < cfg.parse.weight_typical_min or val_thousands > cfg.parse.weight_typical_max)
+    if cn == "ZP":
+        return bool(val_thousands < cfg.parse.zp_typical_min or val_thousands > cfg.parse.zp_typical_max)
+    return False
+
+
+def _safe_float(s: str) -> float:
+    try:
+        return float(s)
+    except Exception:
         return float("nan")
 
-    return float(x[np.argmax(valid)])
 
-def _build_interpolated_sweep_table(
-    summary_tbl: pd.DataFrame,
-    scenarios: List[Dict[str, Any]],
-    *,
-    x_col: str,
-    fixed: Dict[str, Optional[float]],
-    include_x_value: Optional[float] = None,
-    cfg: Optional[Config] = None,
+def to_numeric_smart(v: Any, col_name: str, cfg: Config) -> np.ndarray:
+    if isinstance(v, (np.ndarray, list, tuple)) and len(v) == 0:
+        return np.array([], dtype=float)
+
+    if isinstance(v, (pd.Series, pd.Index)):
+        s = v.astype(str)
+    elif isinstance(v, (list, tuple, np.ndarray)):
+        s = pd.Series(v).astype(str)
+    else:
+        try:
+            return np.array([float(v)], dtype=float)
+        except Exception:
+            s = pd.Series([str(v)])
+
+    s = s.str.strip().str.replace("\xa0", "", regex=False).str.replace(" ", "", regex=False)
+
+    x = np.full(len(s), np.nan, dtype=float)
+    is_thousands_candidate_col = str(col_name).upper() in {"WEIGHT", "ZP"}
+
+    for i, si in enumerate(s.tolist()):
+        if si in {"", "-", "NA", "N/A", "na", "n/a"}:
+            continue
+
+        has_comma = "," in si
+        has_dot = "." in si
+
+        if has_comma and has_dot:
+            last_comma = si.rfind(",")
+            last_dot = si.rfind(".")
+            si2 = si.replace(",", "") if last_dot > last_comma else si.replace(".", "").replace(",", ".")
+            x[i] = _safe_float(si2)
+            continue
+
+        if has_comma and not has_dot:
+            parts = si.split(",")
+            if len(parts) == 2:
+                tail_len = len(parts[1])
+                if tail_len == 3:
+                    si_th = si.replace(",", "")
+                    val_th = _safe_float(si_th)
+                    if cfg.parse.use_magnitude_hints and should_treat_as_decimal(val_th, col_name, cfg):
+                        x[i] = _safe_float(si.replace(",", "."))
+                    else:
+                        x[i] = val_th
+                elif tail_len <= 2:
+                    x[i] = _safe_float(si.replace(",", "."))
+                else:
+                    x[i] = _safe_float(si.replace(",", ""))
+            else:
+                x[i] = _safe_float(si.replace(",", ""))
+            continue
+
+        if has_dot and not has_comma:
+            parts = si.split(".")
+            if is_thousands_candidate_col and len(parts) >= 2 and all(len(p) == 3 for p in parts[1:]):
+                x[i] = _safe_float(si.replace(".", ""))
+            else:
+                x[i] = _safe_float(si)
+            continue
+
+        x[i] = _safe_float(si)
+
+    return x
+
+
+def sanitize_name(s: str) -> str:
+    s2 = re.sub(r"\s+", "_", str(s))
+    s2 = re.sub(r"[^A-Za-z0-9_\-]+", "_", s2)
+    s2 = re.sub(r"_+", "_", s2)
+    s2 = re.sub(r"^_|_$", "", s2)
+    return s2
+
+
+def numeric_success_rate(T0: pd.DataFrame, key_cols: Sequence[str], cfg: Config) -> float:
+    rates = []
+    for c in key_cols:
+        if c not in T0.columns:
+            rates.append(0.0)
+            continue
+        x = to_numeric_smart(T0[c], c, cfg)
+        rates.append(float(np.isfinite(x).mean()))
+    return float(np.mean(rates)) if rates else 0.0
+
+
+def detect_delimiter_robust_trial_import(file_path: Path, cfg: Config) -> Tuple[str, Dict[str, Any]]:
+    heur = detect_delimiter_heuristic_fgetl(file_path, cfg.delim_scan_lines)
+    cands = [heur] + [d for d in cfg.delim_candidates if d != heur]
+
+    need = list(cfg.required_columns)
+    best = ""
+    best_score = -1e18
+    best_detail: Dict[str, Any] = {}
+
+    for d in cands:
+        try:
+            T0 = _trial_read_table(file_path, d, cfg.delim_trial_max_rows)
+            if T0.empty:
+                score = -1e18
+                detail = {"ok": False, "why": "empty", "width": int(T0.shape[1]), "rows": int(T0.shape[0])}
+            else:
+                T0 = normalize_variable_names(T0)
+                vn = list(T0.columns)
+                missing = [c for c in need if c not in vn]
+                miss_count = len(missing)
+
+                if miss_count > 0:
+                    score = 1000 - 200 * miss_count + T0.shape[1]
+                    detail = {"ok": False, "missing": missing, "width": int(T0.shape[1]), "rows": int(T0.shape[0])}
+                else:
+                    ok_rate = numeric_success_rate(T0, cfg.delim_numeric_key_cols, cfg)
+                    score = 2000 + 500 * ok_rate + 0.5 * T0.shape[1] + 0.1 * T0.shape[0]
+                    detail = {"ok": True, "width": int(T0.shape[1]), "rows": int(T0.shape[0]), "numericOkRate": float(ok_rate)}
+        except Exception as e:
+            score = -1e18
+            detail = {"ok": False, "why": "read_failed", "msg": str(e)}
+
+        if score > best_score:
+            best_score = score
+            best = d
+            best_detail = detail
+
+    if not best:
+        raise ValueError(f"Delimiter detection failed for file: {file_path}")
+
+    return best, {"candidates": cands, "chosen": best, "detail": best_detail}
+
+
+# ========================= CLEAN + DERIVED =========================
+
+
+def stable_median(x: np.ndarray) -> float:
+    x = x[np.isfinite(x)]
+    if x.size == 0:
+        return float("nan")
+    return float(np.median(x))
+
+
+def compute_derived_masked_fixed_wind(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    tas = df["TAS"].to_numpy(dtype=float)
+    wind = df["WIND"].to_numpy(dtype=float)
+    wfe = df["WFE"].to_numpy(dtype=float)
+
+    gs = tas + wind
+    fuel = np.full_like(gs, np.nan, dtype=float)
+    time = np.full_like(gs, np.nan, dtype=float)
+
+    ok = np.isfinite(gs) & (gs > 0) & np.isfinite(wfe)
+    fuel[ok] = wfe[ok] / gs[ok]
+    time[ok] = 1.0 / gs[ok]
+    return gs, fuel, time
+
+
+def sanity_mask(gs: np.ndarray, fuel: np.ndarray, time: np.ndarray, cfg: Config) -> Tuple[np.ndarray, np.ndarray]:
+    n = gs.size
+    valid = np.ones(n, dtype=bool)
+    reasons = np.array(["OK"] * n, dtype=object)
+
+    idx = ~np.isfinite(gs) | (gs < cfg.min_gs_kt) | (gs > cfg.max_gs_kt)
+    valid[idx] = False
+    reasons[idx] = "BadGS"
+
+    idx = ~np.isfinite(fuel) | (fuel < cfg.min_fuel_kg_per_nm) | (fuel > cfg.max_fuel_kg_per_nm)
+    valid[idx] = False
+    reasons[idx] = "BadFuelKgPerNM"
+
+    idx = ~np.isfinite(time) | (time <= 0)
+    valid[idx] = False
+    reasons[idx] = "BadTimeHrPerNM"
+
+    return valid, reasons
+
+
+def make_empty_outlier_table() -> pd.DataFrame:
+    cols = [
+        "ScenarioName",
+        "FileName",
+        "Reason",
+        "Meta_ZP",
+        "Meta_WEIGHT",
+        "Meta_ISA",
+        "Meta_WIND",
+        "ZP",
+        "WEIGHT",
+        "ISA",
+        "SPEED_CODE",
+        "IAS",
+        "TAS",
+        "WIND",
+        "WFE",
+        "TQ",
+        "SHP",
+        "SR",
+    ]
+    return pd.DataFrame({c: pd.Series(dtype="object") for c in cols})
+
+
+def build_outliers_table(
+    tbad: pd.DataFrame,
+    file_path: Path,
+    scenario_name: str,
+    reasons: np.ndarray,
+    zp_med: float,
+    w_med: float,
+    isa_med: float,
+    wind_med: float,
 ) -> pd.DataFrame:
-    if summary_tbl is None or summary_tbl.empty:
-        return pd.DataFrame()
-    if cfg is None:
-        raise ValueError("cfg is required.")
+    if tbad is None or tbad.empty:
+        return make_empty_outlier_table()
 
-    x_vals = _unique_sorted(summary_tbl[x_col])
-    if include_x_value is not None and np.isfinite(float(include_x_value)):
-        x_vals = sorted(set([*x_vals, float(include_x_value)]))
-@@ -2766,77 +2797,76 @@ if mode == "Scenarijus":
-                if sc is not None:
-                    v_econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
+    out = pd.DataFrame(
+        {
+            "ScenarioName": [scenario_name] * len(tbad),
+            "FileName": [file_path.name] * len(tbad),
+            "Reason": list(reasons.astype(str)),
+            "Meta_ZP": [zp_med] * len(tbad),
+            "Meta_WEIGHT": [w_med] * len(tbad),
+            "Meta_ISA": [isa_med] * len(tbad),
+            "Meta_WIND": [wind_med] * len(tbad),
+        }
+    )
+    for c in ["ZP", "WEIGHT", "ISA", "SPEED_CODE", "IAS", "TAS", "WIND", "WFE", "TQ", "SHP", "SR"]:
+        out[c] = tbad[c].to_numpy()
+    return out
 
-                shown_value = _ecsr_range_str(
-                    float(pd.to_numeric(row.get("ECSR_low_kt", np.nan), errors="coerce")),
-                    float(pd.to_numeric(row.get("ECSR_high_kt", np.nan), errors="coerce")),
-                    float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce")),
-                    v_econ_docmin,
-                )
-                shown_unit = "kt" if shown_value else ""
 
-            elif col_key == "__BREAK_TIME__":
-                be_str = _format_break_even_for_app_time(
-                    summary_tbl=row_df,
-                    sweep_min=float(cfg.time_cost_min),
-                    sweep_max=float(cfg.time_cost_max),
-                )
-                shown_value = str(be_str.iloc[0]) if len(be_str) else ""
-                shown_unit = "€/h" if (shown_value and shown_value != "Nėra lūžio taško") else ""
+def process_scenario_file(file_path: Path, cfg: Config) -> Tuple[Dict[str, Any], pd.DataFrame]:
+    delim, delim_debug = detect_delimiter_robust_trial_import(file_path, cfg)
 
-            elif col_key == "__BREAK_FUEL__":
-                be_str = _format_break_even_for_app_fuel(summary_tbl=row_df, ceiling=fuel_ceiling)
-                shown_value = str(be_str.iloc[0]) if len(be_str) else ""
-                shown_unit = "€/kg" if (shown_value and shown_value != "Nėra lūžio taško") else ""
+    df = pd.read_csv(
+        file_path,
+        sep=delim,
+        header=0,
+        skiprows=[1],
+        engine="python",
+        dtype=str,
+        keep_default_na=False,
+        na_values=[],
+        skipinitialspace=True,
+    )
+    if df.empty or len(df) < 3:
+        raise ValueError("No usable data rows in file.")
 
-            elif col_key == "__SAVING_PER_X__":
-                v_min_per_nm = float(pd.to_numeric(row.get("DOCmin_EurPerNM", np.nan), errors="coerce"))
-                v_notch_per_nm = float(pd.to_numeric(row.get("DOCnotch_EurPerNM", np.nan), errors="coerce"))
-                v_notch_raw = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
-                dist = float(distance_nm)
+    audit: Dict[str, Any] = {"nRawRows": int(len(df)), "delimiter": delim, "delimDebug": delim_debug}
 
-                sc = _scenario_lookup(scenarios, pick_scn)
-                v_econ_docmin = float("nan")
-                if sc is not None:
-                    v_econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
+    df = normalize_variable_names(df)
 
-                if _disp_speeds_differ(v_notch_raw, v_econ_docmin, min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt)))):
-                    if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
-                        diff_total = round(float((v_notch_per_nm - v_min_per_nm) * dist), 1)
-                    else:
-                        diff_total = float("nan")
-                else:
-            elif col_key == "__SAVING_PER_X__":
-                v_min_per_nm = float(pd.to_numeric(row.get("DOCmin_EurPerNM", np.nan), errors="coerce"))
-                v_notch_per_nm = float(pd.to_numeric(row.get("DOCnotch_EurPerNM", np.nan), errors="coerce"))
-                v_notch_raw = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
-                v_econ_raw = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
-                dist = float(distance_nm)
+    missing = [c for c in cfg.required_columns if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns after normalization: {', '.join(missing)}")
 
-                if _raw_speeds_differ(v_notch_raw, v_econ_raw, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
-                    if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
-                        diff_total = round(float((v_notch_per_nm - v_min_per_nm) * dist), 1)
-                    else:
-                        diff_total = float("nan")
-                else:
-                    diff_total = 0.0
-            else:
-                val = float(pd.to_numeric(row.get(col_key, np.nan), errors="coerce"))
-                if np.isfinite(val):
-                    if col_key == "V_ECSR_kt":
-                        sc = _scenario_lookup(scenarios, pick_scn)
-                        if sc is not None:
-                            v_econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
-                            v_notch_ui = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
-                            shown_value = _fmt_speed_econ_safe(v_econ_docmin, v_notch_ui)
-                    if col_key == "V_ECSR_kt":
-                        v_econ_docmin = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
-                        v_notch_ui = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
-                        if np.isfinite(v_econ_docmin) and np.isfinite(v_notch_ui):
-                            shown_value = _fmt_speed_econ_safe(
-                                v_econ_docmin,
-                                v_notch_ui,
-                                min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
-                            )
-                            shown_unit = "kt" if shown_value else ""
-                    elif col_key == "V_notch_kt":
-                        shown_value = _fmt_speed_notch(val)
-                        shown_unit = "kt" if shown_value else ""
-                    elif "EUR/h" in pick_metric_label:
-                        shown_value = f"{val:.1f}"
-                        shown_unit = "EUR/h"
-                    elif "€/h" in pick_metric_label:
-                        shown_value = f"{int(round(val))}"
-                        shown_unit = "€/h"
-                    elif "€/kg" in pick_metric_label:
-                        shown_value = f"{val:.2f}"
-                        shown_unit = "€/kg"
-                    elif "EUR/NM" in pick_metric_label:
-                        shown_value = f"{val:.3f}"
-                        shown_unit = "EUR/NM"
-                    elif "EUR" in pick_metric_label:
-                        shown_value = f"{val:.0f}"
-                        shown_unit = "EUR"
-                    else:
-                        shown_value = f"{val:.3f}"
+    for c in cfg.required_columns:
+        df[c] = to_numeric_smart(df[c], c, cfg)
 
-    st.markdown("<div style='height: 26px'></div>", unsafe_allow_html=True)
+    scode = df["SPEED_CODE"].to_numpy(dtype=float)
+    bad = np.zeros(len(df), dtype=bool)
+    for v in cfg.speed_code_bad_values:
+        bad |= np.isfinite(scode) & (np.abs(scode - v) <= cfg.speed_code_tol)
+    audit["nRemoved_speedCode"] = int(bad.sum())
+    df = df.loc[~bad].copy()
 
-    if show_placeholder:
-@@ -2907,160 +2937,98 @@ else:
-    diff_total = float("nan")
+    miss = ~np.isfinite(df["IAS"]) | ~np.isfinite(df["TAS"]) | ~np.isfinite(df["WIND"]) | ~np.isfinite(df["WFE"])
+    audit["nRemoved_nanKey"] = int(miss.sum())
+    df = df.loc[~miss].copy()
 
-    if not show_placeholder:
-        res_in = st.session_state.get("in_last_res", None)
-        if isinstance(res_in, InterpQuickResult):
-            if col_key == "__ECSR_RANGE__":
-                v_econ_docmin = _input_docmin_econ_kt(
-                    scenarios,
-                    summary_tbl,
-                    cfg,
-                    fl_ft=float(in_fl),
-                    wt_kg=float(in_wt),
-                    isa_c=float(in_isa),
-                    wind_kt=float(in_wind),
-                    fallback_v_econ=float(res_in.v_ecsr_kt),
-                    fallback_v_notch=float(res_in.v_notch_kt),
-                )
-                shown_value = _ecsr_range_str(
-                    res_in.ecsr_low_kt,
-                    res_in.ecsr_high_kt,
-                    res_in.v_notch_kt,
-                    v_econ_docmin,
-                )
-                shown_unit = "kt" if shown_value else ""
-            elif col_key == "__BREAK_TIME__":
-                v_notch_ui = float(res_in.v_notch_kt)
+    if len(df) < cfg.min_rows:
+        raise ValueError("Too few valid rows after SPEED_CODE + NaN filtering.")
 
-                try:
-                    doc_curve_res = _compute_input_doc_curve_knn(
-                        scenarios,
-                        summary_tbl,
-                        cfg,
-                        fl_ft=float(in_fl),
-                        wt_kg=float(in_wt),
-                        isa_c=float(in_isa),
-                        wind_kt=float(in_wind),
-                    )
-                    econ_for_ui = float(doc_curve_res["IAS_opt"])
-                except Exception:
-                    econ_for_ui = float(res_in.v_ecsr_kt)
+    df = df.sort_values("IAS", kind="mergesort").reset_index(drop=True)
 
-                if np.isfinite(econ_for_ui) and np.isfinite(v_notch_ui):
-                    econ_for_ui = min(econ_for_ui, v_notch_ui)
+    gs, fuel, time = compute_derived_masked_fixed_wind(df)
+    valid, reasons = sanity_mask(gs, fuel, time, cfg)
+    audit["nRemoved_sanity"] = int((~valid).sum())
 
-                v = float(res_in.be_time_cost_eur_per_hr)
-                valid_break = (
-                    np.isfinite(v)
-                    and (float(cfg.time_cost_min) - 1e-9 <= v <= float(cfg.time_cost_max) + 1e-9)
-                    and _disp_speeds_differ(v_notch_ui, econ_for_ui, min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt))))
-                    and np.isfinite(res_in.docmin_eur_per_nm)
-                    and np.isfinite(res_in.docnotch_eur_per_nm)
-                    and float(res_in.docnotch_eur_per_nm) > float(res_in.docmin_eur_per_nm)
-                )
-                v = float(res_in.be_time_cost_eur_per_hr)
-                valid_break = (
-                    np.isfinite(v)
-                    and (float(cfg.time_cost_min) - 1e-9 <= v <= float(cfg.time_cost_max) + 1e-9)
-                )
+    zp_med = stable_median(df["ZP"].to_numpy(float))
+    w_med = stable_median(df["WEIGHT"].to_numpy(float))
+    isa_med = stable_median(df["ISA"].to_numpy(float))
+    wind_med = stable_median(df["WIND"].to_numpy(float))
 
-                if valid_break:
-                    shown_value = f"{int(round(v))}"
-                    shown_unit = "€/h"
-                else:
-                    shown_value = "Nėra lūžio taško"
-                    shown_unit = ""
-            elif col_key == "__BREAK_FUEL__":
-                v_notch_ui = float(res_in.v_notch_kt)
+    base = file_path.stem + "".join(file_path.suffixes[1:])
+    scenario_name = sanitize_name(base)
 
-                try:
-                    doc_curve_res = _compute_input_doc_curve_knn(
-                        scenarios,
-                        summary_tbl,
-                        cfg,
-                        fl_ft=float(in_fl),
-                        wt_kg=float(in_wt),
-                        isa_c=float(in_isa),
-                        wind_kt=float(in_wind),
-                    )
-                    econ_for_ui = float(doc_curve_res["IAS_opt"])
-                except Exception:
-                    econ_for_ui = float(res_in.v_ecsr_kt)
+    outliers = build_outliers_table(
+        df.loc[~valid].copy(),
+        file_path,
+        scenario_name,
+        reasons[~valid],
+        zp_med,
+        w_med,
+        isa_med,
+        wind_med,
+    )
 
-                if np.isfinite(econ_for_ui) and np.isfinite(v_notch_ui):
-                    econ_for_ui = min(econ_for_ui, v_notch_ui)
+    df = df.loc[valid].copy()
+    if len(df) < cfg.min_rows:
+        raise ValueError("Too few rows after sanity filtering.")
 
-                v = float(res_in.be_fuel_price_eur_per_kg)
-                valid_break = (
-                    np.isfinite(v)
-                    and v <= float(fuel_ceiling) + 1e-12
-                    and _disp_speeds_differ(v_notch_ui, econ_for_ui, min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt))))
-                    and np.isfinite(res_in.docmin_eur_per_nm)
-                    and np.isfinite(res_in.docnotch_eur_per_nm)
-                    and float(res_in.docnotch_eur_per_nm) > float(res_in.docmin_eur_per_nm)
-                )
-                v = float(res_in.be_fuel_price_eur_per_kg)
-                valid_break = (
-                    np.isfinite(v)
-                    and v <= float(fuel_ceiling) + 1e-12
-                )
+    gs, fuel, time = compute_derived_masked_fixed_wind(df)
+    audit["nFinalRows"] = int(len(df))
 
-                if valid_break:
-                    shown_value = f"{v:.2f}"
-                    shown_unit = "€/kg"
-                else:
-                    shown_value = "Nėra lūžio taško"
-                    shown_unit = ""
-            elif col_key == "__SAVING_PER_X__":
-                dist = float(distance_nm)
-                v_notch_ui = float(res_in.v_notch_kt)
+    v_notch = float(np.nanmax(df["IAS"].to_numpy(float)))
 
-                econ_for_ui = _input_docmin_econ_kt(
-                    scenarios,
-                    summary_tbl,
-                    cfg,
-                    fl_ft=float(in_fl),
-                    wt_kg=float(in_wt),
-                    isa_c=float(in_isa),
-                    wind_kt=float(in_wind),
-                    fallback_v_econ=float(res_in.v_ecsr_kt),
-                    fallback_v_notch=float(v_notch_ui),
-                )
+    return (
+        {
+            "fileName": file_path.name,
+            "scenarioName": scenario_name,
+            "ZP_ft": float(zp_med),
+            "WEIGHT_kg": float(w_med),
+            "ISA_C": float(isa_med),
+            "WIND_kt": float(wind_med),
+            "pointTable": df,
+            "Fuel_kg_per_NM": fuel,
+            "Time_h_per_NM": time,
+            "V_notch": v_notch,
+            "audit": audit,
+        },
+        outliers,
+    )
 
-                if _disp_speeds_differ(v_notch_ui, econ_for_ui, min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt)))):
-                    if np.isfinite(res_in.docmin_eur_per_nm) and np.isfinite(res_in.docnotch_eur_per_nm):
-                        diff_total = round(float((res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm) * dist), 1)
-                    else:
-                        diff_total = float("nan")
-                else:
-            elif col_key == "__SAVING_PER_X__":
-                dist = float(distance_nm)
-                v_notch_ui = float(res_in.v_notch_kt)
-                v_econ_ui = float(res_in.v_ecsr_kt)
 
-                if _raw_speeds_differ(v_notch_ui, v_econ_ui, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
-                    if np.isfinite(res_in.docmin_eur_per_nm) and np.isfinite(res_in.docnotch_eur_per_nm):
-                        diff_total = round(float((res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm) * dist), 1)
-                    else:
-                        diff_total = float("nan")
-                else:
-                    diff_total = 0.0
-            else:
-                if col_key == "V_ECSR_kt":
-                    econ_val = _input_docmin_econ_kt(
-                        scenarios,
-                        summary_tbl,
-                        cfg,
-                        fl_ft=float(in_fl),
-                        wt_kg=float(in_wt),
-                        isa_c=float(in_isa),
-                        wind_kt=float(in_wind),
-                        fallback_v_econ=float(res_in.v_ecsr_kt),
-                        fallback_v_notch=float(res_in.v_notch_kt),
-                    )
-                    if np.isfinite(econ_val):
-                        shown_value = _fmt_speed_econ_safe(econ_val, float(res_in.v_notch_kt))
-                        shown_unit = "kt" if shown_value else ""
-                if col_key == "V_ECSR_kt":
-                    econ_val = float(res_in.v_ecsr_kt)
-                    notch_val = float(res_in.v_notch_kt)
-                    if np.isfinite(econ_val) and np.isfinite(notch_val):
-                        shown_value = _fmt_speed_econ_safe(
-                            econ_val,
-                            notch_val,
-                            min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
-                        )
-                        shown_unit = "kt" if shown_value else ""
+# ========================= CORE ECONOMICS =========================
 
-                else:
-                    mapping = {
-                        "V_notch_kt": (res_in.v_notch_kt, "kt"),
-                        "DOCmin_EurPerNM": (res_in.docmin_eur_per_nm, "EUR/NM"),
-                        "DOCnotch_EurPerNM": (res_in.docnotch_eur_per_nm, "EUR/NM"),
-                    }
-                    if col_key in mapping:
-                        val, unit = mapping[col_key]
-                        if np.isfinite(val):
-                            if col_key == "V_notch_kt":
-                                shown_value = _fmt_speed_notch(float(val))
-                            elif unit == "kt":
-                                shown_value = _fmt_speed_econ(float(val))
-                            elif unit == "EUR/NM":
-                                shown_value = f"{float(val):.3f}"
-                            elif unit == "EUR/h":
-                                shown_value = f"{float(val):.1f}"
-                            else:
-                                shown_value = f"{float(val):g}"
-                            shown_unit = unit
-    st.markdown("<div style='height: 26px'></div>", unsafe_allow_html=True)
-
-    if show_placeholder:
-        _show_result_card("", "")
-@@ -3805,51 +3773,57 @@ for d in cfg.distances_nm:
-display_tbl = display_tbl.rename(columns=rename_map)
-
-for col in [
-    "Aukštis, ft",
-    "Masė, kg",
-]:
-    if col in display_tbl.columns:
-        vals = pd.to_numeric(display_tbl[col], errors="coerce")
-        display_tbl[col] = vals.map(lambda v: f"{int(round(v))}" if np.isfinite(v) else "")
-
-if "IASnotch, kt" in display_tbl.columns:
-    vals = pd.to_numeric(display_tbl["IASnotch, kt"], errors="coerce")
-    display_tbl["IASnotch, kt"] = vals.map(lambda v: _fmt_speed_notch(v))
-
-if "ECON, kt" in display_tbl.columns and "IASnotch, kt" in display_tbl.columns:
-    econ_display_vals: List[str] = []
-
-    for _, row in display_tbl.iterrows():
-        sc_name = str(row.get("_ScenarioName_raw", ""))
-        sc = _scenario_lookup(scenarios, sc_name) if sc_name else None
-        notch_val = float(pd.to_numeric(row.get("IASnotch, kt", np.nan), errors="coerce"))
-
-        if sc is not None:
-            try:
-                econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
-                econ_display_vals.append(_fmt_speed_econ_safe(econ_docmin, notch_val))
-                econ_display_vals.append(
-                    _fmt_speed_econ_safe(
-                        econ_docmin,
-                        notch_val,
-                        min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
-                    )
-                )
-            except Exception:
-                econ_display_vals.append("")
-        else:
-            econ_display_vals.append("")
-
-    display_tbl["ECON, kt"] = econ_display_vals
-
-if "IASlow, kt" in display_tbl.columns:
-    vals = pd.to_numeric(display_tbl["IASlow, kt"], errors="coerce")
-    display_tbl["IASlow, kt"] = vals.map(lambda v: _fmt_speed_econ(v))
-
-if "IAShigh, kt" in display_tbl.columns:
-    vals = pd.to_numeric(display_tbl["IAShigh, kt"], errors="coerce")
-    display_tbl["IAShigh, kt"] = vals.map(lambda v: _fmt_speed_notch(v))
-
-display_tbl = display_tbl.drop(
-    columns=["BreakEven_TIME_COST_EurPerHr", "BreakEven_FUEL_PRICE_EurPerKg"],
-    errors="ignore",
-)
-
-# 6) Reorder columns: meta -> costs -> speeds/ECSR -> break-evens -> DOC per NM -> DOC per distance
-ordered_cols = [
-    "Bandymas",
-    "Aukštis, ft",
-    "Masė, kg",
-ecsr_core.py
-ecsr_core.py
-+23
--14
-
-@@ -598,59 +598,68 @@ def _econ_from_docmin_with_notch_rule(
+def _econ_from_docmin_with_notch_rule(
+    v_docmin: float,
+    v_notch: float,
+    *,
+    min_gap_kt: float = 1.0,
+) -> float:
+    """
+    ECON rule used by UI and core:
+    - start from true DOC-min speed
+    - if DOC-min is less than 1 kt below IASnotch, treat ECON as IASnotch
+    - otherwise keep DOC-min speed
+    """
+    if not np.isfinite(v_docmin):
+        return float("nan")
     if not np.isfinite(v_notch):
         return float(v_docmin)
 
@@ -756,23 +619,15 @@ def _disp_notch_kt(v: Any) -> np.ndarray:
     out[ok] = np.floor(x[ok])
     return out
 
+
 def _display_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:
     """
-    Display-only speed-gap check:
+    Breakpoint/saving rule must follow displayed speeds:
     IASnotch display = floor(v_notch)
     ECON display = ceil(v_econ)
     """
     vn = _disp_notch_kt(v_notch)
     ve = _disp_econ_kt(v_econ)
-    return np.isfinite(vn) & np.isfinite(ve) & ((vn - ve) >= float(min_gap_kt))
-
-
-def _continuous_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:
-    """
-    Economic/computational speed-gap rule on raw values (no display rounding).
-    """
-    vn = np.asarray(v_notch, float)
-    ve = np.asarray(v_econ, float)
     return np.isfinite(vn) & np.isfinite(ve) & ((vn - ve) >= float(min_gap_kt))
 
 
@@ -799,7 +654,831 @@ def _pchip_fn(x: np.ndarray, y: np.ndarray) -> PchipInterpolator:
     x = np.asarray(x, float)
     y = np.asarray(y, float)
     if x.size < 2:
-@@ -1482,55 +1491,55 @@ def interpolate_curve_knn_from_scenarios(
+        raise ValueError("Need at least 2 points for interpolation.")
+    return PchipInterpolator(x, y, extrapolate=True)
+
+
+def _build_fuel_time_interpolators(sc: Dict[str, Any]) -> Tuple[PchipInterpolator, PchipInterpolator, np.ndarray]:
+    df: pd.DataFrame = sc["pointTable"]
+    ias = df["IAS"].to_numpy(float)
+    fuel = sc["Fuel_kg_per_NM"]
+    time = sc["Time_h_per_NM"]
+    iasu, fuelu, timeu = unique_x(ias, fuel, time)
+    fuel_itp = _pchip_fn(iasu, fuelu)
+    time_itp = _pchip_fn(iasu, timeu)
+    return fuel_itp, time_itp, iasu
+
+
+def compute_doc_curve_pchip(sc: Dict[str, Any], tc: float, cfg: Config, *, ngrid: int = 700) -> Dict[str, Any]:
+    df: pd.DataFrame = sc["pointTable"]
+    if df is None or not hasattr(df, "columns") or "IAS" not in df.columns:
+        raise ValueError("Scenarijuje nėra 'pointTable' lentelės arba trūksta 'IAS' stulpelio.")
+
+    ias_raw = pd.to_numeric(df["IAS"], errors="coerce").to_numpy(float)
+    fuel_raw = np.asarray(sc.get("Fuel_kg_per_NM", []), float).reshape(-1)
+    time_raw = np.asarray(sc.get("Time_h_per_NM", []), float).reshape(-1)
+    n = min(ias_raw.size, fuel_raw.size, time_raw.size)
+    if n < 2:
+        raise ValueError("Per mažai taškų kreivei sudaryti (reikia bent 2).")
+
+    ias_raw = ias_raw[:n]
+    fuel_raw = fuel_raw[:n]
+    time_raw = time_raw[:n]
+
+    ok = np.isfinite(ias_raw) & np.isfinite(fuel_raw) & np.isfinite(time_raw)
+    ias_raw = ias_raw[ok]
+    fuel_raw = fuel_raw[ok]
+    time_raw = time_raw[ok]
+    if ias_raw.size < 2:
+        raise ValueError("Po filtravimo liko per mažai galiojančių taškų.")
+
+    order = np.argsort(ias_raw, kind="mergesort")
+    ias_raw = ias_raw[order]
+    fuel_raw = fuel_raw[order]
+    time_raw = time_raw[order]
+
+    fuel_itp, time_itp, iasu = _build_fuel_time_interpolators(sc)
+
+    x_min = float(np.nanmin(iasu))
+    x_max = float(np.nanmax(iasu))
+    if not np.isfinite(x_min) or not np.isfinite(x_max) or x_max <= x_min:
+        raise ValueError("Neteisingas IAS intervalas (min/max).")
+
+    ngrid = int(max(300, ngrid))
+    ias_grid = np.linspace(x_min, x_max, ngrid)
+
+    doc_grid = cfg.fuel_price_eur_per_kg * fuel_itp(ias_grid) + float(tc) * time_itp(ias_grid)
+    j = int(np.nanargmin(doc_grid))
+    v_opt_raw = float(ias_grid[j])
+
+    v_notch = float(sc.get("V_notch", np.nan))
+    if not np.isfinite(v_notch):
+        raise ValueError("Scenarijuje nėra korektiško 'V_notch'.")
+
+    v_opt = _econ_from_docmin_with_notch_rule(
+        v_opt_raw,
+        v_notch,
+        min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+    )
+    doc_opt = float(
+        cfg.fuel_price_eur_per_kg * fuel_itp(np.array([v_opt]))[0]
+        + float(tc) * time_itp(np.array([v_opt]))[0]
+    )
+
+    doc_notch = float(cfg.fuel_price_eur_per_kg * fuel_itp(np.array([v_notch]))[0] + float(tc) * time_itp(np.array([v_notch]))[0])
+    doc_raw = cfg.fuel_price_eur_per_kg * fuel_raw + float(tc) * time_raw
+
+    return {
+        "IAS_grid": ias_grid,
+        "DOC_grid_per_nm": np.asarray(doc_grid, float),
+        "IAS_opt": v_opt,
+        "DOC_opt_per_nm": doc_opt,
+        "IAS_notch": v_notch,
+        "DOC_notch_per_nm": doc_notch,
+        "IAS_raw": ias_raw,
+        "DOC_raw_per_nm": np.asarray(doc_raw, float),
+    }
+
+
+def compute_optimum_at_time_cost(sc: Dict[str, Any], tc: float, cfg: Config) -> Dict[str, float]:
+    fuel_itp, time_itp, iasu = _build_fuel_time_interpolators(sc)
+    v_notch = float(sc["V_notch"])
+
+    def doc_at(x_ias: np.ndarray) -> np.ndarray:
+        return cfg.fuel_price_eur_per_kg * fuel_itp(x_ias) + float(tc) * time_itp(x_ias)
+
+    ngrid = max(400, int(iasu.size * 40))
+    ias_grid = np.linspace(float(iasu.min()), float(iasu.max()), ngrid)
+    doc_grid = doc_at(ias_grid)
+
+    j = int(np.nanargmin(doc_grid))
+    v_opt_raw = float(ias_grid[j])
+    v_opt = _econ_from_docmin_with_notch_rule(
+        v_opt_raw,
+        v_notch,
+        min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+    )
+    doc_min = float(doc_at(np.array([v_opt]))[0])
+    doc_notch = float(doc_at(np.array([v_notch]))[0])
+
+    return {"IAS_opt_kt": v_opt, "DOC_min_EurPerNM": doc_min, "DOC_notch_EurPerNM": doc_notch}
+
+
+def run_parametric_sweep(sc: Dict[str, Any], time_cost_vec: np.ndarray, cfg: Config) -> Dict[str, Any]:
+    time_cost_vec = np.asarray(time_cost_vec, float).reshape(-1)
+    sc["timeCostVec"] = time_cost_vec
+
+    v_notch = float(sc["V_notch"])
+    fuel_itp, time_itp, iasu = _build_fuel_time_interpolators(sc)
+
+    def doc_at(x_ias: np.ndarray, tc: float) -> np.ndarray:
+        return cfg.fuel_price_eur_per_kg * fuel_itp(x_ias) + tc * time_itp(x_ias)
+
+    ngrid = max(200, int(iasu.size * 20))
+    ias_grid = np.linspace(float(iasu.min()), float(iasu.max()), ngrid)
+
+    doc_min = np.full(time_cost_vec.size, np.nan, dtype=float)
+    ias_opt = np.full(time_cost_vec.size, np.nan, dtype=float)
+    doc_notch = np.full(time_cost_vec.size, np.nan, dtype=float)
+
+    for i, tc in enumerate(time_cost_vec):
+        doc_grid = doc_at(ias_grid, float(tc))
+        j = int(np.nanargmin(doc_grid))
+        v_opt_raw = float(ias_grid[j])
+        v_opt = _econ_from_docmin_with_notch_rule(
+            v_opt_raw,
+            v_notch,
+            min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+        )
+
+        ias_opt[i] = v_opt
+        doc_min[i] = float(doc_at(np.array([v_opt]), float(tc))[0])
+        doc_notch[i] = float(doc_at(np.array([v_notch]), float(tc))[0])
+
+    sc["DOC_min_EurPerNM"] = doc_min
+    sc["IAS_opt_kt"] = ias_opt
+    sc["DOC_notch_EurPerNM"] = doc_notch
+    return sc
+
+
+def run_fuel_price_sweep(sc: Dict[str, Any], fuel_price_vec: np.ndarray, cfg: Config) -> Dict[str, Any]:
+    fuel_price_vec = np.asarray(fuel_price_vec, float).reshape(-1)
+    sc["fuelPriceVec"] = fuel_price_vec
+
+    tc_op = float(cfg.time_cost_operational)
+    v_notch = float(sc["V_notch"])
+    fuel_itp, time_itp, iasu = _build_fuel_time_interpolators(sc)
+
+    def doc_at(x_ias: np.ndarray, fp: float) -> np.ndarray:
+        return float(fp) * fuel_itp(x_ias) + tc_op * time_itp(x_ias)
+
+    ngrid = max(200, int(iasu.size * 20))
+    ias_grid = np.linspace(float(iasu.min()), float(iasu.max()), ngrid)
+
+    doc_min = np.full(fuel_price_vec.size, np.nan, dtype=float)
+    ias_opt = np.full(fuel_price_vec.size, np.nan, dtype=float)
+    doc_notch = np.full(fuel_price_vec.size, np.nan, dtype=float)
+
+    for i, fp in enumerate(fuel_price_vec):
+        doc_grid = doc_at(ias_grid, float(fp))
+        j = int(np.nanargmin(doc_grid))
+        v_opt_raw = float(ias_grid[j])
+        v_opt = _econ_from_docmin_with_notch_rule(
+            v_opt_raw,
+            v_notch,
+            min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+        )
+
+        ias_opt[i] = v_opt
+        doc_min[i] = float(doc_at(np.array([v_opt]), float(fp))[0])
+        doc_notch[i] = float(doc_at(np.array([v_notch]), float(fp))[0])
+
+    sc["DOC_min_EurPerNM_fp"] = doc_min
+    sc["IAS_opt_kt_fp"] = ias_opt
+    sc["DOC_notch_EurPerNM_fp"] = doc_notch
+    return sc
+
+
+def compute_ecsr_band(sc: Dict[str, Any], tc: float, cfg: Config) -> Dict[str, float]:
+    df: pd.DataFrame = sc["pointTable"]
+    ias = df["IAS"].to_numpy(float)
+    fuel = sc["Fuel_kg_per_NM"]
+    time = sc["Time_h_per_NM"]
+    iasu, fuelu, timeu = unique_x(ias, fuel, time)
+
+    ngrid = max(300, int(iasu.size * 30))
+    ias_grid = np.linspace(float(iasu.min()), float(iasu.max()), ngrid)
+
+    fuel_grid = _pchip_fn(iasu, fuelu)(ias_grid)
+    time_grid = _pchip_fn(iasu, timeu)(ias_grid)
+    doc_grid = cfg.fuel_price_eur_per_kg * fuel_grid + float(tc) * time_grid
+
+    i_min = int(np.nanargmin(doc_grid))
+    doc_min = float(doc_grid[i_min])
+    thr = doc_min * (1.0 + cfg.epsilon_break_even)
+
+    ok = doc_grid <= thr
+    if not np.any(ok):
+        low = high = float(ias_grid[i_min])
+    else:
+        left = np.where(ok & (ias_grid <= ias_grid[i_min]))[0]
+        right = np.where(ok & (ias_grid >= ias_grid[i_min]))[0]
+        i_low = int(left[0]) if left.size else i_min
+        i_high = int(right[-1]) if right.size else i_min
+        low = float(ias_grid[i_low])
+        high = float(ias_grid[i_high])
+
+    v_notch = float(sc.get("V_notch", np.nan))
+    if np.isfinite(v_notch):
+        low = float(min(low, v_notch))
+        high = float(min(high, v_notch))
+
+    return {"ECSR_low_kt": low, "ECSR_high_kt": high, "DOC_min_EurPerNM": doc_min}
+
+
+# ========================= SUMMARY INTERPOLATION (ECSR calculator + input quick view) =========================
+
+
+@dataclass(frozen=True)
+class EcsrInterpResult:
+    fl_ft: float
+    weight_kg: float
+    isa_c: float
+    wind_kt: float
+    v_ecsr_kt: float
+    ecsr_low_kt: float
+    ecsr_high_kt: float
+
+
+@dataclass(frozen=True)
+class InterpQuickResult:
+    fl_ft: float
+    weight_kg: float
+    isa_c: float
+    wind_kt: float
+    v_ecsr_kt: float
+    v_notch_kt: float
+    ecsr_low_kt: float
+    ecsr_high_kt: float
+    docmin_eur_per_nm: float
+    docnotch_eur_per_nm: float
+    docmin_eur_per_h: float
+    docnotch_eur_per_h: float
+    be_time_cost_eur_per_hr: float
+    be_fuel_price_eur_per_kg: float
+
+
+def _require_columns(df: pd.DataFrame, cols: Sequence[str]) -> None:
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Trūksta stulpelių interpolacijai: {', '.join(missing)}")
+
+
+def _numeric_col(df: pd.DataFrame, col: str) -> np.ndarray:
+    return pd.to_numeric(df[col], errors="coerce").to_numpy(float)
+
+
+def _validate_interp_dataset(summary_tbl: pd.DataFrame) -> pd.DataFrame:
+    need = ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt"]
+    _require_columns(summary_tbl, need)
+
+    df = summary_tbl.copy()
+    for c in need:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=need)
+
+    if df.shape[0] < 8:
+        raise ValueError("Nepakanka scenarijų interpolacijai (reikia bent 8).")
+
+    for c in need:
+        if int(df[c].nunique()) < 2:
+            raise ValueError(f"Nepakanka įvairovės interpolacijai: '{c}' turi mažiau nei 2 unikalias reikšmes.")
+
+    return df
+
+
+def _range_check(val: float, x: np.ndarray, label: str, unit: str) -> None:
+    x = np.asarray(x, float)
+    x = x[np.isfinite(x)]
+    if x.size == 0:
+        raise ValueError("Nepakanka duomenų interpolacijai.")
+
+    lo = float(np.nanmin(x))
+    hi = float(np.nanmax(x))
+
+    if not (lo <= float(val) <= hi):
+        def _fmt(v: float) -> str:
+            if abs(v - round(v)) < 1e-9:
+                return str(int(round(v)))
+            return f"{v:g}"
+
+        raise ValueError(
+            f"Neteisinga įvestis: {label} = {_fmt(float(val))} {unit}. "
+            f"Galima riba: {_fmt(lo)}–{_fmt(hi)} {unit}."
+        )
+
+
+def compute_ecsr_band_interpolated(
+    summary_tbl: pd.DataFrame,
+    *,
+    fl_ft: float,
+    weight_kg: float,
+    isa_c: float,
+    wind_kt: float,
+    min_points_required: int = 12,
+) -> EcsrInterpResult:
+    df = _validate_interp_dataset(summary_tbl)
+    if df.shape[0] < int(min_points_required):
+        raise ValueError(f"Nepakanka scenarijų stabiliai interpolacijai (reikia bent {int(min_points_required)}).")
+
+    zp = _numeric_col(df, "ZP_ft")
+    wt = _numeric_col(df, "WEIGHT_kg")
+    isa = _numeric_col(df, "ISA_C")
+    wnd = _numeric_col(df, "WIND_kt")
+
+    _range_check(fl_ft, zp, "Aukštis", "ft")
+    _range_check(weight_kg, wt, "Masė", "kg")
+    _range_check(isa_c, isa, "ISA", "°C")
+    _range_check(wind_kt, wnd, "Vėjas", "kt")
+
+    pts = np.column_stack([zp, wt, isa, wnd]).astype(float)
+
+    need = ["V_ECSR_kt", "ECSR_low_kt", "ECSR_high_kt"]
+    _require_columns(df, need)
+    v_ecsr = _numeric_col(df, "V_ECSR_kt")
+    e_lo = _numeric_col(df, "ECSR_low_kt")
+    e_hi = _numeric_col(df, "ECSR_high_kt")
+
+    itp_v = LinearNDInterpolator(pts, v_ecsr, fill_value=np.nan)
+    itp_lo = LinearNDInterpolator(pts, e_lo, fill_value=np.nan)
+    itp_hi = LinearNDInterpolator(pts, e_hi, fill_value=np.nan)
+
+    q = np.array([[float(fl_ft), float(weight_kg), float(isa_c), float(wind_kt)]], dtype=float)
+
+    _require_columns(df, ["V_notch_kt"])
+    v_notch_arr = _numeric_col(df, "V_notch_kt")
+    itp_v_notch = LinearNDInterpolator(pts, v_notch_arr, fill_value=np.nan)
+
+    v = float(itp_v(q)[0])
+    lo = float(itp_lo(q)[0])
+    hi = float(itp_hi(q)[0])
+    v_notch = float(itp_v_notch(q)[0])
+
+    if not (np.isfinite(v) and np.isfinite(lo) and np.isfinite(hi) and np.isfinite(v_notch)):
+        raise ValueError("Negalima interpoliuoti šioms sąlygoms: trūksta duomenų.")
+
+    v = _econ_from_docmin_with_notch_rule(
+        v,
+        v_notch,
+        min_gap_kt=float(1.0),
+    )
+    lo = float(min(lo, v_notch))
+    hi = float(min(hi, v_notch))
+
+    return EcsrInterpResult(
+        fl_ft=float(fl_ft),
+        weight_kg=float(weight_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+        v_ecsr_kt=float(v),
+        ecsr_low_kt=float(min(lo, hi)),
+        ecsr_high_kt=float(max(lo, hi)),
+    )
+
+
+def _interp_scalar_4d(pts: np.ndarray, q: np.ndarray, y: np.ndarray, *, name: str) -> float:
+    itp = LinearNDInterpolator(pts, y, fill_value=np.nan)
+    v = float(itp(q)[0])
+    if not np.isfinite(v):
+        raise ValueError(f"Negalima interpoliuoti šioms sąlygoms: trūksta duomenų.")
+    return v
+
+
+def compute_quick_metrics_interpolated(
+    summary_tbl: pd.DataFrame,
+    *,
+    fl_ft: float,
+    weight_kg: float,
+    isa_c: float,
+    wind_kt: float,
+    min_points_required: int = 20,
+) -> InterpQuickResult:
+    df = _validate_interp_dataset(summary_tbl)
+    if df.shape[0] < int(min_points_required):
+        raise ValueError(f"Nepakanka scenarijų stabiliai interpolacijai (reikia bent {int(min_points_required)}).")
+
+    zp = _numeric_col(df, "ZP_ft")
+    wt = _numeric_col(df, "WEIGHT_kg")
+    isa = _numeric_col(df, "ISA_C")
+    wnd = _numeric_col(df, "WIND_kt")
+
+    _range_check(fl_ft, zp, "Aukštis", "ft")
+    _range_check(weight_kg, wt, "Masė", "kg")
+    _range_check(isa_c, isa, "ISA", "°C")
+    _range_check(wind_kt, wnd, "Vėjas", "kt")
+
+    pts = np.column_stack([zp, wt, isa, wnd]).astype(float)
+    q = np.array([[float(fl_ft), float(weight_kg), float(isa_c), float(wind_kt)]], dtype=float)
+
+    need = [
+        "V_ECSR_kt",
+        "V_notch_kt",
+        "ECSR_low_kt",
+        "ECSR_high_kt",
+        "DOCmin_EurPerNM",
+        "DOCnotch_EurPerNM",
+        "DOCmin_EurPerHr",
+        "DOCnotch_EurPerHr",
+        "BreakEven_TIME_COST_EurPerHr",
+        "BreakEven_FUEL_PRICE_EurPerKg",
+    ]
+    _require_columns(df, need)
+
+    v_ecsr = _numeric_col(df, "V_ECSR_kt")
+    v_notch = _numeric_col(df, "V_notch_kt")
+    e_lo = _numeric_col(df, "ECSR_low_kt")
+    e_hi = _numeric_col(df, "ECSR_high_kt")
+    docmin = _numeric_col(df, "DOCmin_EurPerNM")
+    docnotch = _numeric_col(df, "DOCnotch_EurPerNM")
+    docmin_h = _numeric_col(df, "DOCmin_EurPerHr")
+    docnotch_h = _numeric_col(df, "DOCnotch_EurPerHr")
+    be_tc = _numeric_col(df, "BreakEven_TIME_COST_EurPerHr")
+    be_fp = _numeric_col(df, "BreakEven_FUEL_PRICE_EurPerKg")
+
+    lo_v = _interp_scalar_4d(pts, q, e_lo, name="ECSR_low_kt")
+    hi_v = _interp_scalar_4d(pts, q, e_hi, name="ECSR_high_kt")
+    v_ecsr_v = _interp_scalar_4d(pts, q, v_ecsr, name="V_ECSR_kt")
+    v_notch_v = _interp_scalar_4d(pts, q, v_notch, name="V_notch_kt")
+
+    docmin_nm_v = _interp_scalar_4d(pts, q, docmin, name="DOCmin_EurPerNM")
+    docnotch_nm_v = _interp_scalar_4d(pts, q, docnotch, name="DOCnotch_EurPerNM")
+    docmin_h_v = _interp_scalar_4d(pts, q, docmin_h, name="DOCmin_EurPerHr")
+    docnotch_h_v = _interp_scalar_4d(pts, q, docnotch_h, name="DOCnotch_EurPerHr")
+    be_tc_v = _interp_scalar_4d(pts, q, be_tc, name="BreakEven_TIME_COST_EurPerHr")
+    be_fp_v = _interp_scalar_4d(pts, q, be_fp, name="BreakEven_FUEL_PRICE_EurPerKg")
+
+    v_ecsr_v = _econ_from_docmin_with_notch_rule(
+        v_ecsr_v,
+        v_notch_v,
+        min_gap_kt=float(1.0),
+    )
+    lo_v = float(min(lo_v, v_notch_v))
+    hi_v = float(min(hi_v, v_notch_v))
+
+    return InterpQuickResult(
+        fl_ft=float(fl_ft),
+        weight_kg=float(weight_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+        v_ecsr_kt=v_ecsr_v,
+        v_notch_kt=v_notch_v,
+        ecsr_low_kt=float(min(lo_v, hi_v)),
+        ecsr_high_kt=float(max(lo_v, hi_v)),
+        docmin_eur_per_nm=docmin_nm_v,
+        docnotch_eur_per_nm=docnotch_nm_v,
+        docmin_eur_per_h=docmin_h_v,
+        docnotch_eur_per_h=docnotch_h_v,
+        be_time_cost_eur_per_hr=be_tc_v,
+        be_fuel_price_eur_per_kg=be_fp_v,
+    )
+
+
+# ========================= GLOBAL POINT CLOUD (for Įvestis Graph 1) =========================
+
+
+def build_global_point_cloud(scenarios: List[Dict[str, Any]]) -> pd.DataFrame:
+    rows: List[Dict[str, float]] = []
+    for sc in scenarios:
+        df: pd.DataFrame = sc.get("pointTable")
+        if df is None or df.empty or "IAS" not in df.columns:
+            continue
+
+        ias = pd.to_numeric(df["IAS"], errors="coerce").to_numpy(float)
+        fuel = np.asarray(sc.get("Fuel_kg_per_NM", []), float).reshape(-1)
+        time = np.asarray(sc.get("Time_h_per_NM", []), float).reshape(-1)
+        n = min(ias.size, fuel.size, time.size)
+        if n < 2:
+            continue
+
+        ias = ias[:n]
+        fuel = fuel[:n]
+        time = time[:n]
+        ok = np.isfinite(ias) & np.isfinite(fuel) & np.isfinite(time)
+        ias, fuel, time = ias[ok], fuel[ok], time[ok]
+        if ias.size < 2:
+            continue
+
+        for x, f, t in zip(ias.tolist(), fuel.tolist(), time.tolist()):
+            rows.append(
+                {
+                    "ZP_ft": float(sc["ZP_ft"]),
+                    "WEIGHT_kg": float(sc["WEIGHT_kg"]),
+                    "ISA_C": float(sc["ISA_C"]),
+                    "WIND_kt": float(sc["WIND_kt"]),
+                    "IAS": float(x),
+                    "Fuel_kg_per_NM": float(f),
+                    "Time_h_per_NM": float(t),
+                }
+            )
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        raise ValueError("Nepavyko sukurti global point-cloud (tuščia).")
+
+    need = ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt", "IAS", "Fuel_kg_per_NM", "Time_h_per_NM"]
+    _require_columns(out, need)
+    out = out.dropna(subset=need)
+    if out.shape[0] < 100:
+        raise ValueError("Per mažai taškų globaliame point-cloud (reikia bent ~100).")
+    return out
+
+
+def compute_doc_curve_interpolated_from_cloud(
+    cloud: pd.DataFrame,
+    *,
+    fl_ft: float,
+    weight_kg: float,
+    isa_c: float,
+    wind_kt: float,
+    time_cost_eur_per_hr: float,
+    fuel_price_eur_per_kg: float,
+    ngrid: int = 700,
+    min_valid_grid_points: int = 60,
+) -> Dict[str, Any]:
+    need = ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt", "IAS", "Fuel_kg_per_NM", "Time_h_per_NM"]
+    _require_columns(cloud, need)
+
+    for col, label, unit, val in [
+        ("ZP_ft", "Aukštis", "ft", fl_ft),
+        ("WEIGHT_kg", "Masė", "kg", weight_kg),
+        ("ISA_C", "ISA", "°C", isa_c),
+        ("WIND_kt", "Vėjas", "kt", wind_kt),
+    ]:
+        x = pd.to_numeric(cloud[col], errors="coerce").to_numpy(float)
+        x = x[np.isfinite(x)]
+        if x.size == 0:
+            raise ValueError(f"Nėra galiojančių reikšmių '{col}' rėžiui nustatyti.")
+        _range_check(float(val), x, label, unit)
+
+    ias_all = pd.to_numeric(cloud["IAS"], errors="coerce").to_numpy(float)
+    ias_all = ias_all[np.isfinite(ias_all)]
+    if ias_all.size < 10:
+        raise ValueError("Per mažai IAS taškų globaliame cloud.")
+    ias_min = float(np.nanmin(ias_all))
+    ias_max = float(np.nanmax(ias_all))
+    if not (np.isfinite(ias_min) and np.isfinite(ias_max) and ias_max > ias_min):
+        raise ValueError("Neteisingas globalus IAS intervalas.")
+
+    pts = np.column_stack(
+        [
+            pd.to_numeric(cloud["ZP_ft"], errors="coerce").to_numpy(float),
+            pd.to_numeric(cloud["WEIGHT_kg"], errors="coerce").to_numpy(float),
+            pd.to_numeric(cloud["ISA_C"], errors="coerce").to_numpy(float),
+            pd.to_numeric(cloud["WIND_kt"], errors="coerce").to_numpy(float),
+            pd.to_numeric(cloud["IAS"], errors="coerce").to_numpy(float),
+        ]
+    ).astype(float)
+    y_fuel = pd.to_numeric(cloud["Fuel_kg_per_NM"], errors="coerce").to_numpy(float)
+    y_time = pd.to_numeric(cloud["Time_h_per_NM"], errors="coerce").to_numpy(float)
+
+    ok = np.all(np.isfinite(pts), axis=1) & np.isfinite(y_fuel) & np.isfinite(y_time)
+    pts = pts[ok]
+    y_fuel = y_fuel[ok]
+    y_time = y_time[ok]
+    if pts.shape[0] < 100:
+        raise ValueError("Per mažai taškų 5D interpolacijai (Fuel/Time).")
+
+    itp_fuel = LinearNDInterpolator(pts, y_fuel, fill_value=np.nan)
+    itp_time = LinearNDInterpolator(pts, y_time, fill_value=np.nan)
+
+    ngrid = int(max(300, ngrid))
+    ias_grid = np.linspace(ias_min, ias_max, ngrid)
+
+    q = np.column_stack(
+        [
+            np.full_like(ias_grid, float(fl_ft)),
+            np.full_like(ias_grid, float(weight_kg)),
+            np.full_like(ias_grid, float(isa_c)),
+            np.full_like(ias_grid, float(wind_kt)),
+            ias_grid,
+        ]
+    ).astype(float)
+
+    fuel_grid = np.asarray(itp_fuel(q), float).reshape(-1)
+    time_grid = np.asarray(itp_time(q), float).reshape(-1)
+    good = np.isfinite(fuel_grid) & np.isfinite(time_grid)
+
+    if int(good.sum()) < int(min_valid_grid_points):
+        raise ValueError("Negalima sudaryti DOC kreivės: per silpna 5D interpolacija (per mažai galiojančių taškų).")
+
+    ias_grid2 = ias_grid[good]
+    fuel_grid2 = fuel_grid[good]
+    time_grid2 = time_grid[good]
+
+    doc_grid = float(fuel_price_eur_per_kg) * fuel_grid2 + float(time_cost_eur_per_hr) * time_grid2
+    j = int(np.nanargmin(doc_grid))
+    v_opt_raw = float(ias_grid2[j])
+
+    v_notch_candidates = pd.to_numeric(cloud["IAS"], errors="coerce").to_numpy(float)
+    v_notch_candidates = v_notch_candidates[np.isfinite(v_notch_candidates)]
+    v_notch = float(np.nanmax(v_notch_candidates)) if v_notch_candidates.size else float("nan")
+
+    v_opt = _econ_from_docmin_with_notch_rule(
+        v_opt_raw,
+        v_notch,
+        min_gap_kt=1.0,
+    )
+    doc_opt = float(
+        float(fuel_price_eur_per_kg) * itp_fuel(
+            np.array([[float(fl_ft), float(weight_kg), float(isa_c), float(wind_kt), v_opt]], dtype=float)
+        )[0]
+        + float(time_cost_eur_per_hr) * itp_time(
+            np.array([[float(fl_ft), float(weight_kg), float(isa_c), float(wind_kt), v_opt]], dtype=float)
+        )[0]
+    )
+
+    return {
+        "IAS_grid": ias_grid2,
+        "DOC_grid_per_nm": np.asarray(doc_grid, float),
+        "IAS_opt": v_opt,
+        "DOC_opt_per_nm": doc_opt,
+        "IAS_raw": np.array([], dtype=float),
+        "DOC_raw_per_nm": np.array([], dtype=float),
+    }
+
+
+# ========================= LONGFORM FUEL TABLE (optional in app) =========================
+
+
+def build_longform_fuel_table(scenarios: List[Dict[str, Any]]) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+    for sc in scenarios:
+        fp = np.asarray(sc.get("fuelPriceVec", []), float).reshape(-1)
+        iasopt = np.asarray(sc.get("IAS_opt_kt_fp", []), float).reshape(-1)
+        docmin = np.asarray(sc.get("DOC_min_EurPerNM_fp", []), float).reshape(-1)
+        docnotch = np.asarray(sc.get("DOC_notch_EurPerNM_fp", []), float).reshape(-1)
+
+        n = min(fp.size, iasopt.size, docmin.size, docnotch.size)
+        if n < 2:
+            continue
+
+        fp, iasopt, docmin, docnotch = fp[:n], iasopt[:n], docmin[:n], docnotch[:n]
+        ok = np.isfinite(fp) & np.isfinite(iasopt) & np.isfinite(docmin) & np.isfinite(docnotch)
+        fp, iasopt, docmin, docnotch = fp[ok], iasopt[ok], docmin[ok], docnotch[ok]
+        if fp.size < 2:
+            continue
+
+        for x, y, d1, d2 in zip(fp.tolist(), iasopt.tolist(), docmin.tolist(), docnotch.tolist()):
+            rows.append(
+                {
+                    "ZP_ft": float(sc["ZP_ft"]),
+                    "WEIGHT_kg": float(sc["WEIGHT_kg"]),
+                    "ISA_C": float(sc["ISA_C"]),
+                    "WIND_kt": float(sc["WIND_kt"]),
+                    "FUEL_PRICE": float(x),
+                    "IASopt": float(y),
+                    "DOCmin": float(d1),
+                    "DOCnotch": float(d2),
+                }
+            )
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        raise ValueError("Nepavyko sudaryti fuel longform lentelės (tuščia).")
+    return out
+
+
+# ========================= FAST kNN INTERPOLATION (Įvestis Graph 2/3) =========================
+
+
+def _scenario_meta_frame(scenarios: List[Dict[str, Any]]) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+    for sc in scenarios:
+        rows.append(
+            {
+                "ScenarioName": str(sc.get("scenarioName", "")),
+                "ZP_ft": float(sc.get("ZP_ft", np.nan)),
+                "WEIGHT_kg": float(sc.get("WEIGHT_kg", np.nan)),
+                "ISA_C": float(sc.get("ISA_C", np.nan)),
+                "WIND_kt": float(sc.get("WIND_kt", np.nan)),
+            }
+        )
+    df = pd.DataFrame(rows)
+    for c in ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt"]).reset_index(drop=True)
+    if df.shape[0] < 8:
+        raise ValueError("Nepakanka scenarijų kNN interpolacijai (reikia bent 8).")
+    return df
+
+
+def _bounds_from_meta(meta: pd.DataFrame) -> Dict[str, Tuple[float, float]]:
+    b: Dict[str, Tuple[float, float]] = {}
+    for c in ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt"]:
+        x = meta[c].to_numpy(float)
+        b[c] = (float(np.nanmin(x)), float(np.nanmax(x)))
+    return b
+
+
+def _check_inputs_in_bounds(fl_ft: float, weight_kg: float, isa_c: float, wind_kt: float, bounds: Dict[str, Tuple[float, float]]) -> None:
+    for name, val in [("ZP_ft", fl_ft), ("WEIGHT_kg", weight_kg), ("ISA_C", isa_c), ("WIND_kt", wind_kt)]:
+        lo, hi = bounds[name]
+        if not (lo <= float(val) <= hi):
+            label = {"ZP_ft": "Aukštis", "WEIGHT_kg": "Masė", "ISA_C": "ISA", "WIND_kt": "Vėjas"}[name]
+            unit = {"ZP_ft": "ft", "WEIGHT_kg": "kg", "ISA_C": "°C", "WIND_kt": "kt"}[name]
+
+            def _fmt(v: float) -> str:
+                if abs(v - round(v)) < 1e-9:
+                    return str(int(round(v)))
+                return f"{v:g}"
+
+            raise ValueError(
+                f"Neteisinga įvestis: {label} = {_fmt(float(val))} {unit}. "
+                f"Galima riba: {_fmt(lo)}–{_fmt(hi)} {unit}."
+            )
+
+
+def _normalized_distances(
+    meta: pd.DataFrame,
+    *,
+    fl_ft: float,
+    weight_kg: float,
+    isa_c: float,
+    wind_kt: float,
+    bounds: Dict[str, Tuple[float, float]],
+) -> np.ndarray:
+    eps = 1e-12
+    q = np.array([fl_ft, weight_kg, isa_c, wind_kt], dtype=float)
+    X = meta[["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt"]].to_numpy(float)
+
+    scales = np.array(
+        [
+            max(bounds["ZP_ft"][1] - bounds["ZP_ft"][0], eps),
+            max(bounds["WEIGHT_kg"][1] - bounds["WEIGHT_kg"][0], eps),
+            max(bounds["ISA_C"][1] - bounds["ISA_C"][0], eps),
+            max(bounds["WIND_kt"][1] - bounds["WIND_kt"][0], eps),
+        ],
+        dtype=float,
+    )
+    d = (X - q.reshape(1, 4)) / scales.reshape(1, 4)
+    return np.sqrt(np.sum(d * d, axis=1))
+
+
+def interpolate_curve_knn_from_scenarios(
+    scenarios: List[Dict[str, Any]],
+    *,
+    fl_ft: float,
+    weight_kg: float,
+    isa_c: float,
+    wind_kt: float,
+    x_grid: np.ndarray,
+    x_vec_key: str,
+    y_vec_key: str,
+    k: int = 30,
+    power: float = 2.0,
+    min_neighbors: int = 8,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """
+    Local weighted interpolation using only nearest scenarios.
+
+    Returns (y_grid, diag) so app can do:
+      y_grid, _diag = interpolate_curve_knn_from_scenarios(...)
+    """
+    meta = _scenario_meta_frame(scenarios)
+    bounds = _bounds_from_meta(meta)
+    _check_inputs_in_bounds(fl_ft, weight_kg, isa_c, wind_kt, bounds)
+
+    d = _normalized_distances(meta, fl_ft=float(fl_ft), weight_kg=float(weight_kg), isa_c=float(isa_c), wind_kt=float(wind_kt), bounds=bounds)
+    order = np.argsort(d, kind="mergesort")
+
+    k = int(max(1, min(int(k), int(meta.shape[0]))))
+    idx = order[:k]
+    di = d[idx]
+
+    eps = 1e-12
+    if float(np.nanmin(di)) <= eps:
+        w = np.zeros_like(di, dtype=float)
+        w[int(np.argmin(di))] = 1.0
+    else:
+        w = 1.0 / np.power(di + eps, float(power))
+    w_sum = float(np.sum(w))
+    if not np.isfinite(w_sum) or w_sum <= 0:
+        raise ValueError("Per silpna interpolacija: nepavyko sudaryti svorių (kNN).")
+    w = w / w_sum
+
+    xg = np.asarray(x_grid, float).reshape(-1)
+    y_acc = np.zeros_like(xg, dtype=float)
+
+    used = 0
+    used_names: List[str] = []
+
+    sc_map: Dict[str, Dict[str, Any]] = {str(s.get("scenarioName", "")): s for s in scenarios}
+
+    for jj, scen_row_idx in enumerate(idx.tolist()):
+        name = str(meta.loc[scen_row_idx, "ScenarioName"])
+        sc = sc_map.get(name)
+        if sc is None:
+            continue
+
+        xv = np.asarray(sc.get(x_vec_key, []), float).reshape(-1)
+        yv = np.asarray(sc.get(y_vec_key, []), float).reshape(-1)
+        n = min(xv.size, yv.size)
+        if n < 2:
+            continue
+
+        xv = xv[:n]
+        yv = yv[:n]
+        ok = np.isfinite(xv) & np.isfinite(yv)
+        xv = xv[ok]
+        yv = yv[ok]
+        if xv.size < 2:
+            continue
+
+        o2 = np.argsort(xv, kind="mergesort")
+        xv = xv[o2]
+        yv = yv[o2]
+
+        y_acc += float(w[jj]) * np.interp(xg, xv, yv)
         used += 1
         used_names.append(name)
 
@@ -827,9 +1506,9 @@ def _use_money_gate(cfg: Config) -> bool:
 
 def _raw_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:
     """
-    Computational gate for break-even/saving logic (raw speeds, no UI rounding).
+    Kept for backward compatibility, but now follows displayed-speed logic.
     """
-    return _continuous_speed_gap_ok(v_notch, v_econ, min_gap_kt)
+    return _display_speed_gap_ok(v_notch, v_econ, min_gap_kt)
 
 
 def _doc_advantage_ok(doc_notch: Any, doc_econ: Any, *, atol: float = 1e-12) -> np.ndarray:
@@ -853,3 +1532,454 @@ def _delta_doc_trip_avg_per_hour(
 
     saving_total_trip = doc_notch_total - doc_econ_total
     return saving_total_trip / time_econ_h
+
+
+def _first_true_x(x: np.ndarray, cond: np.ndarray) -> float:
+    x = np.asarray(x, float).reshape(-1)
+    cond = np.asarray(cond, bool).reshape(-1)
+
+    ok = np.isfinite(x)
+    x = x[ok]
+    cond = cond[ok]
+    if x.size < 2:
+        return float("nan")
+
+    order = np.argsort(x, kind="mergesort")
+    x = x[order]
+    cond = cond[order]
+
+    if not np.any(cond):
+        return float("nan")
+    k = int(np.where(cond)[0][0])
+    return float(x[k])
+
+
+def _last_true_x(x: np.ndarray, cond: np.ndarray) -> float:
+    x = np.asarray(x, float).reshape(-1)
+    cond = np.asarray(cond, bool).reshape(-1)
+
+    ok = np.isfinite(x)
+    x = x[ok]
+    cond = cond[ok]
+    if x.size < 2:
+        return float("nan")
+
+    order = np.argsort(x, kind="mergesort")
+    x = x[order]
+    cond = cond[order]
+
+    if not np.any(cond):
+        return float("nan")
+    if np.all(cond):
+        return float("inf")
+    k = int(np.where(cond)[0][-1])
+    return float(x[k])
+
+
+def compute_threshold_x_time_break(sc: Dict[str, Any], cfg: Config) -> Dict[str, float]:
+    tc = np.asarray(sc.get("timeCostVec", []), float)
+    v_notch = float(sc.get("V_notch", np.nan))
+    v_econ = np.asarray(sc.get("IAS_opt_kt", []), float)
+    doc_min = np.asarray(sc.get("DOC_min_EurPerNM", []), float)
+    doc_notch = np.asarray(sc.get("DOC_notch_EurPerNM", []), float)
+
+    ok = np.isfinite(tc) & np.isfinite(v_econ) & np.isfinite(doc_min) & np.isfinite(doc_notch) & np.isfinite(v_notch)
+    tc = tc[ok]
+    v_econ = v_econ[ok]
+    doc_min = doc_min[ok]
+    doc_notch = doc_notch[ok]
+    if tc.size < 2:
+        return {"X_timeCost_EurPerHr": float("nan")}
+
+    v_notch_arr = np.full_like(v_econ, float(v_notch), dtype=float)
+    speed_ok = _raw_speed_gap_ok(v_notch_arr, v_econ, float(cfg.breakpoint_speed_tol_kt))
+    econ_ok = _doc_advantage_ok(doc_notch, doc_min)
+
+    if _use_money_gate(cfg):
+        fuel_itp, time_itp, _ = _build_fuel_time_interpolators(sc)
+
+        gs_econ = 1.0 / time_itp(v_econ)
+        gs_notch = 1.0 / time_itp(v_notch_arr)
+
+        mode = str(cfg.breakpoint_saving_mode).strip().lower()
+
+        if mode == "per_nm":
+            delta_val = doc_notch - doc_min
+            money_ok = delta_val >= float(cfg.breakpoint_saving_eur_per_nm)
+
+        elif mode == "per_hour_trip":
+            delta_val = _delta_doc_trip_avg_per_hour(
+                doc_notch_per_nm=doc_notch,
+                doc_min_per_nm=doc_min,
+                gs_notch_kt=gs_notch,
+                gs_econ_kt=gs_econ,
+                trip_distance_nm=float(cfg.breakpoint_trip_distance_nm),
+            )
+            money_ok = delta_val >= float(cfg.breakpoint_saving_eur_per_hour)
+
+        else:
+            money_ok = np.ones_like(speed_ok, dtype=bool)
+    else:
+        money_ok = np.ones_like(speed_ok, dtype=bool)
+
+    worth = speed_ok & econ_ok & money_ok
+    return {"X_timeCost_EurPerHr": float(_last_true_x(tc, worth))}
+
+
+def _optimum_at_fuel_price(sc: Dict[str, Any], fp: float, cfg: Config) -> Tuple[float, float, float]:
+    tc_op = float(cfg.time_cost_operational)
+    v_notch = float(sc.get("V_notch", np.nan))
+    if not np.isfinite(v_notch):
+        return float("nan"), float("nan"), float("nan")
+
+    fuel_itp, time_itp, iasu = _build_fuel_time_interpolators(sc)
+    ngrid = max(250, int(iasu.size * 25))
+    ias_grid = np.linspace(float(iasu.min()), float(iasu.max()), ngrid)
+
+    doc_grid = float(fp) * fuel_itp(ias_grid) + tc_op * time_itp(ias_grid)
+    j = int(np.nanargmin(doc_grid))
+    v_opt_raw = float(ias_grid[j])
+    v_opt = _econ_from_docmin_with_notch_rule(
+        v_opt_raw,
+        v_notch,
+        min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+    )
+    doc_min = float(float(fp) * fuel_itp(np.array([v_opt]))[0] + tc_op * time_itp(np.array([v_opt]))[0])
+    doc_notch = float(float(fp) * fuel_itp(np.array([v_notch]))[0] + tc_op * time_itp(np.array([v_notch]))[0])
+    return v_opt, doc_min, doc_notch
+
+
+def _worth_at_fuel_price(sc: Dict[str, Any], fp: float, cfg: Config) -> bool:
+    v_opt, doc_min, doc_notch = _optimum_at_fuel_price(sc, fp, cfg)
+    v_notch = float(sc.get("V_notch", np.nan))
+    if not (np.isfinite(v_opt) and np.isfinite(doc_min) and np.isfinite(doc_notch) and np.isfinite(v_notch)):
+        return False
+
+    speed_ok = bool(_raw_speed_gap_ok(np.array([v_notch]), np.array([v_opt]), float(cfg.breakpoint_speed_tol_kt))[0])
+    econ_ok = bool(_doc_advantage_ok(np.array([doc_notch]), np.array([doc_min]))[0])
+
+    if not speed_ok or not econ_ok:
+        return False
+
+    if _use_money_gate(cfg):
+        fuel_itp, time_itp, _ = _build_fuel_time_interpolators(sc)
+
+        gs_opt = float(1.0 / time_itp(np.array([v_opt]))[0])
+        gs_notch = float(1.0 / time_itp(np.array([v_notch]))[0])
+
+        mode = str(cfg.breakpoint_saving_mode).strip().lower()
+
+        if mode == "per_nm":
+            delta_val = float(doc_notch - doc_min)
+            return bool(delta_val >= float(cfg.breakpoint_saving_eur_per_nm))
+
+        elif mode == "per_hour_trip":
+            delta_val = float(
+                _delta_doc_trip_avg_per_hour(
+                    doc_notch_per_nm=np.array([doc_notch], dtype=float),
+                    doc_min_per_nm=np.array([doc_min], dtype=float),
+                    gs_notch_kt=np.array([gs_notch], dtype=float),
+                    gs_econ_kt=np.array([gs_opt], dtype=float),
+                    trip_distance_nm=float(cfg.breakpoint_trip_distance_nm),
+                )[0]
+            )
+            return bool(delta_val >= float(cfg.breakpoint_saving_eur_per_hour))
+
+    return True
+
+
+def _find_fuel_break_even_auto(sc: Dict[str, Any], cfg: Config) -> float:
+    start = float(cfg.fuel_price_min)
+    ceiling = float(cfg.break_search.fuel_ceiling_eur_per_kg)
+    factor = float(cfg.break_search.fuel_expand_factor)
+    tol = float(cfg.break_search.fuel_bisect_abs_tol)
+    max_iter = int(cfg.break_search.fuel_bisect_max_iter)
+
+    if start <= 0 or ceiling <= start or factor <= 1.0:
+        return float("inf")
+
+    if _worth_at_fuel_price(sc, start, cfg):
+        return start
+
+    lo = start
+    hi = max(start * factor, start + tol)
+
+    while hi <= ceiling and not _worth_at_fuel_price(sc, hi, cfg):
+        lo = hi
+        hi = hi * factor
+        if not np.isfinite(hi):
+            return float("inf")
+
+    if hi > ceiling:
+        if not _worth_at_fuel_price(sc, ceiling, cfg):
+            return float("inf")
+        hi = ceiling
+
+    for _ in range(max_iter):
+        if (hi - lo) <= tol:
+            return hi
+        mid = 0.5 * (lo + hi)
+        if _worth_at_fuel_price(sc, mid, cfg):
+            hi = mid
+        else:
+            lo = mid
+
+    return hi
+
+
+def compute_threshold_x_fuel_break(sc: Dict[str, Any], cfg: Config) -> Dict[str, float]:
+    fp = np.asarray(sc.get("fuelPriceVec", []), float)
+    v_notch = float(sc.get("V_notch", np.nan))
+    v_econ = np.asarray(sc.get("IAS_opt_kt_fp", []), float)
+    doc_min = np.asarray(sc.get("DOC_min_EurPerNM_fp", []), float)
+    doc_notch = np.asarray(sc.get("DOC_notch_EurPerNM_fp", []), float)
+
+    ok = np.isfinite(fp) & np.isfinite(v_econ) & np.isfinite(doc_min) & np.isfinite(doc_notch) & np.isfinite(v_notch)
+    fp2 = fp[ok]
+    v_econ2 = v_econ[ok]
+    doc_min2 = doc_min[ok]
+    doc_notch2 = doc_notch[ok]
+
+    if fp2.size >= 2:
+        v_notch_arr = np.full_like(v_econ2, float(v_notch), dtype=float)
+        speed_ok = _raw_speed_gap_ok(v_notch_arr, v_econ2, float(cfg.breakpoint_speed_tol_kt))
+        econ_ok = _doc_advantage_ok(doc_notch2, doc_min2)
+
+        if _use_money_gate(cfg):
+            fuel_itp, time_itp, _ = _build_fuel_time_interpolators(sc)
+
+            gs_econ2 = 1.0 / time_itp(v_econ2)
+            gs_notch2 = 1.0 / time_itp(v_notch_arr)
+
+            mode = str(cfg.breakpoint_saving_mode).strip().lower()
+
+            if mode == "per_nm":
+                delta_val = doc_notch2 - doc_min2
+                money_ok = delta_val >= float(cfg.breakpoint_saving_eur_per_nm)
+
+            elif mode == "per_hour_trip":
+                delta_val = _delta_doc_trip_avg_per_hour(
+                    doc_notch_per_nm=doc_notch2,
+                    doc_min_per_nm=doc_min2,
+                    gs_notch_kt=gs_notch2,
+                    gs_econ_kt=gs_econ2,
+                    trip_distance_nm=float(cfg.breakpoint_trip_distance_nm),
+                )
+                money_ok = delta_val >= float(cfg.breakpoint_saving_eur_per_hour)
+
+            else:
+                money_ok = np.ones_like(speed_ok, dtype=bool)
+        else:
+            money_ok = np.ones_like(speed_ok, dtype=bool)
+
+        worth = speed_ok & econ_ok & money_ok
+        x = _first_true_x(fp2, worth)
+        if np.isfinite(x):
+            return {"X_fuelPrice_EurPerKg": float(x)}
+
+    x_auto = _find_fuel_break_even_auto(sc, cfg)
+    return {"X_fuelPrice_EurPerKg": float(x_auto)}
+
+
+def compute_break_even_time_cost_rounded(sc: Dict[str, Any], x_continuous: float) -> float:
+    if not np.isfinite(x_continuous):
+        return float("nan")
+    tc = np.asarray(sc.get("timeCostVec", []), float)
+    tc = tc[np.isfinite(tc)]
+    if tc.size == 0:
+        return float("nan")
+    j = int(np.nanargmin(np.abs(tc - float(x_continuous))))
+    return float(tc[j])
+
+
+def compute_break_even_fuel_price_rounded(sc: Dict[str, Any], x_continuous: float, cfg: Config) -> float:
+    if not np.isfinite(x_continuous):
+        return float("nan")
+
+    fp = np.asarray(sc.get("fuelPriceVec", []), float)
+    fp = fp[np.isfinite(fp)]
+    if fp.size == 0:
+        return float("nan")
+
+    x = float(x_continuous)
+    fp = np.sort(fp)
+
+    if x > float(fp.max()) + 1e-12:
+        return x
+
+    candidates = fp[fp >= x - 1e-12]
+    for val in candidates.tolist():
+        if _worth_at_fuel_price(sc, float(val), cfg):
+            return float(val)
+
+    return float("inf")
+
+
+def build_summary_table(scenarios: List[Dict[str, Any]], cfg: Config) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+    tc_op = float(cfg.time_cost_operational)
+
+    for sc in scenarios:
+        th_t = compute_threshold_x_time_break(sc, cfg)
+        tc_be = compute_break_even_time_cost_rounded(sc, float(th_t["X_timeCost_EurPerHr"]))
+
+        th_f = compute_threshold_x_fuel_break(sc, cfg)
+        fp_be = compute_break_even_fuel_price_rounded(sc, float(th_f["X_fuelPrice_EurPerKg"]), cfg)
+
+        opt = compute_optimum_at_time_cost(sc, tc_op, cfg)
+        v_notch = float(sc["V_notch"])
+        v_ecsr = _econ_from_docmin_with_notch_rule(
+            float(opt["IAS_opt_kt"]),
+            v_notch,
+            min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+        )
+        docmin = float(opt["DOC_min_EurPerNM"])
+        docnotch = float(opt["DOC_notch_EurPerNM"])
+
+        fuel_itp, time_itp, _ = _build_fuel_time_interpolators(sc)
+
+        gs_ecsr = float(1.0 / time_itp(np.array([v_ecsr], dtype=float))[0])
+        gs_notch = float(1.0 / time_itp(np.array([v_notch], dtype=float))[0])
+
+        docmin_per_h = float(docmin * gs_ecsr) if np.isfinite(docmin) and np.isfinite(gs_ecsr) else float("nan")
+        docnotch_per_h = float(docnotch * gs_notch) if np.isfinite(docnotch) and np.isfinite(gs_notch) else float("nan")
+
+        ecsr = compute_ecsr_band(sc, tc_op, cfg)
+        low = float(ecsr["ECSR_low_kt"])
+        high = float(ecsr["ECSR_high_kt"])
+
+        row: Dict[str, Any] = {
+            "ScenarioName": sc["scenarioName"],
+            "ZP_ft": sc["ZP_ft"],
+            "WEIGHT_kg": sc["WEIGHT_kg"],
+            "ISA_C": sc["ISA_C"],
+            "WIND_kt": sc["WIND_kt"],
+            "FuelPrice_EurPerKg": float(cfg.fuel_price_eur_per_kg),
+            "BreakEven_TIME_COST_EurPerHr": float(tc_be),
+            "BreakEven_FUEL_PRICE_EurPerKg": float(fp_be),
+            "TIME_COST_Operational_EurPerHr": float(tc_op),
+            "V_notch_kt": v_notch,
+            "V_ECSR_kt": v_ecsr,
+            "ECSR_low_kt": low,
+            "ECSR_high_kt": high,
+            "DOCmin_EurPerHr": docmin_per_h,
+            "DOCnotch_EurPerHr": docnotch_per_h,
+            "DOCmin_EurPerNM": docmin,
+            "DOCnotch_EurPerNM": docnotch,
+        }
+
+        for d in cfg.distances_nm:
+            if int(d) == 100:
+                row[f"DOCmin_{d}NM_EUR"] = docmin * float(d)
+                row[f"DOCnotch_{d}NM_EUR"] = docnotch * float(d)
+
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def build_longform_table(scenarios: List[Dict[str, Any]]) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+    for sc in scenarios:
+        for tc, docmin, iasopt, docnotch in zip(
+            sc["timeCostVec"],
+            sc["DOC_min_EurPerNM"],
+            sc["IAS_opt_kt"],
+            sc["DOC_notch_EurPerNM"],
+        ):
+            rows.append(
+                {
+                    "ScenarioName": sc["scenarioName"],
+                    "ZP_ft": sc["ZP_ft"],
+                    "WEIGHT_kg": sc["WEIGHT_kg"],
+                    "ISA_C": sc["ISA_C"],
+                    "WIND_kt": sc["WIND_kt"],
+                    "TIME_COST": float(tc),
+                    "IASopt": float(iasopt),
+                    "DOCmin": float(docmin),
+                    "DOCnotch": float(docnotch),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def write_excel_results(
+    out_dir: Path,
+    summary_tbl: pd.DataFrame,
+    longform_tbl: pd.DataFrame,
+    outlier_rows: pd.DataFrame,
+    cfg: Config,
+    run_info: Dict[str, Any],
+) -> Path:
+    xlsx_path = out_dir / cfg.export.excel_filename
+    with pd.ExcelWriter(xlsx_path, engine="openpyxl") as w:
+        summary_tbl.to_excel(w, sheet_name="Summary", index=False)
+        longform_tbl.to_excel(w, sheet_name="Longform", index=False)
+        outlier_rows.to_excel(w, sheet_name="Outliers", index=False)
+        info_df = pd.DataFrame([{"Key": k, "Value": str(v)} for k, v in run_info.items()])
+        info_df.to_excel(w, sheet_name="RunInfo", index=False)
+    return xlsx_path
+
+
+RunPipelineReturn = Union[
+    Tuple[Path, Optional[Path], pd.DataFrame, pd.DataFrame, pd.DataFrame, List[str]],
+    Tuple[Path, Optional[Path], pd.DataFrame, pd.DataFrame, pd.DataFrame, List[str], List[Dict[str, Any]]],
+]
+
+
+def run_pipeline(
+    root_dir: Path,
+    cfg: Config,
+    *,
+    output_parent: Optional[Path] = None,
+    return_scenarios: bool = False,
+) -> RunPipelineReturn:
+    root_dir = root_dir.resolve()
+    output_parent = (output_parent or root_dir).resolve()
+
+    out_dir = output_parent / f"ECSR_Output_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    files = list_scenario_files(root_dir)
+    if not files:
+        raise RuntimeError("No scenario files found. Expected *.csv, *.txt, *.csv.txt, *.CSV, etc.")
+
+    scenarios: List[Dict[str, Any]] = []
+    outlier_frames: List[pd.DataFrame] = []
+    logs: List[str] = []
+
+    for f in files:
+        fp = Path(f["fullpath"])
+        try:
+            sc, outliers = process_scenario_file(fp, cfg)
+            logs.append(f"OK: {f['name']} | rows(raw/final)={sc['audit']['nRawRows']}/{sc['audit']['nFinalRows']}")
+            scenarios.append(sc)
+            if outliers is not None and not outliers.empty:
+                outlier_frames.append(outliers)
+        except Exception as e:
+            logs.append(f"FAIL: {f['name']} -> {e}")
+
+    if not scenarios:
+        raise RuntimeError("No scenarios processed successfully.")
+
+    outlier_rows = pd.concat(outlier_frames, ignore_index=True) if outlier_frames else make_empty_outlier_table()
+
+    time_cost_vec = np.arange(cfg.time_cost_min, cfg.time_cost_max + 1e-9, cfg.time_cost_step, dtype=float)
+    for i in range(len(scenarios)):
+        scenarios[i] = run_parametric_sweep(scenarios[i], time_cost_vec, cfg)
+
+    fuel_price_vec = np.arange(cfg.fuel_price_min, cfg.fuel_price_max + 1e-12, cfg.fuel_price_step, dtype=float)
+    for i in range(len(scenarios)):
+        scenarios[i] = run_fuel_price_sweep(scenarios[i], fuel_price_vec, cfg)
+
+    summary_tbl = build_summary_table(scenarios, cfg)
+    longform_tbl = build_longform_table(scenarios)
+
+    summary_tbl, longform_tbl = _sort_tables_for_export(summary_tbl, longform_tbl)
+
+    xlsx_path: Optional[Path] = None
+    base = (out_dir, xlsx_path, summary_tbl, longform_tbl, outlier_rows, logs)
+
+    if return_scenarios:
+        return (*base, scenarios)
+    return base

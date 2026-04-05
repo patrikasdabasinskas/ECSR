@@ -660,12 +660,14 @@ def compute_doc_curve_pchip(sc: Dict[str, Any], tc: float, cfg: Config, *, ngrid
 
     doc_grid = cfg.fuel_price_eur_per_kg * fuel_itp(ias_grid) + float(tc) * time_itp(ias_grid)
     j = int(np.nanargmin(doc_grid))
-    v_opt = float(ias_grid[j])
-    doc_opt = float(doc_grid[j])
+    v_opt_raw = float(ias_grid[j])
 
     v_notch = float(sc.get("V_notch", np.nan))
     if not np.isfinite(v_notch):
         raise ValueError("Scenarijuje nėra korektiško 'V_notch'.")
+
+    v_opt = float(min(v_opt_raw, v_notch))
+    doc_opt = float(cfg.fuel_price_eur_per_kg * fuel_itp(np.array([v_opt]))[0] + float(tc) * time_itp(np.array([v_opt]))[0])
 
     doc_notch = float(cfg.fuel_price_eur_per_kg * fuel_itp(np.array([v_notch]))[0] + float(tc) * time_itp(np.array([v_notch]))[0])
     doc_raw = cfg.fuel_price_eur_per_kg * fuel_raw + float(tc) * time_raw
@@ -694,8 +696,9 @@ def compute_optimum_at_time_cost(sc: Dict[str, Any], tc: float, cfg: Config) -> 
     doc_grid = doc_at(ias_grid)
 
     j = int(np.nanargmin(doc_grid))
-    v_opt = float(ias_grid[j])
-    doc_min = float(doc_grid[j])
+    v_opt_raw = float(ias_grid[j])
+    v_opt = float(min(v_opt_raw, v_notch))
+    doc_min = float(doc_at(np.array([v_opt]))[0])   
     doc_notch = float(doc_at(np.array([v_notch]))[0])
 
     return {"IAS_opt_kt": v_opt, "DOC_min_EurPerNM": doc_min, "DOC_notch_EurPerNM": doc_notch}
@@ -721,8 +724,11 @@ def run_parametric_sweep(sc: Dict[str, Any], time_cost_vec: np.ndarray, cfg: Con
     for i, tc in enumerate(time_cost_vec):
         doc_grid = doc_at(ias_grid, float(tc))
         j = int(np.nanargmin(doc_grid))
-        doc_min[i] = float(doc_grid[j])
-        ias_opt[i] = float(ias_grid[j])
+        v_opt_raw = float(ias_grid[j])
+        v_opt = float(min(v_opt_raw, v_notch))
+
+        ias_opt[i] = v_opt
+        doc_min[i] = float(doc_at(np.array([v_opt]), float(tc))[0])
         doc_notch[i] = float(doc_at(np.array([v_notch]), float(tc))[0])
 
     sc["DOC_min_EurPerNM"] = doc_min
@@ -752,8 +758,11 @@ def run_fuel_price_sweep(sc: Dict[str, Any], fuel_price_vec: np.ndarray, cfg: Co
     for i, fp in enumerate(fuel_price_vec):
         doc_grid = doc_at(ias_grid, float(fp))
         j = int(np.nanargmin(doc_grid))
-        doc_min[i] = float(doc_grid[j])
-        ias_opt[i] = float(ias_grid[j])
+        v_opt_raw = float(ias_grid[j])
+        v_opt = float(min(v_opt_raw, v_notch))
+
+        ias_opt[i] = v_opt
+        doc_min[i] = float(doc_at(np.array([v_opt]), float(fp))[0])
         doc_notch[i] = float(doc_at(np.array([v_notch]), float(fp))[0])
 
     sc["DOC_min_EurPerNM_fp"] = doc_min
@@ -790,6 +799,11 @@ def compute_ecsr_band(sc: Dict[str, Any], tc: float, cfg: Config) -> Dict[str, f
         i_high = int(right[-1]) if right.size else i_min
         low = float(ias_grid[i_low])
         high = float(ias_grid[i_high])
+
+    v_notch = float(sc.get("V_notch", np.nan))
+    if np.isfinite(v_notch):
+        low = float(min(low, v_notch))
+        high = float(min(high, v_notch))
 
     return {"ECSR_low_kt": low, "ECSR_high_kt": high, "DOC_min_EurPerNM": doc_min}
 
@@ -913,12 +927,21 @@ def compute_ecsr_band_interpolated(
 
     q = np.array([[float(fl_ft), float(weight_kg), float(isa_c), float(wind_kt)]], dtype=float)
 
+    _require_columns(df, ["V_notch_kt"])
+    v_notch_arr = _numeric_col(df, "V_notch_kt")
+    itp_v_notch = LinearNDInterpolator(pts, v_notch_arr, fill_value=np.nan)
+
     v = float(itp_v(q)[0])
     lo = float(itp_lo(q)[0])
     hi = float(itp_hi(q)[0])
+    v_notch = float(itp_v_notch(q)[0])
 
-    if not (np.isfinite(v) and np.isfinite(lo) and np.isfinite(hi)):
+    if not (np.isfinite(v) and np.isfinite(lo) and np.isfinite(hi) and np.isfinite(v_notch)):
         raise ValueError("Negalima interpoliuoti šioms sąlygoms: trūksta duomenų (už convex hull).")
+
+    v = float(min(v, v_notch))
+    lo = float(min(lo, v_notch))
+    hi = float(min(hi, v_notch))
 
     return EcsrInterpResult(
         fl_ft=float(fl_ft),
@@ -992,14 +1015,20 @@ def compute_quick_metrics_interpolated(
 
     lo_v = _interp_scalar_4d(pts, q, e_lo, name="ECSR_low_kt")
     hi_v = _interp_scalar_4d(pts, q, e_hi, name="ECSR_high_kt")
+    v_ecsr_v = _interp_scalar_4d(pts, q, v_ecsr, name="V_ECSR_kt")
+    v_notch_v = _interp_scalar_4d(pts, q, v_notch, name="V_notch_kt")
+
+    v_ecsr_v = float(min(v_ecsr_v, v_notch_v))
+    lo_v = float(min(lo_v, v_notch_v))
+    hi_v = float(min(hi_v, v_notch_v))
 
     return InterpQuickResult(
         fl_ft=float(fl_ft),
         weight_kg=float(weight_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
-        v_ecsr_kt=_interp_scalar_4d(pts, q, v_ecsr, name="V_ECSR_kt"),
-        v_notch_kt=_interp_scalar_4d(pts, q, v_notch, name="V_notch_kt"),
+        v_ecsr_kt=v_ecsr_v,
+        v_notch_kt=v_notch_v,
         ecsr_low_kt=float(min(lo_v, hi_v)),
         ecsr_high_kt=float(max(lo_v, hi_v)),
         docmin_eur_per_nm=_interp_scalar_4d(pts, q, docmin, name="DOCmin_EurPerNM"),
@@ -1497,8 +1526,9 @@ def _optimum_at_fuel_price(sc: Dict[str, Any], fp: float, cfg: Config) -> Tuple[
 
     doc_grid = float(fp) * fuel_itp(ias_grid) + tc_op * time_itp(ias_grid)
     j = int(np.nanargmin(doc_grid))
-    v_opt = float(ias_grid[j])
-    doc_min = float(doc_grid[j])
+    v_opt_raw = float(ias_grid[j])
+    v_opt = float(min(v_opt_raw, v_notch))
+    doc_min = float(float(fp) * fuel_itp(np.array([v_opt]))[0] + tc_op * time_itp(np.array([v_opt]))[0])
     doc_notch = float(float(fp) * fuel_itp(np.array([v_notch]))[0] + tc_op * time_itp(np.array([v_notch]))[0])
     return v_opt, doc_min, doc_notch
 
@@ -1673,7 +1703,7 @@ def build_summary_table(scenarios: List[Dict[str, Any]], cfg: Config) -> pd.Data
         fp_be = compute_break_even_fuel_price_rounded(sc, float(th_f["X_fuelPrice_EurPerKg"]))
 
         opt = compute_optimum_at_time_cost(sc, tc_op, cfg)
-        v_ecsr = float(opt["IAS_opt_kt"])
+        v_ecsr = float(min(float(opt["IAS_opt_kt"]), float(sc["V_notch"])))
         docmin = float(opt["DOC_min_EurPerNM"])
         docnotch = float(opt["DOC_notch_EurPerNM"])
 

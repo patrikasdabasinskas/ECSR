@@ -217,6 +217,11 @@ def _disp_speeds_differ(v_notch: float, v_econ: float, min_gap_kt: int = 1) -> b
     gap = _disp_gap_kt(v_notch, v_econ)
     return gap is not None and gap >= int(min_gap_kt)
 
+def _raw_speeds_differ(v_notch: float, v_econ: float, min_gap_kt: float = 1.0) -> bool:
+    if not (np.isfinite(v_notch) and np.isfinite(v_econ)):
+        return False
+    return (float(v_notch) - float(v_econ)) >= float(min_gap_kt)
+
 
 def _fmt_speed_econ(v: float) -> str:
     x = _disp_econ_kt(v)
@@ -1880,7 +1885,7 @@ def _plot_saving_vs_grouped(
 
     speed_gap_ok = []
     for ve, vn in zip(v_econ.tolist(), v_notch.tolist()):
-        speed_gap_ok.append(_disp_speeds_differ(float(vn), float(ve), min_gap_kt=1))
+        speed_gap_ok.append(_raw_speeds_differ(float(vn), float(ve), min_gap_kt=1))
 
     speed_gap_ok = pd.Series(speed_gap_ok, index=df.index)
 
@@ -2684,8 +2689,9 @@ if mode == "Scenarijus":
                 v_econ_docmin = float("nan")
                 if sc is not None:
                     v_econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
+                    v_econ_raw = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
 
-                if _disp_speeds_differ(v_notch_raw, v_econ_docmin, min_gap_kt=1):
+                if _raw_speeds_differ(v_notch_raw, v_econ_raw, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
                     if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
                         diff_total = round(float((v_notch_per_nm - v_min_per_nm) * dist), 1)
                     else:
@@ -2816,6 +2822,7 @@ else:
                     shown_value = "Nėra lūžio taško"
             elif col_key == "__SAVING_PER_X__":
                 dist = float(distance_nm)
+                v_econ_ui = float(res_in.v_ecsr_kt)
                 v_notch_ui = float(res_in.v_notch_kt)
 
                 econ_for_ui = _input_docmin_econ_kt(
@@ -2829,7 +2836,7 @@ else:
                     fallback_v_notch=float(v_notch_ui),
                 )
 
-                if _disp_speeds_differ(v_notch_ui, econ_for_ui, min_gap_kt=1):
+                if _raw_speeds_differ(v_notch_ui, v_econ_ui, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
                     if np.isfinite(res_in.docmin_eur_per_nm) and np.isfinite(res_in.docnotch_eur_per_nm):
                         diff_total = round(float((res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm) * dist), 1)
                     else:

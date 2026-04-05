@@ -15,34 +15,19 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-if __package__:
-    from .ecsr_core import (
-        Config,
-        EcsrInterpResult,
-        InterpQuickResult,
-        build_longform_fuel_table,
-        compute_doc_curve_pchip,
-        compute_ecsr_band_interpolated,
-        compute_quick_metrics_interpolated,
-        default_config,
-        interpolate_curve_knn_from_scenarios,
-        run_pipeline,
-        write_excel_results,
-    )
-else:
-    from ecsr_core import (
-        Config,
-        EcsrInterpResult,
-        InterpQuickResult,
-        build_longform_fuel_table,
-        compute_doc_curve_pchip,
-        compute_ecsr_band_interpolated,
-        compute_quick_metrics_interpolated,
-        default_config,
-        interpolate_curve_knn_from_scenarios,
-        run_pipeline,
-        write_excel_results,
-    )
+from ecsr_core import (
+    Config,
+    EcsrInterpResult,
+    InterpQuickResult,
+    build_longform_fuel_table,
+    compute_doc_curve_pchip,
+    compute_ecsr_band_interpolated,
+    compute_quick_metrics_interpolated,
+    default_config,
+    interpolate_curve_knn_from_scenarios,
+    run_pipeline,
+    write_excel_results,
+)
 
 _GROUP_META: Dict[str, Tuple[str, str]] = {
     "ISA_C": ("ISA", "°C"),

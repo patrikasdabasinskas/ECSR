@@ -1009,8 +1009,19 @@ def _compute_input_doc_curve_knn(
         y_min_search = y_full
 
     j = int(np.nanargmin(y_min_search))
-    v_opt = float(x_min_search[j])
-    doc_opt = float(y_min_search[j])
+    v_opt_raw = float(x_min_search[j])
+
+    qres = compute_quick_metrics_interpolated(
+        summary_tbl,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+    )
+    v_notch = float(qres.v_notch_kt)
+
+    v_opt = float(min(v_opt_raw, v_notch))
+    doc_opt = float(np.interp(v_opt, x_full, y_full))
 
     return {
         "IAS_grid": x_full,
@@ -1182,6 +1193,10 @@ def _plot_econ_vs_time_cost_input_knn(
     if y.size < 2 or not np.all(np.isfinite(y)):
         raise ValueError("Nepakanka duomenų ECON kreivei nubraižyti.")
 
+    v_notch_input = float(qres.v_notch_kt)
+    if np.isfinite(v_notch_input):
+        y = np.minimum(y, v_notch_input)
+
     c_curve = "darkred"
     c_be = "purple"
     c_in = "orange"
@@ -1289,6 +1304,10 @@ def _plot_econ_vs_fuel_price_input_knn(
 
     if y.size < 2 or not np.all(np.isfinite(y)):
         raise ValueError("Nepakanka duomenų ECON kreivei nubraižyti.")
+
+    v_notch_input = float(qres.v_notch_kt)
+    if np.isfinite(v_notch_input):
+        y = np.minimum(y, v_notch_input)
 
     c_curve = "darkred"
     c_be = "purple"
@@ -2604,6 +2623,10 @@ else:
                         econ_val = float(doc_curve_res["IAS_opt"])
                     except Exception:
                         econ_val = float(res_in.v_ecsr_kt)
+
+                    v_notch_ui = float(res_in.v_notch_kt)
+                    if np.isfinite(econ_val) and np.isfinite(v_notch_ui):
+                        econ_val = min(float(econ_val), float(v_notch_ui))
 
                     if np.isfinite(econ_val):
                         shown_value = f"{int(round(econ_val))}"

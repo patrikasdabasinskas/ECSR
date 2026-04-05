@@ -218,6 +218,12 @@ def _disp_speeds_differ(v_notch: float, v_econ: float, min_gap_kt: int = 1) -> b
     return gap is not None and gap >= int(min_gap_kt)
 
 
+def _raw_speeds_differ(v_notch: float, v_econ: float, min_gap_kt: float = 1.0) -> bool:
+    if not (np.isfinite(v_notch) and np.isfinite(v_econ)):
+        return False
+    return (float(v_notch) - float(v_econ)) >= float(min_gap_kt)
+
+
 def _fmt_speed_econ(v: float) -> str:
     x = _disp_econ_kt(v)
     return "" if x is None else str(x)
@@ -533,7 +539,8 @@ def _build_economical_scenarios_table(
             econ_docmin_vals.append(None)
 
     df["ECON_safe_disp_kt"] = econ_docmin_vals
-    df["DeltaV_kt"] = df["IASnotch_disp_kt"] - df["ECON_safe_disp_kt"]
+    df["DeltaV_disp_kt"] = df["IASnotch_disp_kt"] - df["ECON_safe_disp_kt"]
+    df["DeltaV_raw_kt"] = pd.to_numeric(df["V_notch_kt"], errors="coerce") - pd.to_numeric(df["V_ECSR_kt"], errors="coerce"
     df["DocDiff_EurPerNM"] = df["DOCnotch_EurPerNM"] - df["DOCmin_EurPerNM"]
 
     for d in dist_cols:
@@ -542,7 +549,7 @@ def _build_economical_scenarios_table(
         if min_col in df.columns and notch_col in df.columns:
             df[f"DocDiff_{d}NM_EUR"] = df[notch_col] - df[min_col]
 
-    df = df.loc[(df["DeltaV_kt"] >= 1) & (df["DocDiff_EurPerNM"] > 0.0)].copy()
+    df = df.loc[(df["DeltaV_raw_kt"] >= float(cfg.breakpoint_speed_tol_kt)) & (df["DocDiff_EurPerNM"] > 0.0)].copy()
     if df.empty:
         return pd.DataFrame()
 
@@ -565,7 +572,7 @@ def _build_economical_scenarios_table(
             )
         ],
         "IASnotch (kt)": df["IASnotch_disp_kt"],
-        "ΔV (kt)": df["DeltaV_kt"].round(0).astype(int),
+        "ΔV (kt)": df["DeltaV_raw_kt"].map(lambda v: f"{float(v):.1f}" if np.isfinite(v) else ""),
         "DOC ECON (EUR/NM)": df["DOCmin_EurPerNM"].map(lambda v: f"{float(v):.3f}" if np.isfinite(v) else ""),
         "DOC IASnotch (EUR/NM)": df["DOCnotch_EurPerNM"].map(lambda v: f"{float(v):.3f}" if np.isfinite(v) else ""),
         "DOC skirtumas (EUR/NM)": df["DocDiff_EurPerNM"].map(lambda v: f"{float(v):.3f}" if np.isfinite(v) else ""),
@@ -1878,7 +1885,7 @@ def _plot_saving_vs_grouped(
 
     speed_gap_ok = []
     for ve, vn in zip(v_econ.tolist(), v_notch.tolist()):
-        speed_gap_ok.append(_disp_speeds_differ(float(vn), float(ve), min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt)))))
+        speed_gap_ok.append(_raw_speeds_differ(float(vn), float(ve), min_gap_kt=float(cfg.breakpoint_speed_tol_kt)))
 
     speed_gap_ok = pd.Series(speed_gap_ok, index=df.index)
 
@@ -2136,7 +2143,7 @@ def _find_valid_breakpoint_from_curve(
         return float("nan")
 
     valid = np.array(
-        [_disp_speeds_differ(float(v_notch), float(v), min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt)))) for v in y],
+        [_raw_speeds_differ(float(v_notch), float(v), min_gap_kt=float(cfg.breakpoint_speed_tol_kt)) for v in y],
         dtype=bool,
     )
 
@@ -2799,7 +2806,7 @@ if mode == "Scenarijus":
                 if sc is not None:
                     v_econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
 
-                if _disp_speeds_differ(v_notch_raw, v_econ_docmin, min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt)))):
+                if _raw_speeds_differ(v_notch_raw, v_econ_docmin, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
                     if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
                         diff_total = round(float((v_notch_per_nm - v_min_per_nm) * dist), 1)
                     else:
@@ -2970,7 +2977,7 @@ else:
                     fallback_v_notch=float(v_notch_ui),
                 )
 
-                if _disp_speeds_differ(v_notch_ui, econ_for_ui, min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt)))):
+                if _raw_speeds_differ(v_notch_ui, econ_for_ui, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
                     if np.isfinite(res_in.docmin_eur_per_nm) and np.isfinite(res_in.docnotch_eur_per_nm):
                         diff_total = round(float((res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm) * dist), 1)
                     else:

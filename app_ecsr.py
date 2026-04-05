@@ -2941,10 +2941,10 @@ else:
                     np.isfinite(v)
                     and (float(cfg.time_cost_min) - 1e-9 <= v <= float(cfg.time_cost_max) + 1e-9)
                 )
-
+                
                 if valid_break:
-                    shown_value = f"{int(round(v))}"
-                    shown_unit = "€/h"
+                    shown_value = f"{v:.2f}"
+                    shown_unit = "€/kg"
                 else:
                     shown_value = "Nėra lūžio taško"
                     shown_unit = ""
@@ -2953,8 +2953,8 @@ else:
                 valid_break = (
                     np.isfinite(v)
                     and v <= float(fuel_ceiling) + 1e-12
-                )
-                
+                ) 
+
                 if valid_break:
                     shown_value = f"{v:.2f}"
                     shown_unit = "€/kg"

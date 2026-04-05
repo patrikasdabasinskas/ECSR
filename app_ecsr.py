@@ -540,7 +540,7 @@ def _build_economical_scenarios_table(
 
     df["ECON_safe_disp_kt"] = econ_docmin_vals
     df["DeltaV_disp_kt"] = df["IASnotch_disp_kt"] - df["ECON_safe_disp_kt"]
-    df["DeltaV_raw_kt"] = pd.to_numeric(df["V_notch_kt"], errors="coerce") - pd.to_numeric(df["V_ECSR_kt"], errors="coerce"
+    df["DeltaV_raw_kt"] = pd.to_numeric(df["V_notch_kt"], errors="coerce") - pd.to_numeric(df["V_ECSR_kt"], errors="coerce")
     df["DocDiff_EurPerNM"] = df["DOCnotch_EurPerNM"] - df["DOCmin_EurPerNM"]
 
     for d in dist_cols:

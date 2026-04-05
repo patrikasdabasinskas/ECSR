@@ -176,6 +176,40 @@ def _fmt_eur(v: float, *, decimals: int = 1) -> str:
         return ""
     return f"{float(v):.{int(decimals)}f}".replace(".", ",")
 
+def _disp_econ_kt(v: float) -> Optional[int]:
+    if not np.isfinite(v):
+        return None
+    return int(np.ceil(float(v)))
+
+
+def _disp_notch_kt(v: float) -> Optional[int]:
+    if not np.isfinite(v):
+        return None
+    return int(np.floor(float(v)))
+
+
+def _disp_gap_kt(v_notch: float, v_econ: float) -> Optional[int]:
+    notch_i = _disp_notch_kt(v_notch)
+    econ_i = _disp_econ_kt(v_econ)
+    if notch_i is None or econ_i is None:
+        return None
+    return int(notch_i - econ_i)
+
+
+def _disp_speeds_differ(v_notch: float, v_econ: float, min_gap_kt: int = 1) -> bool:
+    gap = _disp_gap_kt(v_notch, v_econ)
+    return gap is not None and gap >= int(min_gap_kt)
+
+
+def _fmt_speed_econ(v: float) -> str:
+    x = _disp_econ_kt(v)
+    return "" if x is None else str(x)
+
+
+def _fmt_speed_notch(v: float) -> str:
+    x = _disp_notch_kt(v)
+    return "" if x is None else str(x)
+
 
 def _group_label(group_col: str, group_val: float) -> str:
     name, unit = _GROUP_META.get(group_col, (group_col, ""))
@@ -362,12 +396,13 @@ def _build_economical_scenarios_table(summary_tbl: pd.DataFrame, cfg: Config) ->
     for col in need[1:]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    tol_kt = float(cfg.breakpoint_speed_tol_kt)
     df = df.loc[np.isfinite(df["V_ECSR_kt"]) & np.isfinite(df["V_notch_kt"])].copy()
     if df.empty:
         return pd.DataFrame()
 
-    df["DeltaV_kt"] = df["V_notch_kt"] - df["V_ECSR_kt"]
+    df["ECON_disp_kt"] = df["V_ECSR_kt"].map(_disp_econ_kt)
+    df["IASnotch_disp_kt"] = df["V_notch_kt"].map(_disp_notch_kt)
+    df["DeltaV_kt"] = df["IASnotch_disp_kt"] - df["ECON_disp_kt"]
     df["DocDiff_EurPerNM"] = df["DOCnotch_EurPerNM"] - df["DOCmin_EurPerNM"]
 
     for d in dist_cols:
@@ -376,7 +411,7 @@ def _build_economical_scenarios_table(summary_tbl: pd.DataFrame, cfg: Config) ->
         if min_col in df.columns and notch_col in df.columns:
             df[f"DocDiff_{d}NM_EUR"] = df[notch_col] - df[min_col]
 
-    df = df.loc[df["DeltaV_kt"] >= tol_kt].copy()
+    df = df.loc[(df["DeltaV_kt"] >= 1) & (df["DocDiff_EurPerNM"] > 0.0)].copy()
     if df.empty:
         return pd.DataFrame()
 
@@ -384,14 +419,16 @@ def _build_economical_scenarios_table(summary_tbl: pd.DataFrame, cfg: Config) ->
 
     out_data: Dict[str, Any] = {
         "Bandymas": df["ScenarioName"].map(_scenario_trial_label),
-        "ECON (kt)": df["V_ECSR_kt"].round(0).astype(int),
+        "ECON (kt)": df["ECON_disp_kt"],
         "ECSR": [
-            f"{int(round(min(lo, hi)))}"
-            if int(round(min(lo, hi))) == int(round(max(lo, hi)))
-            else f"{int(round(min(lo, hi)))}–{int(round(max(lo, hi)))}"
+            (
+                f"{_disp_econ_kt(min(lo, hi))}"
+                if _disp_econ_kt(min(lo, hi)) == _disp_notch_kt(max(lo, hi))
+                else f"{_disp_econ_kt(min(lo, hi))}–{_disp_notch_kt(max(lo, hi))}"
+            )
             for lo, hi in zip(df["ECSR_low_kt"].tolist(), df["ECSR_high_kt"].tolist())
         ],
-        "IASnotch (kt)": df["V_notch_kt"].round(0).astype(int),
+        "IASnotch (kt)": df["IASnotch_disp_kt"],
         "ΔV (kt)": df["DeltaV_kt"].round(0).astype(int),
         "DOC ECON (EUR/NM)": df["DOCmin_EurPerNM"].map(lambda v: f"{float(v):.3f}" if np.isfinite(v) else ""),
         "DOC IASnotch (EUR/NM)": df["DOCnotch_EurPerNM"].map(lambda v: f"{float(v):.3f}" if np.isfinite(v) else ""),
@@ -686,11 +723,13 @@ def _plot_doc_vs_ias(sc: Dict[str, Any], cfg: Config, time_cost_eur_per_hr: floa
     doc_opt_eur = float(cur["DOC_opt_per_nm"]) * float(distance_nm)
     doc_notch_eur = float(cur["DOC_notch_per_nm"]) * float(distance_nm)
 
-    econ_kt = int(round(float(cur["IAS_opt"])))
-    notch_kt = int(round(float(cur["IAS_notch"])))
+    econ_raw = float(cur["IAS_opt"])
+    notch_raw = float(cur["IAS_notch"])
 
-    # IMPORTANT: if ECON is >= IASnotch - 1 kt, we treat it as "same" (single black marker)
-    same = (float(cur["IAS_opt"]) >= (float(cur["IAS_notch"]) - 1.0))
+    econ_kt = _disp_econ_kt(econ_raw)
+    notch_kt = _disp_notch_kt(notch_raw)
+
+    same = not _disp_speeds_differ(notch_raw, econ_raw, min_gap_kt=1)
 
     if same:
         econ_color = "black"
@@ -807,8 +846,8 @@ def _plot_econ_vs_time_cost(longform_tbl: pd.DataFrame, summary_tbl: pd.DataFram
             label=f"Laiko sąnaudų įvestis / lūžio taškas ({x0:.0f} €/h)",
             zorder=1,
         )
-        ax.scatter([x0], [y0], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{x0:.0f} €/h ({int(round(y0))} kt)", zorder=20)
-        _place_econ_annotation_inside(ax, x=x0, y=y0, text=f"{int(round(y0))} kt", prefer="right")
+        ax.scatter([x0], [y0], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{x0:.0f} €/h ({_disp_econ_kt(y0)} kt)", zorder=20)
+        _place_econ_annotation_inside(ax, x=x0, y=y0, text=f"{_disp_econ_kt(y0)} kt", prefer="right")
     else:
         if be_ok:
             y_at_be = _econ_at(float(be))
@@ -819,8 +858,8 @@ def _plot_econ_vs_time_cost(longform_tbl: pd.DataFrame, summary_tbl: pd.DataFram
             tc_operational = float(tc_operational)
             econ_y = _econ_at(tc_operational)
             ax.plot([tc_operational, tc_operational], [y_axis_bottom, econ_y], linewidth=2.0, linestyle="--", color=c_in, label=f"Laiko sąnaudų įvestis ({tc_operational:.0f} €/h)", zorder=1)
-            ax.scatter([tc_operational], [econ_y], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{tc_operational:.0f} €/h ({int(round(econ_y))} kt)", zorder=20)
-            _place_econ_annotation_inside(ax, x=tc_operational, y=econ_y, text=f"{int(round(econ_y))} kt", prefer="right")
+            ax.scatter([tc_operational], [econ_y], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{tc_operational:.0f} €/h ({_disp_econ_kt(econ_y)} kt)", zorder=20)
+            _place_econ_annotation_inside(ax, x=tc_operational, y=econ_y, text=f"{_disp_econ_kt(econ_y)} kt", prefer="right")
 
     ax.set_title(f"ECON priklausomybė nuo laiko sąnaudų — {scenario_name}", pad=22)
     ax.set_xlabel("Laiko sąnaudos (€/h)")
@@ -884,8 +923,8 @@ def _plot_econ_vs_fuel_price(
         x0 = float(be)
         y0 = _econ_at(x0)
         ax.plot([x0, x0], [y_axis_bottom, y0], linewidth=2.0, linestyle="--", color=c_in, label=f"Degalų įvestis / lūžio taškas ({x0:.2f} €/kg)", zorder=1)
-        ax.scatter([x0], [y0], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{x0:.2f} €/kg ({int(round(y0))} kt)", zorder=20)
-        _place_econ_annotation_inside(ax, x=x0, y=y0, text=f"{int(round(y0))} kt", prefer="left")
+        ax.scatter([x0], [y0], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{x0:.2f} €/kg ({_disp_econ_kt(y0)} kt)", zorder=20)
+        _place_econ_annotation_inside(ax, x=x0, y=y0, text=f"{_disp_econ_kt(y0)} kt", prefer="left")
     else:
         if be_ok:
             y_at_be = _econ_at(float(be))
@@ -896,8 +935,8 @@ def _plot_econ_vs_fuel_price(
             fp_in = float(fuel_price_operational)
             econ_y = _econ_at(fp_in)
             ax.plot([fp_in, fp_in], [y_axis_bottom, econ_y], linewidth=2.0, linestyle="--", color=c_in, label=f"Degalų įvestis ({fp_in:.2f} €/kg)", zorder=1)
-            ax.scatter([fp_in], [econ_y], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{fp_in:.2f} €/kg ({int(round(econ_y))} kt)", zorder=20)
-            _place_econ_annotation_inside(ax, x=fp_in, y=econ_y, text=f"{int(round(econ_y))} kt", prefer="left")
+            ax.scatter([fp_in], [econ_y], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{fp_in:.2f} €/kg ({_disp_econ_kt(econ_y)} kt)", zorder=20)
+            _place_econ_annotation_inside(ax, x=fp_in, y=econ_y, text=f"{_disp_econ_kt(econ_y)} kt", prefer="left")
 
     ax.set_title(f"ECON priklausomybė nuo degalų kainos — {scenario_name}", pad=22)
     ax.set_xlabel("Degalų kaina (€/kg)")
@@ -1063,13 +1102,13 @@ def _plot_doc_vs_ias_input_knn(
     )
     v_notch = float(qres.v_notch_kt)
 
-    same = (v_opt >= (v_notch - 1.0))
+    same = not _disp_speeds_differ(v_notch, v_opt, min_gap_kt=1)
 
     fig, ax = _mpl_academic_fig()
     ax.plot(x, y, linewidth=2.2, color="darkred", label="DOC kreivė")
 
-    econ_kt = int(round(v_opt))
-    notch_kt = int(round(v_notch))
+    econ_kt = _disp_econ_kt(v_opt)
+    notch_kt = _disp_notch_kt(v_notch)
 
     if same:
         y_notch = float(np.interp(v_notch, x, y))
@@ -1222,8 +1261,8 @@ def _plot_econ_vs_time_cost_input_knn(
     if be_ok and in_ok and abs(be - tc_in) < 1e-9:
         y0 = _econ_at(tc_in)
         ax.plot([tc_in, tc_in], [y_axis_bottom, y0], linewidth=2.0, linestyle="--", color=c_in, label=f"Laiko sąnaudų įvestis / lūžio taškas ({tc_in:.0f} €/h)", zorder=1)
-        ax.scatter([tc_in], [y0], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{tc_in:.0f} €/h ({int(round(y0))} kt)", zorder=20)
-        _place_econ_annotation_inside(ax, x=tc_in, y=y0, text=f"{int(round(y0))} kt", prefer="right")
+        ax.scatter([tc_in], [y0], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{tc_in:.0f} €/h ({_disp_econ_kt(y0)} kt)", zorder=20)
+        _place_econ_annotation_inside(ax, x=tc_in, y=y0, text=f"{_disp_econ_kt(y0)} kt", prefer="right")
     else:
         if be_ok:
             y_be = _econ_at(be)
@@ -1233,8 +1272,8 @@ def _plot_econ_vs_time_cost_input_knn(
         if in_ok:
             econ_y = _econ_at(tc_in)
             ax.plot([tc_in, tc_in], [y_axis_bottom, econ_y], linewidth=2.0, linestyle="--", color=c_in, label=f"Laiko sąnaudų įvestis ({tc_in:.0f} €/h)", zorder=1)
-            ax.scatter([tc_in], [econ_y], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{tc_in:.0f} €/h ({int(round(econ_y))} kt)", zorder=20)
-            _place_econ_annotation_inside(ax, x=tc_in, y=econ_y, text=f"{int(round(econ_y))} kt", prefer="right")
+            ax.scatter([tc_in], [econ_y], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{tc_in:.0f} €/h ({_disp_econ_kt(econ_y)} kt)", zorder=20)
+            _place_econ_annotation_inside(ax, x=tc_in, y=econ_y, text=f"{_disp_econ_kt(econ_y)} kt", prefer="right")
 
     ax.set_title("ECON priklausomybė nuo laiko sąnaudų", pad=22)
     ax.set_xlabel("Laiko sąnaudos (€/h)")
@@ -1334,8 +1373,8 @@ def _plot_econ_vs_fuel_price_input_knn(
     if be_ok and in_ok and abs(be - fp_in) < 1e-12:
         y0 = _econ_at(fp_in)
         ax.plot([fp_in, fp_in], [y_axis_bottom, y0], linewidth=2.0, linestyle="--", color=c_in, label=f"Degalų įvestis / lūžio taškas ({fp_in:.2f} €/kg)", zorder=1)
-        ax.scatter([fp_in], [y0], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{fp_in:.2f} €/kg ({int(round(y0))} kt)", zorder=20)
-        _place_econ_annotation_inside(ax, x=fp_in, y=y0, text=f"{int(round(y0))} kt", prefer="left")
+        ax.scatter([fp_in], [y0], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{fp_in:.2f} €/kg ({_disp_econ_kt(y0)} kt)", zorder=20)
+        _place_econ_annotation_inside(ax, x=fp_in, y=y0, text=f"{_disp_econ_kt(y0)} kt", prefer="left")
     else:
         if be_ok:
             y_be = _econ_at(be)
@@ -1345,8 +1384,8 @@ def _plot_econ_vs_fuel_price_input_knn(
         if in_ok:
             econ_y = _econ_at(fp_in)
             ax.plot([fp_in, fp_in], [y_axis_bottom, econ_y], linewidth=2.0, linestyle="--", color=c_in, label=f"Degalų įvestis ({fp_in:.2f} €/kg)", zorder=1)
-            ax.scatter([fp_in], [econ_y], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{fp_in:.2f} €/kg ({int(round(econ_y))} kt)", zorder=20)
-            _place_econ_annotation_inside(ax, x=fp_in, y=econ_y, text=f"{int(round(econ_y))} kt", prefer="left")
+            ax.scatter([fp_in], [econ_y], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{fp_in:.2f} €/kg ({_disp_econ_kt(econ_y)} kt)", zorder=20)
+            _place_econ_annotation_inside(ax, x=fp_in, y=econ_y, text=f"{_disp_econ_kt(econ_y)} kt", prefer="left")
 
     ax.set_title("ECON priklausomybė nuo degalų kainos", pad=22)
     ax.set_xlabel("Degalų kaina (€/kg)")
@@ -2350,8 +2389,8 @@ if mode == "Scenarijus":
 
     res = st.session_state.get("ecsr_calc_last", None)
     if isinstance(res, EcsrInterpResult):
-        lo_i = int(round(res.ecsr_low_kt))
-        hi_i = int(round(res.ecsr_high_kt))
+        lo_i = _disp_econ_kt(res.ecsr_low_kt)
+        hi_i = _disp_notch_kt(res.ecsr_high_kt)
         rng_txt = f"{lo_i}" if lo_i == hi_i else f"{min(lo_i, hi_i)}–{max(lo_i, hi_i)}"
         _, mid, _ = st.columns([2.2, 1.2, 2.2], gap="large")
         with mid:
@@ -2377,13 +2416,15 @@ metric_map: Dict[str, str] = {k: v for k, v in metric_items}
 
 
 def _ecsr_range_str(lo: float, hi: float) -> str:
-    if np.isfinite(lo) and np.isfinite(hi):
-        lo_i = int(round(float(lo)))
-        hi_i = int(round(float(hi)))
-        if lo_i == hi_i:
-            return f"{lo_i}"
-        return f"{min(lo_i, hi_i)}–{max(lo_i, hi_i)}"
-    return ""
+    if not (np.isfinite(lo) and np.isfinite(hi)):
+        return ""
+    lo_i = _disp_econ_kt(min(lo, hi))
+    hi_i = _disp_notch_kt(max(lo, hi))
+    if lo_i is None or hi_i is None:
+        return ""
+    if lo_i == hi_i:
+        return f"{lo_i}"
+    return f"{lo_i}–{hi_i}"
 
 
 def _show_result_card(value: str, unit: str) -> None:
@@ -2478,9 +2519,12 @@ if mode == "Scenarijus":
             else:
                 val = float(pd.to_numeric(row.get(col_key, np.nan), errors="coerce"))
                 if np.isfinite(val):
-                    if "kt" in pick_metric_label:
-                        shown_value = f"{int(round(val))}"
-                        shown_unit = "kt"
+                    if col_key == "V_ECSR_kt":
+                        shown_value = _fmt_speed_econ(val)
+                        shown_unit = "kt" if shown_value else ""
+                    elif col_key == "V_notch_kt":
+                        shown_value = _fmt_speed_notch(val)
+                        shown_unit = "kt" if shown_value else ""
                     elif "EUR/h" in pick_metric_label:
                         shown_value = f"{val:.1f}"
                         shown_unit = "EUR/h"
@@ -2629,8 +2673,8 @@ else:
                         econ_val = min(float(econ_val), float(v_notch_ui))
 
                     if np.isfinite(econ_val):
-                        shown_value = f"{int(round(econ_val))}"
-                        shown_unit = "kt"
+                        shown_value = _fmt_speed_econ(econ_val)
+                        shown_unit = "kt" if shown_value else ""
 
                 else:
                     mapping = {
@@ -2641,8 +2685,10 @@ else:
                     if col_key in mapping:
                         val, unit = mapping[col_key]
                         if np.isfinite(val):
-                            if unit == "kt":
-                                shown_value = f"{int(round(float(val)))}"
+                            if col_key == "V_notch_kt":
+                                shown_value = _fmt_speed_notch(float(val))
+                            elif unit == "kt":
+                                shown_value = _fmt_speed_econ(float(val))
                             elif unit == "EUR/NM":
                                 shown_value = f"{float(val):.3f}"
                             elif unit == "EUR/h":
@@ -3312,8 +3358,10 @@ e_hi = pd.to_numeric(display_tbl.get("ECSR_high_kt", np.nan), errors="coerce")
 def _fmt_interval(lo: float, hi: float) -> str:
     if not (np.isfinite(lo) and np.isfinite(hi)):
         return ""
-    lo_i = int(round(float(min(lo, hi))))
-    hi_i = int(round(float(max(lo, hi))))
+    lo_i = _disp_econ_kt(min(lo, hi))
+    hi_i = _disp_notch_kt(max(lo, hi))
+    if lo_i is None or hi_i is None:
+        return ""
     return f"{lo_i}" if lo_i == hi_i else f"{lo_i}–{hi_i}"
 
 display_tbl["ECSR, kt"] = [_fmt_interval(lo, hi) for lo, hi in zip(e_lo.tolist(), e_hi.tolist())]
@@ -3365,6 +3413,22 @@ for col in [
     if col in display_tbl.columns:
         vals = pd.to_numeric(display_tbl[col], errors="coerce")
         display_tbl[col] = vals.map(lambda v: f"{int(round(v))}" if np.isfinite(v) else "")
+
+if "IASnotch, kt" in display_tbl.columns:
+    vals = pd.to_numeric(display_tbl["IASnotch, kt"], errors="coerce")
+    display_tbl["IASnotch, kt"] = vals.map(lambda v: _fmt_speed_notch(v))
+
+if "ECON, kt" in display_tbl.columns:
+    vals = pd.to_numeric(display_tbl["ECON, kt"], errors="coerce")
+    display_tbl["ECON, kt"] = vals.map(lambda v: _fmt_speed_econ(v))
+
+if "IASlow, kt" in display_tbl.columns:
+    vals = pd.to_numeric(display_tbl["IASlow, kt"], errors="coerce")
+    display_tbl["IASlow, kt"] = vals.map(lambda v: _fmt_speed_econ(v))
+
+if "IAShigh, kt" in display_tbl.columns:
+    vals = pd.to_numeric(display_tbl["IAShigh, kt"], errors="coerce")
+    display_tbl["IAShigh, kt"] = vals.map(lambda v: _fmt_speed_notch(v))
 
 display_tbl = display_tbl.drop(
     columns=["BreakEven_TIME_COST_EurPerHr", "BreakEven_FUEL_PRICE_EurPerKg"],

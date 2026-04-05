@@ -1522,7 +1522,7 @@ def interpolate_curve_knn_from_scenarios(
 def _use_money_gate(cfg: Config) -> bool:
     return str(cfg.breakpoint_saving_mode).strip().lower() in {"per_nm", "per_hour_trip"}
 
-def _raw_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:␊
+def _raw_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:
     """
     Computational gate for break-even/saving logic (raw speeds, no UI rounding).
     """

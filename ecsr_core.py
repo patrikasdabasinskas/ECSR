@@ -622,12 +622,21 @@ def _disp_notch_kt(v: Any) -> np.ndarray:
 
 def _display_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:
     """
-    Breakpoint/saving rule must follow displayed speeds:
+    Display-only speed-gap check:
     IASnotch display = floor(v_notch)
     ECON display = ceil(v_econ)
     """
     vn = _disp_notch_kt(v_notch)
     ve = _disp_econ_kt(v_econ)
+    return np.isfinite(vn) & np.isfinite(ve) & ((vn - ve) >= float(min_gap_kt))
+
+
+def _continuous_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:
+    """
+    Economic/computational speed-gap rule on raw values (no display rounding).
+    """
+    vn = np.asarray(v_notch, float)
+    ve = np.asarray(v_econ, float)
     return np.isfinite(vn) & np.isfinite(ve) & ((vn - ve) >= float(min_gap_kt))
 
 
@@ -1506,9 +1515,9 @@ def _use_money_gate(cfg: Config) -> bool:
 
 def _raw_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:
     """
-    Kept for backward compatibility, but now follows displayed-speed logic.
+    Computational gate for break-even/saving logic (raw speeds, no UI rounding).
     """
-    return _display_speed_gap_ok(v_notch, v_econ, min_gap_kt)
+    return _continuous_speed_gap_ok(v_notch, v_econ, min_gap_kt)
 
 
 def _doc_advantage_ok(doc_notch: Any, doc_econ: Any, *, atol: float = 1e-12) -> np.ndarray:

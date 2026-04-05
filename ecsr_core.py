@@ -640,6 +640,15 @@ def _continuous_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np
     return np.isfinite(vn) & np.isfinite(ve) & ((vn - ve) >= float(min_gap_kt))
 
 
+def _continuous_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:
+    """
+    Economic/computational speed-gap rule on raw values (no display rounding).
+    """
+    vn = np.asarray(v_notch, float)
+    ve = np.asarray(v_econ, float)
+    return np.isfinite(vn) & np.isfinite(ve) & ((vn - ve) >= float(min_gap_kt))
+
+
 def unique_x(x: np.ndarray, a1: np.ndarray, a2: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     x = np.asarray(x).reshape(-1)
     a1 = np.asarray(a1).reshape(-1)
@@ -1513,7 +1522,7 @@ def interpolate_curve_knn_from_scenarios(
 def _use_money_gate(cfg: Config) -> bool:
     return str(cfg.breakpoint_saving_mode).strip().lower() in {"per_nm", "per_hour_trip"}
 
-def _raw_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:
+def _raw_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.ndarray:␊
     """
     Computational gate for break-even/saving logic (raw speeds, no UI rounding).
     """

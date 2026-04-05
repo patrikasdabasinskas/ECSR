@@ -2929,33 +2929,10 @@ else:
                 )
                 shown_unit = "kt" if shown_value else ""
             elif col_key == "__BREAK_TIME__":
-                v_notch_ui = float(res_in.v_notch_kt)
-
-                try:
-                    doc_curve_res = _compute_input_doc_curve_knn(
-                        scenarios,
-                        summary_tbl,
-                        cfg,
-                        fl_ft=float(in_fl),
-                        wt_kg=float(in_wt),
-                        isa_c=float(in_isa),
-                        wind_kt=float(in_wind),
-                    )
-                    econ_for_ui = float(doc_curve_res["IAS_opt"])
-                except Exception:
-                    econ_for_ui = float(res_in.v_ecsr_kt)
-
-                if np.isfinite(econ_for_ui) and np.isfinite(v_notch_ui):
-                    econ_for_ui = min(econ_for_ui, v_notch_ui)
-
                 v = float(res_in.be_time_cost_eur_per_hr)
                 valid_break = (
                     np.isfinite(v)
                     and (float(cfg.time_cost_min) - 1e-9 <= v <= float(cfg.time_cost_max) + 1e-9)
-                    and _disp_speeds_differ(v_notch_ui, econ_for_ui, min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt))))
-                    and np.isfinite(res_in.docmin_eur_per_nm)
-                    and np.isfinite(res_in.docnotch_eur_per_nm)
-                    and float(res_in.docnotch_eur_per_nm) > float(res_in.docmin_eur_per_nm)
                 )
 
                 if valid_break:
@@ -2965,35 +2942,12 @@ else:
                     shown_value = "Nėra lūžio taško"
                     shown_unit = ""
             elif col_key == "__BREAK_FUEL__":
-                v_notch_ui = float(res_in.v_notch_kt)
-
-                try:
-                    doc_curve_res = _compute_input_doc_curve_knn(
-                        scenarios,
-                        summary_tbl,
-                        cfg,
-                        fl_ft=float(in_fl),
-                        wt_kg=float(in_wt),
-                        isa_c=float(in_isa),
-                        wind_kt=float(in_wind),
-                    )
-                    econ_for_ui = float(doc_curve_res["IAS_opt"])
-                except Exception:
-                    econ_for_ui = float(res_in.v_ecsr_kt)
-
-                if np.isfinite(econ_for_ui) and np.isfinite(v_notch_ui):
-                    econ_for_ui = min(econ_for_ui, v_notch_ui)
-
                 v = float(res_in.be_fuel_price_eur_per_kg)
                 valid_break = (
                     np.isfinite(v)
                     and v <= float(fuel_ceiling) + 1e-12
-                    and _disp_speeds_differ(v_notch_ui, econ_for_ui, min_gap_kt=int(round(float(cfg.breakpoint_speed_tol_kt))))
-                    and np.isfinite(res_in.docmin_eur_per_nm)
-                    and np.isfinite(res_in.docnotch_eur_per_nm)
-                    and float(res_in.docnotch_eur_per_nm) > float(res_in.docmin_eur_per_nm)
                 )
-
+                
                 if valid_break:
                     shown_value = f"{v:.2f}"
                     shown_unit = "€/kg"

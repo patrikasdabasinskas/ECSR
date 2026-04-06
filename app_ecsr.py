@@ -2,6 +2,7 @@
 # File: app_ecsr.py
 # =========================
 from __future__ import annotations
+from scipy.interpolate import LinearNDInterpolator
 
 import html
 import re
@@ -311,20 +312,6 @@ def _fmt_ecsr_from_raw(
     if not (np.isfinite(lo) and np.isfinite(hi)):
         return ""
 
-    if _should_show_raw_speed_pair(
-        v_econ_raw=float(v_econ_raw),
-        v_notch=float(v_notch),
-        saving_eur_per_nm=float(saving_eur_per_nm),
-    ):
-        lo_raw = float(min(lo, hi))
-        hi_raw = float(max(lo, hi))
-        hi_raw = min(hi_raw, float(v_notch))
-        lo_raw = min(lo_raw, hi_raw)
-
-        if abs(lo_raw - hi_raw) <= 1e-12:
-            return _fmt_speed_raw(lo_raw)
-        return f"{_fmt_speed_raw(lo_raw)}–{_fmt_speed_raw(hi_raw)}"
-
     return _ecsr_range_str(float(lo), float(hi), float(v_notch), float(v_econ_disp))
 
 
@@ -351,26 +338,7 @@ def _fmt_ecsr_adaptive(
     if not (np.isfinite(lo) and np.isfinite(hi)):
         return ""
 
-    econ_safe = _fmt_speed_econ_safe(v_econ, v_notch)
-    notch_safe = _fmt_speed_notch(v_notch)
-
-    if (
-        np.isfinite(saving_eur_per_nm)
-        and saving_eur_per_nm > 0.0
-        and econ_safe
-        and notch_safe
-        and econ_safe == notch_safe
-    ):
-        lo_raw = float(min(lo, hi))
-        hi_raw = float(max(lo, hi))
-        hi_raw = min(hi_raw, float(v_notch))
-        lo_raw = min(lo_raw, hi_raw)
-
-        if abs(lo_raw - hi_raw) <= 1e-12:
-            return _fmt_speed_raw(lo_raw)
-        return f"{_fmt_speed_raw(lo_raw)}–{_fmt_speed_raw(hi_raw)}"
-
-    return _ecsr_range_str(lo, hi, v_notch, v_econ)
+    return _ecsr_range_str(float(lo), float(hi), float(v_notch), float(v_econ))
 
 def _safe_display_econ_kt(v_econ: float, v_notch: float) -> Optional[int]:
     econ_i = _disp_econ_kt(v_econ)
@@ -1475,6 +1443,292 @@ def _cached_econ_vs_fuel_price_interpolated(
         wind_kt=float(wind_kt),
     )
 
+@st.cache_data(show_spinner=False)
+def _cached_time_operating_curve_interpolated(
+    longform_tbl: pd.DataFrame,
+    fl_ft: float,
+    wt_kg: float,
+    isa_c: float,
+    wind_kt: float,
+) -> pd.DataFrame:
+    need = ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt", "TIME_COST", "IASopt", "DOCmin", "DOCnotch"]
+    tbl = longform_tbl.copy()
+    for c in need:
+        tbl[c] = pd.to_numeric(tbl[c], errors="coerce")
+    tbl = tbl.dropna(subset=need)
+
+    rows: List[Dict[str, float]] = []
+    q = np.array([[float(fl_ft), float(wt_kg), float(isa_c), float(wind_kt)]], dtype=float)
+
+    for tc, sub in tbl.groupby("TIME_COST", sort=True):
+        if sub.shape[0] < 8:
+            continue
+
+        pts = np.column_stack(
+            [
+                pd.to_numeric(sub["ZP_ft"], errors="coerce").to_numpy(float),
+                pd.to_numeric(sub["WEIGHT_kg"], errors="coerce").to_numpy(float),
+                pd.to_numeric(sub["ISA_C"], errors="coerce").to_numpy(float),
+                pd.to_numeric(sub["WIND_kt"], errors="coerce").to_numpy(float),
+            ]
+        ).astype(float)
+
+        y_ias = pd.to_numeric(sub["IASopt"], errors="coerce").to_numpy(float)
+        y_docmin = pd.to_numeric(sub["DOCmin"], errors="coerce").to_numpy(float)
+        y_docnotch = pd.to_numeric(sub["DOCnotch"], errors="coerce").to_numpy(float)
+
+        ok = (
+            np.all(np.isfinite(pts), axis=1)
+            & np.isfinite(y_ias)
+            & np.isfinite(y_docmin)
+            & np.isfinite(y_docnotch)
+        )
+        pts = pts[ok]
+        y_ias = y_ias[ok]
+        y_docmin = y_docmin[ok]
+        y_docnotch = y_docnotch[ok]
+
+        if pts.shape[0] < 8:
+            continue
+
+        itp_ias = LinearNDInterpolator(pts, y_ias, fill_value=np.nan)
+        itp_docmin = LinearNDInterpolator(pts, y_docmin, fill_value=np.nan)
+        itp_docnotch = LinearNDInterpolator(pts, y_docnotch, fill_value=np.nan)
+
+        v_ias = float(itp_ias(q)[0])
+        v_docmin = float(itp_docmin(q)[0])
+        v_docnotch = float(itp_docnotch(q)[0])
+
+        if np.isfinite(v_ias) and np.isfinite(v_docmin) and np.isfinite(v_docnotch):
+            rows.append(
+                {
+                    "TIME_COST": float(tc),
+                    "IASopt": float(v_ias),
+                    "DOCmin": float(v_docmin),
+                    "DOCnotch": float(v_docnotch),
+                }
+            )
+
+    out = pd.DataFrame(rows)
+    if out.shape[0] < 2:
+        raise ValueError("Nepakanka taškų laiko breakpoint interpoliacijai.")
+    return out.sort_values("TIME_COST").reset_index(drop=True)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_fuel_operating_curve_interpolated(
+    fuel_longform_tbl: pd.DataFrame,
+    fl_ft: float,
+    wt_kg: float,
+    isa_c: float,
+    wind_kt: float,
+) -> pd.DataFrame:
+    need = ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt", "FUEL_PRICE", "IASopt", "DOCmin", "DOCnotch"]
+    tbl = fuel_longform_tbl.copy()
+    for c in need:
+        tbl[c] = pd.to_numeric(tbl[c], errors="coerce")
+    tbl = tbl.dropna(subset=need)
+
+    rows: List[Dict[str, float]] = []
+    q = np.array([[float(fl_ft), float(wt_kg), float(isa_c), float(wind_kt)]], dtype=float)
+
+    for fp, sub in tbl.groupby("FUEL_PRICE", sort=True):
+        if sub.shape[0] < 8:
+            continue
+
+        pts = np.column_stack(
+            [
+                pd.to_numeric(sub["ZP_ft"], errors="coerce").to_numpy(float),
+                pd.to_numeric(sub["WEIGHT_kg"], errors="coerce").to_numpy(float),
+                pd.to_numeric(sub["ISA_C"], errors="coerce").to_numpy(float),
+                pd.to_numeric(sub["WIND_kt"], errors="coerce").to_numpy(float),
+            ]
+        ).astype(float)
+
+        y_ias = pd.to_numeric(sub["IASopt"], errors="coerce").to_numpy(float)
+        y_docmin = pd.to_numeric(sub["DOCmin"], errors="coerce").to_numpy(float)
+        y_docnotch = pd.to_numeric(sub["DOCnotch"], errors="coerce").to_numpy(float)
+
+        ok = (
+            np.all(np.isfinite(pts), axis=1)
+            & np.isfinite(y_ias)
+            & np.isfinite(y_docmin)
+            & np.isfinite(y_docnotch)
+        )
+        pts = pts[ok]
+        y_ias = y_ias[ok]
+        y_docmin = y_docmin[ok]
+        y_docnotch = y_docnotch[ok]
+
+        if pts.shape[0] < 8:
+            continue
+
+        itp_ias = LinearNDInterpolator(pts, y_ias, fill_value=np.nan)
+        itp_docmin = LinearNDInterpolator(pts, y_docmin, fill_value=np.nan)
+        itp_docnotch = LinearNDInterpolator(pts, y_docnotch, fill_value=np.nan)
+
+        v_ias = float(itp_ias(q)[0])
+        v_docmin = float(itp_docmin(q)[0])
+        v_docnotch = float(itp_docnotch(q)[0])
+
+        if np.isfinite(v_ias) and np.isfinite(v_docmin) and np.isfinite(v_docnotch):
+            rows.append(
+                {
+                    "FUEL_PRICE": float(fp),
+                    "IASopt": float(v_ias),
+                    "DOCmin": float(v_docmin),
+                    "DOCnotch": float(v_docnotch),
+                }
+            )
+
+    out = pd.DataFrame(rows)
+    if out.shape[0] < 2:
+        raise ValueError("Nepakanka taškų degalų breakpoint interpoliacijai.")
+    return out.sort_values("FUEL_PRICE").reset_index(drop=True)
+
+
+def _interp_input_v_notch(
+    summary_tbl: pd.DataFrame,
+    *,
+    fl_ft: float,
+    wt_kg: float,
+    isa_c: float,
+    wind_kt: float,
+) -> float:
+    prebuilt = _ensure_summary_prebuilt_4d(summary_tbl)
+    qres = compute_quick_metrics_interpolated_from_prebuilt(
+        summary_tbl,
+        prebuilt,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+    )
+    return float(qres.v_notch_kt)
+
+
+def _econ_exists_from_interpolated_row(
+    *,
+    v_docmin_raw: float,
+    v_notch: float,
+    docmin_nm: float,
+    docnotch_nm: float,
+    cfg: Config,
+) -> bool:
+    v_econ = _econ_from_docmin_with_notch_rule(
+        float(v_docmin_raw),
+        float(v_notch),
+        min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+    )
+
+    speed_ok = _raw_speed_advantage_exists(float(v_notch), float(v_econ))
+
+    if abs(float(v_econ) - float(v_notch)) <= 1e-12:
+        doc_econ_nm = float(docnotch_nm)
+    else:
+        doc_econ_nm = float(docmin_nm)
+
+    econ_ok = np.isfinite(docnotch_nm) and np.isfinite(doc_econ_nm) and (float(docnotch_nm) > float(doc_econ_nm) + 1e-12)
+
+    money_ok = True
+    mode = str(getattr(cfg, "breakpoint_saving_mode", "default")).strip().lower()
+    if mode == "per_nm":
+        money_ok = (float(docnotch_nm) - float(doc_econ_nm)) >= float(getattr(cfg, "breakpoint_saving_eur_per_nm", 0.0))
+
+    return bool(speed_ok and econ_ok and money_ok)
+
+
+def _input_time_breakpoint_interpolated(
+    longform_tbl: pd.DataFrame,
+    summary_tbl: pd.DataFrame,
+    *,
+    fl_ft: float,
+    wt_kg: float,
+    isa_c: float,
+    wind_kt: float,
+    cfg: Config,
+) -> float:
+    curve = _cached_time_operating_curve_interpolated(
+        longform_tbl,
+        float(fl_ft),
+        float(wt_kg),
+        float(isa_c),
+        float(wind_kt),
+    )
+    v_notch = _interp_input_v_notch(
+        summary_tbl,
+        fl_ft=float(fl_ft),
+        wt_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+    )
+
+    had_econ = False
+    for _, row in curve.iterrows():
+        ok = _econ_exists_from_interpolated_row(
+            v_docmin_raw=float(row["IASopt"]),
+            v_notch=float(v_notch),
+            docmin_nm=float(row["DOCmin"]),
+            docnotch_nm=float(row["DOCnotch"]),
+            cfg=cfg,
+        )
+        if ok:
+            had_econ = True
+            continue
+        if had_econ:
+            return float(row["TIME_COST"])
+
+    first_ok = _econ_exists_from_interpolated_row(
+        v_docmin_raw=float(curve.iloc[0]["IASopt"]),
+        v_notch=float(v_notch),
+        docmin_nm=float(curve.iloc[0]["DOCmin"]),
+        docnotch_nm=float(curve.iloc[0]["DOCnotch"]),
+        cfg=cfg,
+    )
+    if not first_ok:
+        return float(curve.iloc[0]["TIME_COST"])
+
+    return float("inf")
+
+
+def _input_fuel_breakpoint_interpolated(
+    fuel_longform_tbl: pd.DataFrame,
+    summary_tbl: pd.DataFrame,
+    *,
+    fl_ft: float,
+    wt_kg: float,
+    isa_c: float,
+    wind_kt: float,
+    cfg: Config,
+) -> float:
+    curve = _cached_fuel_operating_curve_interpolated(
+        fuel_longform_tbl,
+        float(fl_ft),
+        float(wt_kg),
+        float(isa_c),
+        float(wind_kt),
+    )
+    v_notch = _interp_input_v_notch(
+        summary_tbl,
+        fl_ft=float(fl_ft),
+        wt_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+    )
+
+    for _, row in curve.iterrows():
+        ok = _econ_exists_from_interpolated_row(
+            v_docmin_raw=float(row["IASopt"]),
+            v_notch=float(v_notch),
+            docmin_nm=float(row["DOCmin"]),
+            docnotch_nm=float(row["DOCnotch"]),
+            cfg=cfg,
+        )
+        if ok:
+            return float(row["FUEL_PRICE"])
+
+    return float("inf")
+
 def _plot_econ_vs_time_cost_input_4d(
     longform_tbl: pd.DataFrame,
     summary_tbl: pd.DataFrame,
@@ -1550,7 +1804,15 @@ def _plot_econ_vs_time_cost_input_4d(
     def _econ_at(ct: float) -> float:
         return float(np.interp(float(ct), x, y))
 
-    be = float(qres.be_time_cost_eur_per_hr)
+    be = _input_time_breakpoint_interpolated(
+        longform_tbl,
+        summary_tbl,
+        fl_ft=float(fl_ft),
+        wt_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+        cfg=cfg,
+    )
     tc_in = float(cfg.time_cost_operational)
 
     c_be = "purple"
@@ -1662,7 +1924,15 @@ def _plot_econ_vs_fuel_price_input_4d(
     def _econ_at(price: float) -> float:
         return float(np.interp(float(price), x, y))
 
-    be = float(qres.be_fuel_price_eur_per_kg)
+    be = _input_fuel_breakpoint_interpolated(
+        fuel_longform_tbl,
+        summary_tbl,
+        fl_ft=float(fl_ft),
+        wt_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+        cfg=cfg,
+    )
     fp_in = float(cfg.fuel_price_eur_per_kg)
 
     c_be = "purple"
@@ -2259,16 +2529,15 @@ def _plot_breakpoint_vs_grouped(
     fig.tight_layout()
     return fig
 
-
-# File: app_ecsr.py
-
 def _build_interpolated_sweep_table(
     summary_tbl: pd.DataFrame,
+    longform_tbl: pd.DataFrame,
     scenarios: List[Dict[str, Any]],
     *,
     x_col: str,
     fixed: Dict[str, Optional[float]],
     include_x_value: Optional[float] = None,
+    cfg: Config,
 ) -> pd.DataFrame:
     if summary_tbl is None or summary_tbl.empty:
         return pd.DataFrame()
@@ -2281,6 +2550,7 @@ def _build_interpolated_sweep_table(
         return pd.DataFrame()
 
     prebuilt = _ensure_summary_prebuilt_4d(summary_tbl)
+    fuel_longform_tbl_ready = _ensure_fuel_longform_tbl(scenarios)
 
     rows: List[Dict[str, float]] = []
 
@@ -2300,6 +2570,26 @@ def _build_interpolated_sweep_table(
                 wind_kt=wind_kt,
             )
 
+            be_time = _input_time_breakpoint_interpolated(
+                longform_tbl,
+                summary_tbl,
+                fl_ft=zp_ft,
+                wt_kg=weight_kg,
+                isa_c=isa_c,
+                wind_kt=wind_kt,
+                cfg=cfg,
+            )
+
+            be_fuel = _input_fuel_breakpoint_interpolated(
+                fuel_longform_tbl_ready,
+                summary_tbl,
+                fl_ft=zp_ft,
+                wt_kg=weight_kg,
+                isa_c=isa_c,
+                wind_kt=wind_kt,
+                cfg=cfg,
+            )
+
             rows.append(
                 {
                     "ZP_ft": zp_ft,
@@ -2310,8 +2600,8 @@ def _build_interpolated_sweep_table(
                     "V_notch_kt": float(qres.v_notch_kt),
                     "DOCmin_EurPerNM": float(qres.docmin_eur_per_nm),
                     "DOCnotch_EurPerNM": float(qres.docnotch_eur_per_nm),
-                    "BreakEven_TIME_COST_EurPerHr": float(qres.be_time_cost_eur_per_hr),
-                    "BreakEven_FUEL_PRICE_EurPerKg": float(qres.be_fuel_price_eur_per_kg),
+                    "BreakEven_TIME_COST_EurPerHr": float(be_time),
+                    "BreakEven_FUEL_PRICE_EurPerKg": float(be_fuel),
                 }
             )
         except Exception:
@@ -3012,11 +3302,38 @@ else:
                 isa_c=float(in_isa),
                 wind_kt=float(in_wind),
             )
+
+            fuel_longform_tbl_ready = _ensure_fuel_longform_tbl(scenarios)
+
+            be_time_input = _input_time_breakpoint_interpolated(
+                longform_tbl,
+                summary_tbl,
+                fl_ft=float(in_fl),
+                wt_kg=float(in_wt),
+                isa_c=float(in_isa),
+                wind_kt=float(in_wind),
+                cfg=cfg,
+            )
+            be_fuel_input = _input_fuel_breakpoint_interpolated(
+                fuel_longform_tbl_ready,
+                summary_tbl,
+                fl_ft=float(in_fl),
+                wt_kg=float(in_wt),
+                isa_c=float(in_isa),
+                wind_kt=float(in_wind),
+                cfg=cfg,
+            )
+
             st.session_state["in_last_res"] = res_in
+            st.session_state["in_last_be_time"] = float(be_time_input)
+            st.session_state["in_last_be_fuel"] = float(be_fuel_input)
             st.session_state["in_last_saving_per_nm"] = float(res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm)
             st.session_state["in_err"] = ""
+
         except Exception as e:
             st.session_state["in_last_res"] = None
+            st.session_state["in_last_be_time"] = float("nan")
+            st.session_state["in_last_be_fuel"] = float("nan")
             st.session_state["in_err"] = _normalize_ui_error(e)
             st.session_state["in_last_saving_per_nm"] = float("nan")
 
@@ -3043,7 +3360,7 @@ else:
                 )
                 shown_unit = "kt" if shown_value else ""
             elif col_key == "__BREAK_TIME__":
-                v = float(res_in.be_time_cost_eur_per_hr)
+                v = float(st.session_state.get("in_last_be_time", np.nan))
                 if np.isfinite(v) and (float(cfg.time_cost_min) - 1e-9 <= v <= float(cfg.time_cost_max) + 1e-9):
                     shown_value = f"{int(round(v))}"
                     shown_unit = "€/h"
@@ -3051,7 +3368,7 @@ else:
                     shown_value = "Nėra lūžio taško"
                     shown_unit = ""
             elif col_key == "__BREAK_FUEL__":
-                v = float(res_in.be_fuel_price_eur_per_kg)
+                v = float(st.session_state.get("in_last_be_fuel", np.nan))
                 if np.isfinite(v) and v <= float(fuel_ceiling) + 1e-12:
                     shown_value = f"{v:.2f}"
                     shown_unit = "€/kg"
@@ -3678,10 +3995,12 @@ for gid, meta in _BP_GRAPHS.items():
 
                 filtered_local = _build_interpolated_sweep_table(
                     summary_tbl,
+                    longform_tbl,
                     scenarios,
                     x_col=x_col,
                     fixed=fixed_in,
                     include_x_value=include_x_value,
+                    cfg=cfg,
                 )
 
                 if filtered_local.empty:

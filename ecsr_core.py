@@ -1749,6 +1749,26 @@ def _last_true_x(x: np.ndarray, cond: np.ndarray) -> float:
     return float(x[k])
 
 
+def _econ_exists_at_time_cost(sc: Dict[str, Any], tc: float, cfg: Config) -> bool:
+    cur = current_operating_point_result(
+        sc,
+        fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
+        time_cost_eur_per_hr=float(tc),
+        cfg=cfg,
+    )
+    return bool(cur["econ_exists"])
+
+
+def _econ_exists_at_fuel_price(sc: Dict[str, Any], fp: float, cfg: Config) -> bool:
+    cur = current_operating_point_result(
+        sc,
+        fuel_price_eur_per_kg=float(fp),
+        time_cost_eur_per_hr=float(cfg.time_cost_operational),
+        cfg=cfg,
+    )
+    return bool(cur["econ_exists"])
+
+
 def _optimum_at_fuel_price(sc: Dict[str, Any], fp: float, cfg: Config) -> Tuple[float, float, float]:
     tc_op = float(cfg.time_cost_operational)
     cur = current_operating_point_result(
@@ -1961,83 +1981,89 @@ def _positive_saving_at_fuel_price(sc: Dict[str, Any], fp: float, cfg: Config) -
     return bool(np.isfinite(saving) and saving > 0.0)
 
 def compute_threshold_x_time_break(sc: Dict[str, Any], cfg: Config) -> Dict[str, float]:
-    tc = np.asarray(sc.get("timeCostVec", []), float)
-    doc_min = np.asarray(sc.get("DOC_min_EurPerNM", []), float)
-    doc_notch = np.asarray(sc.get("DOC_notch_EurPerNM", []), float)
+    """
+    Time breakpoint:
+    - below breakpoint -> ECON exists (ECON < IASnotch, saving exists)
+    - at/above breakpoint -> ECON collapses to IASnotch (no saving)
 
-    n = min(tc.size, doc_min.size, doc_notch.size)
-    if n < 2:
+    Returns the first time cost where ECON no longer exists.
+    """
+    tc = np.asarray(sc.get("timeCostVec", []), float).reshape(-1)
+    tc = tc[np.isfinite(tc)]
+    if tc.size < 2:
         return {"X_timeCost_EurPerHr": float("nan")}
 
-    tc = tc[:n]
-    doc_min = doc_min[:n]
-    doc_notch = doc_notch[:n]
+    tc = np.sort(tc, kind="mergesort")
 
-    worth = _positive_saving_mask(doc_min, doc_notch)
-    return {"X_timeCost_EurPerHr": float(_first_true_x(tc, worth))}
+    econ_exists = np.array(
+        [_econ_exists_at_time_cost(sc, float(t), cfg) for t in tc.tolist()],
+        dtype=bool,
+    )
+
+    if not np.any(econ_exists):
+        return {"X_timeCost_EurPerHr": float(tc[0])}
+
+    if np.all(econ_exists):
+        return {"X_timeCost_EurPerHr": float("inf")}
+
+    had_econ = False
+    for t, ok in zip(tc.tolist(), econ_exists.tolist()):
+        if ok:
+            had_econ = True
+            continue
+        if had_econ:
+            return {"X_timeCost_EurPerHr": float(t)}
+
+    return {"X_timeCost_EurPerHr": float("inf")}
 
 
 def compute_threshold_x_fuel_break(sc: Dict[str, Any], cfg: Config) -> Dict[str, float]:
-    fp = np.asarray(sc.get("fuelPriceVec", []), float)
-    doc_min = np.asarray(sc.get("DOC_min_EurPerNM_fp", []), float)
-    doc_notch = np.asarray(sc.get("DOC_notch_EurPerNM_fp", []), float)
+    """
+    Fuel breakpoint:
+    - below breakpoint -> ECON does not exist (ECON = IASnotch, no saving)
+    - at/above breakpoint -> ECON exists (ECON < IASnotch, saving exists)
 
-    n = min(fp.size, doc_min.size, doc_notch.size)
-    if n < 2:
+    Returns the first fuel price where ECON starts to exist.
+    """
+    fp = np.asarray(sc.get("fuelPriceVec", []), float).reshape(-1)
+    fp = fp[np.isfinite(fp)]
+    if fp.size < 2:
         return {"X_fuelPrice_EurPerKg": float("nan")}
 
-    fp = fp[:n]
-    doc_min = doc_min[:n]
-    doc_notch = doc_notch[:n]
+    fp = np.sort(fp, kind="mergesort")
 
-    worth = _positive_saving_mask(doc_min, doc_notch)
-    return {"X_fuelPrice_EurPerKg": float(_first_true_x(fp, worth))}
+    econ_exists = np.array(
+        [_econ_exists_at_fuel_price(sc, float(p), cfg) for p in fp.tolist()],
+        dtype=bool,
+    )
+
+    if np.all(econ_exists):
+        return {"X_fuelPrice_EurPerKg": float(fp[0])}
+
+    if not np.any(econ_exists):
+        return {"X_fuelPrice_EurPerKg": float("inf")}
+
+    for p, ok in zip(fp.tolist(), econ_exists.tolist()):
+        if ok:
+            return {"X_fuelPrice_EurPerKg": float(p)}
+
+    return {"X_fuelPrice_EurPerKg": float("inf")}
 
 
 def compute_break_even_time_cost_rounded(sc: Dict[str, Any], x_continuous: float, cfg: Config) -> float:
-    if not np.isfinite(x_continuous):
+    if np.isnan(float(x_continuous)):
         return float("nan")
-
-    tc = np.asarray(sc.get("timeCostVec", []), float)
-    doc_min = np.asarray(sc.get("DOC_min_EurPerNM", []), float)
-    doc_notch = np.asarray(sc.get("DOC_notch_EurPerNM", []), float)
-
-    n = min(tc.size, doc_min.size, doc_notch.size)
-    if n == 0:
-        return float("nan")
-
-    tc = tc[:n]
-    doc_min = doc_min[:n]
-    doc_notch = doc_notch[:n]
-
-    mask = _positive_saving_mask(doc_min, doc_notch) & (tc >= float(x_continuous) - 1e-12)
-    if not np.any(mask):
-        return float("nan")
-
-    return float(tc[np.where(mask)[0][0]])
+    if np.isinf(float(x_continuous)):
+        return float("inf")
+    return float(x_continuous)
 
 
 def compute_break_even_fuel_price_rounded(sc: Dict[str, Any], x_continuous: float, cfg: Config) -> float:
-    if not np.isfinite(x_continuous):
+    if np.isnan(float(x_continuous)):
         return float("nan")
-
-    fp = np.asarray(sc.get("fuelPriceVec", []), float)
-    doc_min = np.asarray(sc.get("DOC_min_EurPerNM_fp", []), float)
-    doc_notch = np.asarray(sc.get("DOC_notch_EurPerNM_fp", []), float)
-
-    n = min(fp.size, doc_min.size, doc_notch.size)
-    if n == 0:
-        return float("nan")
-
-    fp = fp[:n]
-    doc_min = doc_min[:n]
-    doc_notch = doc_notch[:n]
-
-    mask = _positive_saving_mask(doc_min, doc_notch) & (fp >= float(x_continuous) - 1e-12)
-    if not np.any(mask):
+    if np.isinf(float(x_continuous)):
         return float("inf")
-
-    return float(fp[np.where(mask)[0][0]])
+    return float(x_continuous)
 
 
 def _positive_saving_mask(doc_min: np.ndarray, doc_notch: np.ndarray) -> np.ndarray:

@@ -1190,8 +1190,6 @@ def build_summary_interpolators_4d(
         "DOCnotch_EurPerNM",
         "DOCmin_EurPerHr",
         "DOCnotch_EurPerHr",
-        "BreakEven_TIME_COST_EurPerHr",
-        "BreakEven_FUEL_PRICE_EurPerKg",
     ]
     _require_columns(df, need)
 
@@ -1241,8 +1239,6 @@ def compute_quick_metrics_interpolated_from_prebuilt(
     docnotch_nm_v = _eval("DOCnotch_EurPerNM")
     docmin_h_v = _eval("DOCmin_EurPerHr")
     docnotch_h_v = _eval("DOCnotch_EurPerHr")
-    be_tc_v = _eval("BreakEven_TIME_COST_EurPerHr")
-    be_fp_v = _eval("BreakEven_FUEL_PRICE_EurPerKg")
 
     return InterpQuickResult(
         fl_ft=float(fl_ft),
@@ -1257,8 +1253,8 @@ def compute_quick_metrics_interpolated_from_prebuilt(
         docnotch_eur_per_nm=docnotch_nm_v,
         docmin_eur_per_h=docmin_h_v,
         docnotch_eur_per_h=docnotch_h_v,
-        be_time_cost_eur_per_hr=be_tc_v,
-        be_fuel_price_eur_per_kg=be_fp_v,
+        be_time_cost_eur_per_hr=float("nan"),
+        be_fuel_price_eur_per_kg=float("nan"),
     )
 
 

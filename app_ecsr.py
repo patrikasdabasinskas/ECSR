@@ -2830,26 +2830,8 @@ else:
                     shown_value = "Nėra lūžio taško"
             elif col_key == "__SAVING_PER_X__":
                 dist = float(distance_nm)
-                v_econ_ui = float(res_in.v_ecsr_kt)
-                v_notch_ui = float(res_in.v_notch_kt)
                 docmin_nm = float(res_in.docmin_eur_per_nm)
                 docnotch_nm = float(res_in.docnotch_eur_per_nm)
-
-                try:
-                    cur_in = _compute_input_doc_curve_knn(
-                        scenarios,
-                        summary_tbl,
-                        fl_ft=float(in_fl),
-                        wt_kg=float(in_wt),
-                        isa_c=float(in_isa),
-                        wind_kt=float(in_wind),
-                    )
-                    v_econ_ui = float(cur_in["IAS_opt"])
-                    v_notch_ui = float(cur_in["IAS_notch"])
-                    docmin_nm = float(cur_in["DOC_opt_per_nm"])
-                    docnotch_nm = float(cur_in["DOC_notch_per_nm"])
-                except Exception:
-                    pass
 
                 if np.isfinite(docmin_nm) and np.isfinite(docnotch_nm) and np.isfinite(dist):
                     diff_total = max(0.0, float((docnotch_nm - docmin_nm) * dist))

@@ -1894,20 +1894,8 @@ def _plot_saving_vs_grouped(
 
     dist_nm = max(float(distance_nm), 0.0)
 
-    v_notch = pd.to_numeric(df["V_notch_kt"], errors="coerce")
-    v_econ = pd.to_numeric(df["V_ECSR_kt"], errors="coerce")
-
-    speed_gap_ok = pd.Series(
-        [
-            _raw_speed_advantage_exists(float(vn), float(ve))
-            for ve, vn in zip(v_econ.tolist(), v_notch.tolist())
-        ],
-        index=df.index,
-        dtype=bool,
-    )
-
     raw_saving = (df["DOCnotch_EurPerNM"] - df["DOCmin_EurPerNM"]).clip(lower=0.0)
-    df["Saving_Eur"] = np.where(speed_gap_ok, raw_saving * dist_nm, 0.0)
+    df["Saving_Eur"] = raw_saving * dist_nm
 
     used_group = None
     if group_col and group_col in df.columns:
@@ -2714,13 +2702,10 @@ if mode == "Scenarijus":
                     except Exception:
                         pass
 
-                if _raw_speed_advantage_exists(v_notch_raw, v_econ_raw):
-                    if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
-                        diff_total = max(0.0, float((v_notch_per_nm - v_min_per_nm) * dist))
-                    else:
-                        diff_total = float("nan")
+                if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
+                    diff_total = max(0.0, float((v_notch_per_nm - v_min_per_nm) * dist))
                 else:
-                    diff_total = 0.0
+                    diff_total = float("nan")
             else:
                 val = float(pd.to_numeric(row.get(col_key, np.nan), errors="coerce"))
                 if np.isfinite(val):
@@ -2866,13 +2851,10 @@ else:
                 except Exception:
                     pass
 
-                if _raw_speed_advantage_exists(v_notch_ui, v_econ_ui):
-                    if np.isfinite(docmin_nm) and np.isfinite(docnotch_nm):
-                        diff_total = max(0.0, float((docnotch_nm - docmin_nm) * dist))
-                    else:
-                        diff_total = float("nan")
+                if np.isfinite(docmin_nm) and np.isfinite(docnotch_nm) and np.isfinite(dist):
+                    diff_total = max(0.0, float((docnotch_nm - docmin_nm) * dist))
                 else:
-                    diff_total = 0.0
+                    diff_total = float("nan")
             else:
                 if col_key == "V_ECSR_kt":
                     if np.isfinite(res_in.v_ecsr_kt):

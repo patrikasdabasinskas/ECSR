@@ -1862,6 +1862,8 @@ def _plot_saving_vs_grouped(
     group_col: Optional[str],
     show_point_labels: bool = False,
     distance_nm: float = 1.0,
+    scenarios: Optional[List[Dict[str, Any]]] = None,
+    cfg: Optional[Config] = None,
 ) -> Any:
     fig, ax = _mpl_academic_fig()
 
@@ -1880,12 +1882,30 @@ def _plot_saving_vs_grouped(
         raise ValueError("Nėra duomenų po filtravimo.")
 
     dist_nm = max(float(distance_nm), 0.0)
-    v_econ = pd.to_numeric(df["V_ECSR_kt"], errors="coerce")
+
     v_notch = pd.to_numeric(df["V_notch_kt"], errors="coerce")
 
+    v_econ_vals: List[float] = []
+    for _, row in df.iterrows():
+        ve = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
+
+        if scenarios is not None and cfg is not None and "ScenarioName" in row:
+            sc_name = str(row.get("ScenarioName", ""))
+            sc = _scenario_lookup(scenarios, sc_name)
+            if sc is not None:
+                try:
+                    ve = float(_scenario_docmin_econ_kt(sc, cfg))
+                except Exception:
+                    pass
+
+        v_econ_vals.append(ve)
+
+    v_econ = pd.Series(v_econ_vals, index=df.index, dtype="float64")
+
     speed_gap_ok = []
+    gap_tol = float(cfg.breakpoint_speed_tol_kt) if cfg is not None else 1.0
     for ve, vn in zip(v_econ.tolist(), v_notch.tolist()):
-        speed_gap_ok.append(_raw_speeds_differ(float(vn), float(ve), min_gap_kt=1))
+        speed_gap_ok.append(_raw_speeds_differ(float(vn), float(ve), min_gap_kt=gap_tol))
 
     speed_gap_ok = pd.Series(speed_gap_ok, index=df.index)
 
@@ -3052,6 +3072,8 @@ if mode == "Scenarijus":
                         group_col=group_col,
                         show_point_labels=True,
                         distance_nm=float(saving_distance_nm),
+                        scenarios=scenarios,
+                        cfg=cfg,
                     )
                     st.session_state[cap_key] = _conditions_sentence_from_filters(fixed, x_col=x_col, grouped_by=group_col)
                     st.session_state[err_key] = ""
@@ -3237,6 +3259,8 @@ else:
                         group_col=group_col,
                         show_point_labels=True,
                         distance_nm=float(saving_distance_nm),
+                        scenarios=scenarios,
+                        cfg=cfg,
                     )
                     st.session_state[cap_key] = _conditions_sentence_from_filters(
                         fixed_in,

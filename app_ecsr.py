@@ -191,21 +191,6 @@ def _fmt_saving_eur(v: float) -> str:
         dec = 1
     return _fmt_eur(float(v), decimals=dec)
 
-def _fmt_saving_eur(v: float) -> str:
-    """
-    Display savings with precision that keeps small non-zero values visible.
-    """
-    if not np.isfinite(v):
-        return ""
-    av = abs(float(v))
-    if av < 1.0:
-        dec = 3
-    elif av < 10.0:
-        dec = 2
-    else:
-        dec = 1
-    return _fmt_eur(float(v), decimals=dec)
-
 def _econ_from_docmin_with_notch_rule(v_docmin: float, v_notch: float, *, min_gap_kt: float = 1.0) -> float:
     """
     ECON rule:
@@ -319,15 +304,6 @@ def _ecsr_range_str(
 
     if lo_i > hi_i:
         lo_i = hi_i
-
-    return f"{lo_i}" if lo_i == hi_i else f"{lo_i}–{hi_i}"
-
-def _ecsr_range_str_simple(lo: float, hi: float) -> str:
-    if not (np.isfinite(lo) and np.isfinite(hi)):
-        return ""
-
-    lo_i = int(round(float(min(lo, hi))))
-    hi_i = int(round(float(max(lo, hi))))
 
     return f"{lo_i}" if lo_i == hi_i else f"{lo_i}–{hi_i}"
 
@@ -1139,13 +1115,30 @@ def _compute_input_doc_curve_knn(
     if msg:
         raise ValueError(msg)
 
-    usable = [
-        sc for sc in scenarios
-        if isinstance(sc.get("docIASVec"), np.ndarray)
-        and isinstance(sc.get("docVec"), np.ndarray)
-        and sc.get("docIASVec").size >= 2
-        and sc.get("docVec").size >= 2
-    ]
+    fuel_price_use = float(fuel_price_eur_per_kg) if fuel_price_eur_per_kg is not None else float(
+        st.session_state.get("last_cfg", cfg0).fuel_price_eur_per_kg
+    )
+    time_cost_use = float(time_cost_eur_per_hr) if time_cost_eur_per_hr is not None else float(
+        st.session_state.get("last_cfg", cfg0).time_cost_operational
+    )
+    
+    usable: List[Dict[str, Any]] = []
+    for sc in scenarios:
+        try:
+            cfg_local = replace(
+                st.session_state.get("last_cfg", cfg0),
+                fuel_price_eur_per_kg=float(fuel_price_use),
+                time_cost_operational=float(time_cost_use),
+            )
+            cur_sc = compute_doc_curve_pchip(sc, float(time_cost_use), cfg_local, ngrid=400)
+            sc_local = dict(sc)
+            sc_local["docIASVec"] = np.asarray(cur_sc["IAS_grid"], float)
+            sc_local["docVec"] = np.asarray(cur_sc["DOC_grid_per_nm"], float)
+            if sc_local["docIASVec"].size >= 2 and sc_local["docVec"].size >= 2:
+                usable.append(sc_local)
+        except Exception:
+            continue
+    
     if len(usable) < 8:
         raise ValueError("Nepakanka scenarijų DOC interpolacijai (reikia bent 8 su DOC vektoriais).")
 
@@ -1263,10 +1256,7 @@ def _compute_input_fuel_break_even_consistent(
         dtype=float,
     )
 
-    original_fp = float(cfg.fuel_price_eur_per_kg)
-
     for fp in fuel_grid.tolist():
-        cfg_local = replace(cfg, fuel_price_eur_per_kg=float(fp))
         try:
             cur = _compute_input_doc_curve_knn(
                 scenarios,
@@ -1275,41 +1265,14 @@ def _compute_input_fuel_break_even_consistent(
                 wt_kg=float(wt_kg),
                 isa_c=float(isa_c),
                 wind_kt=float(wind_kt),
+                fuel_price_eur_per_kg=float(fp),
+                time_cost_eur_per_hr=float(cfg.time_cost_operational),
             )
         except Exception:
-            try:
-                qres = compute_quick_metrics_interpolated(
-                    summary_tbl,
-                    fl_ft=float(fl_ft),
-                    weight_kg=float(wt_kg),
-                    isa_c=float(isa_c),
-                    wind_kt=float(wind_kt),
-                )
-                docmin_nm = float(qres.docmin_eur_per_nm)
-                docnotch_nm = float(qres.docnotch_eur_per_nm)
-            except Exception:
-                continue
-        else:
-            try:
-                cur = compute_doc_curve_pchip(
-                    {
-                        **{
-                            "scenarioName": "__tmp__",
-                            "ZP_ft": fl_ft,
-                            "WEIGHT_kg": wt_kg,
-                            "ISA_C": isa_c,
-                            "WIND_kt": wind_kt,
-                        }
-                    },
-                    float(cfg_local.time_cost_operational),
-                    cfg_local,
-                    ngrid=700,
-                )
-            except Exception:
-                pass
+            continue
 
-            docmin_nm = float(cur["DOC_opt_per_nm"])
-            docnotch_nm = float(cur["DOC_notch_per_nm"])
+        docmin_nm = float(cur["DOC_opt_per_nm"])
+        docnotch_nm = float(cur["DOC_notch_per_nm"])
 
         if np.isfinite(docmin_nm) and np.isfinite(docnotch_nm):
             if float(docnotch_nm) > float(docmin_nm):
@@ -1602,7 +1565,17 @@ def _plot_econ_vs_fuel_price_input_knn(
     def _econ_at(price: float) -> float:
         return float(np.interp(float(price), x, y))
 
-    be = float(qres.be_fuel_price_eur_per_kg)
+    be = float(
+        _compute_input_fuel_break_even_consistent(
+            scenarios,
+            summary_tbl,
+            cfg,
+            fl_ft=float(fl_ft),
+            wt_kg=float(wt_kg),
+            isa_c=float(isa_c),
+            wind_kt=float(wind_kt),
+        )
+    )
     fp_in = float(cfg.fuel_price_eur_per_kg)
 
     be_ok = np.isfinite(be) and (x_min <= be <= x_max)

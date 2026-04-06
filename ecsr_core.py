@@ -778,6 +778,9 @@ def compute_optimum_at_time_cost(sc: Dict[str, Any], tc: float, cfg: Config) -> 
     return {"IAS_opt_kt": v_opt, "DOC_min_EurPerNM": doc_min, "DOC_notch_EurPerNM": doc_notch}
 
 def run_parametric_sweep(sc: Dict[str, Any], time_cost_vec: np.ndarray, cfg: Config) -> Dict[str, Any]:
+    if not isinstance(sc, dict):
+        raise ValueError("Invalid scenario object in run_parametric_sweep (expected dict).")
+
     time_cost_vec = np.asarray(time_cost_vec, float).reshape(-1)
     sc["timeCostVec"] = time_cost_vec
 
@@ -810,6 +813,9 @@ def run_parametric_sweep(sc: Dict[str, Any], time_cost_vec: np.ndarray, cfg: Con
     doc_notch = (float(cfg.fuel_price_eur_per_kg) * fuel_notch + time_cost_vec * time_notch).astype(float)
 
 def run_fuel_price_sweep(sc: Dict[str, Any], fuel_price_vec: np.ndarray, cfg: Config) -> Dict[str, Any]:
+    if not isinstance(sc, dict):
+        raise ValueError("Invalid scenario object in run_fuel_price_sweep (expected dict).")
+
     fuel_price_vec = np.asarray(fuel_price_vec, float).reshape(-1)
     sc["fuelPriceVec"] = fuel_price_vec
 
@@ -2236,6 +2242,7 @@ def run_pipeline(
             logs.append(f"FAIL: {f['name']} -> {e}")
             _dbg(f"processed FAIL | name={f['name']} | error={e}")
 
+    scenarios = [sc for sc in scenarios if isinstance(sc, dict)]
     _dbg(f"scenario processing finished | ok_count={len(scenarios)}")
 
     if not scenarios:

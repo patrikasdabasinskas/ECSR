@@ -62,6 +62,13 @@ _BP_OTHER_COLS = ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt"]
 
 BUILTIN_SCENARIOS_DIR = Path("data/scenarios")
 
+
+def _pipeline_output_parent() -> Path:
+    """Use a guaranteed-writable temp location for pipeline artifacts."""
+    out = Path(tempfile.gettempdir()) / "ecsr_outputs"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
 # ------------------------- Upload helper (NEW) -------------------------
 
 
@@ -2361,63 +2368,71 @@ if run_btn:
         breakpoint_saving_eur_per_nm=float(saving_custom_nm or 0.0),
     )
 
+            global_cloud = pd.DataFrame()
     with st.spinner("Skaičiuojama..."):
-        # -------------------------
-        # Load scenarios
-        # -------------------------
-        if data_source == "Scenarijai, jau esantys sistemoje":
-            root_dir = BUILTIN_SCENARIOS_DIR
-            if not root_dir.exists() or not root_dir.is_dir():
-                st.error(
-                    "Rinkmenoje scenarijų nerasta. "
-                    "Įsitikinkite, kad sistemoje yra įkeltų scenarijų."
-                )
-                st.stop()
-
-            out_dir, _xlsx_path_unused, summary_tbl, longform_tbl, outliers_tbl, logs, scenarios = run_pipeline(
-                root_dir=root_dir,
-                cfg=cfg,
-                return_scenarios=True,
-            )
-            st.session_state["uploaded_names"] = []
-            st.session_state["input_root_label"] = str(root_dir)
-
-        else:
-            if not uploads:
-                st.error("Prašome įkelti bent vieną scenarijaus failą (*.csv / *.txt).")
-                st.stop()
-
-            tmp, tmp_path, saved_names = _save_uploads_to_tempdir(list(uploads))
-            try:
-                if not saved_names:
-                    st.error("Nepavyko įrašyti įkeltų failų. Bandykite dar kartą.")
+        try:
+            output_parent = _pipeline_output_parent()
+            # -------------------------
+            # Load scenarios
+            # -------------------------
+            if data_source == "Scenarijai, jau esantys sistemoje":
+                root_dir = BUILTIN_SCENARIOS_DIR
+                if not root_dir.exists() or not root_dir.is_dir():
+                    st.error(
+                        "Rinkmenoje scenarijų nerasta. "
+                        "Įsitikinkite, kad sistemoje yra įkeltų scenarijų."
+                    )
                     st.stop()
 
                 out_dir, _xlsx_path_unused, summary_tbl, longform_tbl, outliers_tbl, logs, scenarios = run_pipeline(
-                    root_dir=tmp_path,
+                    root_dir=root_dir,
                     cfg=cfg,
+                    output_parent=output_parent,
                     return_scenarios=True,
                 )
-            finally:
-                tmp.cleanup()
+                st.session_state["uploaded_names"] = []
+                st.session_state["input_root_label"] = str(root_dir)
 
-            st.session_state["uploaded_names"] = saved_names
-            st.session_state["input_root_label"] = "uploaded_files"
+            else:
+                if not uploads:
+                    st.error("Prašome įkelti bent vieną scenarijaus failą (*.csv / *.txt).")
+                    st.stop()
 
-        # -------------------------
-        # Post-processing (common)
-        # -------------------------
-        fuel_longform_tbl = build_longform_fuel_table(scenarios)
+                tmp, tmp_path, saved_names = _save_uploads_to_tempdir(list(uploads))
+                try:
+                    if not saved_names:
+                        st.error("Nepavyko įrašyti įkeltų failų. Bandykite dar kartą.")
+                        st.stop()
 
-        try:
-            summary_prebuilt_4d = build_summary_interpolators_4d(summary_tbl, min_points_required=20)
-        except Exception:
-            summary_prebuilt_4d = None
+                    out_dir, _xlsx_path_unused, summary_tbl, longform_tbl, outliers_tbl, logs, scenarios = run_pipeline(
+                        root_dir=tmp_path,
+                        cfg=cfg,
+                        output_parent=output_parent,
+                        return_scenarios=True,
+                    )
+                finally:
+                    tmp.cleanup()
 
-        try:
-            global_cloud = build_global_point_cloud(scenarios)
-        except Exception:
-            global_cloud = pd.DataFrame()
+                st.session_state["uploaded_names"] = saved_names
+                st.session_state["input_root_label"] = "uploaded_files"
+
+            # -------------------------
+            # Post-processing (common)
+            # -------------------------
+            fuel_longform_tbl = build_longform_fuel_table(scenarios)
+
+            try:
+                summary_prebuilt_4d = build_summary_interpolators_4d(summary_tbl, min_points_required=20)
+            except Exception:
+                summary_prebuilt_4d = None
+
+            try:
+                global_cloud = build_global_point_cloud(scenarios)
+            except Exception:
+                global_cloud = pd.DataFrame()
+        except Exception as e:
+            st.error(f"Nepavyko sugeneruoti rezultatų: {_normalize_ui_error(e)}")
+            st.stop()
 
     # -------------------------
     # Save state (outside spinner)

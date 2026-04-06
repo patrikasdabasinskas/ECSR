@@ -771,8 +771,14 @@ def run_parametric_sweep(sc: Dict[str, Any], time_cost_vec: np.ndarray, cfg: Con
     for i, tc in enumerate(time_cost_vec):
         doc_grid = doc_at(ias_grid, float(tc))
         j = int(np.nanargmin(doc_grid))
-        doc_min[i] = float(doc_grid[j])
-        ias_opt[i] = float(ias_grid[j])
+        v_opt_raw = float(ias_grid[j])
+        v_opt = _econ_from_docmin_with_notch_rule(
+            v_opt_raw,
+            v_notch,
+            min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+        )
+        ias_opt[i] = float(v_opt)
+        doc_min[i] = float(doc_at(np.array([v_opt], dtype=float), float(tc))[0])
         doc_notch[i] = float(doc_at(np.array([v_notch]), float(tc))[0])
 
     sc["DOC_min_EurPerNM"] = doc_min
@@ -802,8 +808,14 @@ def run_fuel_price_sweep(sc: Dict[str, Any], fuel_price_vec: np.ndarray, cfg: Co
     for i, fp in enumerate(fuel_price_vec):
         doc_grid = doc_at(ias_grid, float(fp))
         j = int(np.nanargmin(doc_grid))
-        doc_min[i] = float(doc_grid[j])
-        ias_opt[i] = float(ias_grid[j])
+        v_opt_raw = float(ias_grid[j])
+        v_opt = _econ_from_docmin_with_notch_rule(
+            v_opt_raw,
+            v_notch,
+            min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+        )
+        ias_opt[i] = float(v_opt)
+        doc_min[i] = float(doc_at(np.array([v_opt], dtype=float), float(fp))[0])
         doc_notch[i] = float(doc_at(np.array([v_notch]), float(fp))[0])
 
     sc["DOC_min_EurPerNM_fp"] = doc_min

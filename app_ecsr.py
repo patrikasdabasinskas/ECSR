@@ -2838,7 +2838,7 @@ else:
                     fallback_v_notch=float(v_notch_ui),
                 )
 
-                if _raw_speeds_differ(v_notch_ui, v_econ_ui, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
+                if _raw_speeds_differ(v_notch_ui, econ_for_ui, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
                     if np.isfinite(res_in.docmin_eur_per_nm) and np.isfinite(res_in.docnotch_eur_per_nm):
                         diff_total = round(float((res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm) * dist), 1)
                     else:

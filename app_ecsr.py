@@ -1163,6 +1163,38 @@ def _cached_input_doc_curve_5d(
         min_valid_grid_points=16,
     )
 
+def _ensure_summary_prebuilt_4d(summary_tbl: pd.DataFrame):
+    prebuilt = st.session_state.get("summary_prebuilt_4d", None)
+    if prebuilt is None:
+        try:
+            st.session_state["summary_prebuilt_4d"] = build_summary_interpolators_4d(
+                summary_tbl,
+                min_points_required=20,
+            )
+        except Exception as e:
+            raise ValueError(f"Nepavyko paruošti 4D interpoliatoriaus: {_normalize_ui_error(e)}")
+    return st.session_state["summary_prebuilt_4d"]
+
+
+def _ensure_global_cloud(scenarios: List[Dict[str, Any]]) -> pd.DataFrame:
+    cloud = st.session_state.get("global_cloud", None)
+    if not isinstance(cloud, pd.DataFrame) or cloud.empty:
+        try:
+            st.session_state["global_cloud"] = build_global_point_cloud(scenarios)
+        except Exception as e:
+            raise ValueError(f"Nepavyko sukurti global cloud: {_normalize_ui_error(e)}")
+    return st.session_state["global_cloud"]
+
+
+def _ensure_fuel_longform_tbl(scenarios: List[Dict[str, Any]]) -> pd.DataFrame:
+    tbl = st.session_state.get("fuel_longform_tbl", None)
+    if not isinstance(tbl, pd.DataFrame) or tbl.empty:
+        try:
+            st.session_state["fuel_longform_tbl"] = build_longform_fuel_table(scenarios)
+        except Exception as e:
+            raise ValueError(f"Nepavyko sukurti fuel longform lentelės: {_normalize_ui_error(e)}")
+    return st.session_state["fuel_longform_tbl"]
+
 def _plot_doc_vs_ias_input_5d(
     global_cloud: pd.DataFrame,
     summary_tbl: pd.DataFrame,
@@ -2109,7 +2141,7 @@ def _build_interpolated_sweep_table(
     if not x_vals:
         return pd.DataFrame()
 
-    prebuilt = build_summary_interpolators_4d(summary_tbl, min_points_required=20)
+    prebuilt = _ensure_summary_prebuilt_4d(summary_tbl)
 
     rows: List[Dict[str, float]] = []
 
@@ -2251,6 +2283,9 @@ def _init_state() -> None:
     st.session_state.setdefault("input_root_label", "uploaded_files")
 
     st.session_state.setdefault("summary_prebuilt_4d", None)
+    st.session_state.setdefault("debug_step", "")
+    st.session_state.setdefault("debug_detail", "")
+    st.session_state.setdefault("generation_ok", False)
 # ========================= UI =========================
 st.set_page_config(layout="wide")
 
@@ -2339,6 +2374,9 @@ if run_btn:
         st.session_state["excel_written_msg"] = ""
         _clear_excel_download_artifacts()
         st.session_state["outliers_tbl"] = pd.DataFrame()
+        st.session_state["debug_step"] = "start"
+        st.session_state["debug_detail"] = ""
+        st.session_state["generation_ok"] = False
 
         if float(fuel_price) <= 0.0 or float(tc_op) <= 0.0:
             st.error("Prašome įvesti teigiamas reikšmes: 'Degalų kaina' ir 'Laiko sąnaudos'.")
@@ -2360,6 +2398,8 @@ if run_btn:
         )
 
         with st.spinner("Skaičiuojama..."):
+            st.session_state["debug_step"] = "before_run_pipeline"
+
             if data_source == "Scenarijai, jau esantys sistemoje":
                 root_dir = BUILTIN_SCENARIOS_DIR
                 if not root_dir.exists() or not root_dir.is_dir():
@@ -2395,6 +2435,8 @@ if run_btn:
                 st.session_state["uploaded_names"] = saved_names
                 st.session_state["input_root_label"] = "uploaded_files"
 
+            st.session_state["debug_step"] = "after_run_pipeline"
+
             if not isinstance(summary_tbl, pd.DataFrame) or summary_tbl.empty:
                 raise ValueError("Nepavyko sugeneruoti Summary lentelės.")
 
@@ -2404,31 +2446,23 @@ if run_btn:
             if not isinstance(scenarios, list) or len(scenarios) == 0:
                 raise ValueError("Nepavyko nuskaityti scenarijų.")
 
-            try:
-                fuel_longform_tbl = build_longform_fuel_table(scenarios)
-            except Exception:
-                fuel_longform_tbl = pd.DataFrame()
-
-            try:
-                summary_prebuilt_4d = build_summary_interpolators_4d(summary_tbl, min_points_required=20)
-            except Exception:
-                summary_prebuilt_4d = None
-
-            try:
-                global_cloud = build_global_point_cloud(scenarios)
-            except Exception:
-                global_cloud = pd.DataFrame()
+            st.session_state["debug_step"] = "store_basic_results"
 
             st.session_state["last_cfg"] = cfg
             st.session_state["summary_tbl"] = summary_tbl
             st.session_state["longform_tbl"] = longform_tbl
-            st.session_state["fuel_longform_tbl"] = fuel_longform_tbl
-            st.session_state["global_cloud"] = global_cloud
-            st.session_state["summary_prebuilt_4d"] = summary_prebuilt_4d
+
+            # Lazy-load later only when needed
+            st.session_state["fuel_longform_tbl"] = pd.DataFrame()
+            st.session_state["global_cloud"] = pd.DataFrame()
+            st.session_state["summary_prebuilt_4d"] = None
+
             st.session_state["scenarios"] = scenarios
             st.session_state["generated_out_dir"] = str(out_dir)
             st.session_state["outliers_tbl"] = outliers_tbl if isinstance(outliers_tbl, pd.DataFrame) else pd.DataFrame()
             st.session_state["excel_written_msg"] = ""
+            st.session_state["generation_ok"] = True
+            st.session_state["debug_step"] = "done"
 
         for k in ["fig_g1", "fig_g2", "fig_g3"]:
             st.session_state[k] = None
@@ -2458,11 +2492,20 @@ if run_btn:
         st.session_state["in_err"] = ""
 
     except Exception as e:
+        st.session_state["debug_detail"] = _normalize_ui_error(e)
         st.error(_normalize_ui_error(e))
         st.stop()
-        
+
 summary_tbl_obj = st.session_state.get("summary_tbl", None)
 if not isinstance(summary_tbl_obj, pd.DataFrame) or summary_tbl_obj.empty:
+    dbg = str(st.session_state.get("debug_step", "")).strip()
+    det = str(st.session_state.get("debug_detail", "")).strip()
+
+    if dbg:
+        st.warning(f"Debug: paskutinis žingsnis = {dbg}")
+    if det:
+        st.error(det)
+
     st.info("Pasirinkite duomenų šaltinį ir spauskite „Generuoti“.")
     st.stop()
 
@@ -3100,8 +3143,9 @@ else:
             if st.button("Generuoti grafiką", key="btn_g1i", use_container_width=True):
                 st.session_state["open_g1"] = True
                 try:
+                    cloud_ready = _ensure_global_cloud(scenarios)
                     st.session_state["fig_g1"] = _plot_doc_vs_ias_input_5d(
-                        global_cloud,
+                        cloud_ready,
                         summary_tbl,
                         fl_ft=fl,
                         wt_kg=wt,
@@ -3242,6 +3286,7 @@ else:
             if st.button("Generuoti grafiką", key="btn_g2i", use_container_width=True):
                 st.session_state["open_g2"] = True
                 try:
+                    _ensure_summary_prebuilt_4d(summary_tbl)
                     st.session_state["fig_g2"] = _plot_econ_vs_time_cost_input_4d(
                                                     longform_tbl,
                                                     summary_tbl,
@@ -3276,15 +3321,17 @@ else:
             if st.button("Generuoti grafiką", key="btn_g3i", use_container_width=True):
                 st.session_state["open_g3"] = True
                 try:
+                    fuel_longform_tbl_ready = _ensure_fuel_longform_tbl(scenarios)
+                    _ensure_summary_prebuilt_4d(summary_tbl)
                     st.session_state["fig_g3"] = _plot_econ_vs_fuel_price_input_4d(
-                                                    fuel_longform_tbl,
-                                                    summary_tbl,
-                                                    fl_ft=fl,
-                                                    wt_kg=wt,
-                                                    isa_c=isa,
-                                                    wind_kt=wind,
-                                                    cfg=cfg,
-                                                )
+                        fuel_longform_tbl_ready,
+                        summary_tbl,
+                        fl_ft=fl,
+                        wt_kg=wt,
+                        isa_c=isa,
+                        wind_kt=wind,
+                        cfg=cfg,
+                    )
                     st.session_state["err_g3"] = ""
                 except Exception as e:
                     st.session_state["fig_g3"] = None

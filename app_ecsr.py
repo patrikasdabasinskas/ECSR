@@ -62,13 +62,6 @@ _BP_OTHER_COLS = ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt"]
 
 BUILTIN_SCENARIOS_DIR = Path("data/scenarios")
 
-
-def _pipeline_output_parent() -> Path:
-    """Use a guaranteed-writable temp location for pipeline artifacts."""
-    out = Path(tempfile.gettempdir()) / "ecsr_outputs"
-    out.mkdir(parents=True, exist_ok=True)
-    return out
-
 # ------------------------- Upload helper (NEW) -------------------------
 
 
@@ -2342,51 +2335,44 @@ with st.sidebar:
     run_btn = st.button("Generuoti", type="primary", use_container_width=True)
         
 if run_btn:
-    st.session_state["excel_written_msg"] = ""
-    _clear_excel_download_artifacts()
-    st.session_state["outliers_tbl"] = pd.DataFrame()
+    try:
+        st.session_state["excel_written_msg"] = ""
+        _clear_excel_download_artifacts()
+        st.session_state["outliers_tbl"] = pd.DataFrame()
 
-    if float(fuel_price) <= 0.0 or float(tc_op) <= 0.0:
-        st.error("Prašome įvesti teigiamas reikšmes: 'Degalų kaina' ir 'Laiko sąnaudos'.")
-        st.stop()
+        if float(fuel_price) <= 0.0 or float(tc_op) <= 0.0:
+            st.error("Prašome įvesti teigiamas reikšmes: 'Degalų kaina' ir 'Laiko sąnaudos'.")
+            st.stop()
 
-    if float(epsilon_pct) < 0.0:
-        st.error("ECSR epsilon negali būti neigiamas.")
-        st.stop()
+        if float(epsilon_pct) < 0.0:
+            st.error("ECSR epsilon negali būti neigiamas.")
+            st.stop()
 
-    if saving_mode_nm:
-        saving_mode_value = "per_nm"
-    else:
-        saving_mode_value = "default"
+        if saving_mode_nm:
+            saving_mode_value = "per_nm"
+        else:
+            saving_mode_value = "default"
 
-    cfg = replace(
-        cfg0,
-        fuel_price_eur_per_kg=float(fuel_price),
-        time_cost_operational=float(tc_op),
-        epsilon_break_even=float(float(epsilon_pct) / 100.0),
-        breakpoint_saving_mode=saving_mode_value,
-        breakpoint_saving_eur_per_nm=float(saving_custom_nm or 0.0),
-    )
+        cfg = replace(
+            cfg0,
+            fuel_price_eur_per_kg=float(fuel_price),
+            time_cost_operational=float(tc_op),
+            epsilon_break_even=float(float(epsilon_pct) / 100.0),
+            breakpoint_saving_mode=saving_mode_value,
+            breakpoint_saving_eur_per_nm=float(saving_custom_nm or 0.0),
+        )
 
-    with st.spinner("Skaičiuojama..."):
-        try:
-            output_parent = _pipeline_output_parent()
-            # -------------------------
-            # Load scenarios
-            # -------------------------
+        with st.spinner("Skaičiuojama..."):
             if data_source == "Scenarijai, jau esantys sistemoje":
                 root_dir = BUILTIN_SCENARIOS_DIR
                 if not root_dir.exists() or not root_dir.is_dir():
-                    st.error(
-                        "Rinkmenoje scenarijų nerasta. "
-                        "Įsitikinkite, kad sistemoje yra įkeltų scenarijų."
+                    raise ValueError(
+                        "Rinkmenoje scenarijų nerasta. Įsitikinkite, kad sistemoje yra įkeltų scenarijų."
                     )
-                    st.stop()
 
                 out_dir, _xlsx_path_unused, summary_tbl, longform_tbl, outliers_tbl, logs, scenarios = run_pipeline(
                     root_dir=root_dir,
                     cfg=cfg,
-                    output_parent=output_parent,
                     return_scenarios=True,
                 )
                 st.session_state["uploaded_names"] = []
@@ -2394,19 +2380,16 @@ if run_btn:
 
             else:
                 if not uploads:
-                    st.error("Prašome įkelti bent vieną scenarijaus failą (*.csv / *.txt).")
-                    st.stop()
+                    raise ValueError("Prašome įkelti bent vieną scenarijaus failą (*.csv / *.txt).")
 
                 tmp, tmp_path, saved_names = _save_uploads_to_tempdir(list(uploads))
                 try:
                     if not saved_names:
-                        st.error("Nepavyko įrašyti įkeltų failų. Bandykite dar kartą.")
-                        st.stop()
+                        raise ValueError("Nepavyko įrašyti įkeltų failų. Bandykite dar kartą.")
 
                     out_dir, _xlsx_path_unused, summary_tbl, longform_tbl, outliers_tbl, logs, scenarios = run_pipeline(
                         root_dir=tmp_path,
                         cfg=cfg,
-                        output_parent=output_parent,
                         return_scenarios=True,
                     )
                 finally:
@@ -2415,9 +2398,13 @@ if run_btn:
                 st.session_state["uploaded_names"] = saved_names
                 st.session_state["input_root_label"] = "uploaded_files"
 
-            # -------------------------
-            # Post-processing (common)
-            # -------------------------
+            st.session_state["last_cfg"] = cfg
+            st.session_state["summary_tbl"] = summary_tbl
+            st.session_state["longform_tbl"] = longform_tbl
+            st.session_state["scenarios"] = scenarios
+            st.session_state["generated_out_dir"] = str(out_dir)
+            st.session_state["outliers_tbl"] = outliers_tbl if isinstance(outliers_tbl, pd.DataFrame) else pd.DataFrame()
+
             fuel_longform_tbl = build_longform_fuel_table(scenarios)
 
             try:
@@ -2429,57 +2416,42 @@ if run_btn:
                 global_cloud = build_global_point_cloud(scenarios)
             except Exception:
                 global_cloud = pd.DataFrame()
-        except Exception as e:
-            st.error(f"Nepavyko sugeneruoti rezultatų: {_normalize_ui_error(e)}")
-            st.stop()
 
-    # -------------------------
-    # Save state (outside spinner)
-    # -------------------------
-    st.session_state["fuel_longform_tbl"] = fuel_longform_tbl
-    st.session_state["global_cloud"] = global_cloud
-    st.session_state["summary_prebuilt_4d"] = summary_prebuilt_4d
-    st.session_state["last_cfg"] = cfg
-    st.session_state["summary_tbl"] = summary_tbl
-    st.session_state["longform_tbl"] = longform_tbl
-    st.session_state["fuel_longform_tbl"] = fuel_longform_tbl
-    st.session_state["scenarios"] = scenarios
-    st.session_state["generated_out_dir"] = str(out_dir)
-    st.session_state["excel_written_msg"] = ""
-    st.session_state["outliers_tbl"] = outliers_tbl if isinstance(outliers_tbl, pd.DataFrame) else pd.DataFrame()
+            st.session_state["fuel_longform_tbl"] = fuel_longform_tbl
+            st.session_state["global_cloud"] = global_cloud
+            st.session_state["summary_prebuilt_4d"] = summary_prebuilt_4d
+            st.session_state["excel_written_msg"] = ""
 
-    for k in ["fig_g1", "fig_g2", "fig_g3"]:
-        st.session_state[k] = None
-    for k in ["cap_g1", "cap_g2", "cap_g3"]:
-        st.session_state[k] = ""
-    for k in ["open_g1", "open_g2", "open_g3"]:
-        st.session_state[k] = False
-    for k in ["err_g1", "err_g2", "err_g3"]:
-        st.session_state[k] = ""
+        for k in ["fig_g1", "fig_g2", "fig_g3"]:
+            st.session_state[k] = None
+        for k in ["cap_g1", "cap_g2", "cap_g3"]:
+            st.session_state[k] = ""
+        for k in ["open_g1", "open_g2", "open_g3"]:
+            st.session_state[k] = False
+        for k in ["err_g1", "err_g2", "err_g3"]:
+            st.session_state[k] = ""
 
-    for gid in _BP_GRAPHS.keys():
-        st.session_state[f"open_{gid}"] = False
-        st.session_state[f"fig_{gid}_time"] = None
-        st.session_state[f"fig_{gid}_fuel"] = None
-        st.session_state[f"cap_{gid}"] = ""
-        st.session_state[f"err_{gid}"] = ""
+        for gid in _BP_GRAPHS.keys():
+            st.session_state[f"open_{gid}"] = False
+            st.session_state[f"fig_{gid}_time"] = None
+            st.session_state[f"fig_{gid}_fuel"] = None
+            st.session_state[f"cap_{gid}"] = ""
+            st.session_state[f"err_{gid}"] = ""
 
-    for gid in _DOC_GRAPHS.keys():
-        st.session_state[f"open_{gid}"] = False
-        st.session_state[f"fig_{gid}"] = None
-        st.session_state[f"cap_{gid}"] = ""
-        st.session_state[f"err_{gid}"] = ""
+        for gid in _DOC_GRAPHS.keys():
+            st.session_state[f"open_{gid}"] = False
+            st.session_state[f"fig_{gid}"] = None
+            st.session_state[f"cap_{gid}"] = ""
+            st.session_state[f"err_{gid}"] = ""
 
-    st.session_state["ecsr_calc_last"] = None
-    st.session_state["ecsr_calc_err"] = ""
-    st.session_state["in_last_res"] = None
-    st.session_state["in_err"] = ""
+        st.session_state["ecsr_calc_last"] = None
+        st.session_state["ecsr_calc_err"] = ""
+        st.session_state["in_last_res"] = None
+        st.session_state["in_err"] = ""
 
-# ========================= MAIN VIEW =========================
-
-if "summary_tbl" not in st.session_state:
-    st.info("Pasirinkite duomenų šaltinį ir spauskite „Generuoti“.")
-    st.stop()
+    except Exception as e:
+        st.error(_normalize_ui_error(e))
+        st.stop()
 
 summary_tbl: pd.DataFrame = st.session_state["summary_tbl"]
 longform_tbl: pd.DataFrame = st.session_state["longform_tbl"]

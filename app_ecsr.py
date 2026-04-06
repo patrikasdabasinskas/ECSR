@@ -191,6 +191,21 @@ def _fmt_saving_eur(v: float) -> str:
         dec = 1
     return _fmt_eur(float(v), decimals=dec)
 
+def _fmt_saving_eur(v: float) -> str:
+    """
+    Display savings with precision that keeps small non-zero values visible.
+    """
+    if not np.isfinite(v):
+        return ""
+    av = abs(float(v))
+    if av < 1.0:
+        dec = 3
+    elif av < 10.0:
+        dec = 2
+    else:
+        dec = 1
+    return _fmt_eur(float(v), decimals=dec)
+
 def _econ_from_docmin_with_notch_rule(v_docmin: float, v_notch: float, *, min_gap_kt: float = 1.0) -> float:
     """
     ECON rule:
@@ -236,6 +251,15 @@ def _raw_speeds_differ(v_notch: float, v_econ: float, min_gap_kt: float = 1.0) -
     if not (np.isfinite(v_notch) and np.isfinite(v_econ)):
         return False
     return (float(v_notch) - float(v_econ)) >= float(min_gap_kt)
+
+def _raw_speed_advantage_exists(v_notch: float, v_econ: float, *, atol_kt: float = 1e-6) -> bool:
+    """
+    True when ECON is genuinely below IASnotch in raw values (no 1 kt display gating).
+    Used for savings display so tiny but real differences are not forced to zero.
+    """
+    if not (np.isfinite(v_notch) and np.isfinite(v_econ)):
+        return False
+    return float(v_notch) > float(v_econ) + float(atol_kt)
 
 
 def _fmt_speed_econ(v: float) -> str:
@@ -1901,10 +1925,9 @@ def _plot_saving_vs_grouped(
     v_notch = pd.to_numeric(df["V_notch_kt"], errors="coerce")
     v_econ = pd.to_numeric(df["V_ECSR_kt"], errors="coerce")
 
-    gap_tol = float(cfg.breakpoint_speed_tol_kt) if cfg is not None else 1.0
     speed_gap_ok = pd.Series(
         [
-            _raw_speeds_differ(float(vn), float(ve), min_gap_kt=gap_tol)
+            _raw_speed_advantage_exists(float(vn), float(ve))
             for ve, vn in zip(v_econ.tolist(), v_notch.tolist())
         ],
         index=df.index,
@@ -1954,7 +1977,7 @@ def _plot_saving_vs_grouped(
                 for x0, y0 in zip(xs.tolist(), ys.tolist()):
                     if np.isfinite(x0) and np.isfinite(y0):
                         label_candidates.append(
-                            (float(x0), float(y0), f"{float(y0):.3f}", str(grp_val))
+                            (float(x0), float(y0), f"{float(y0):.4f}", str(grp_val))
                         )
 
         if show_point_labels and label_candidates:
@@ -2708,8 +2731,8 @@ if mode == "Scenarijus":
                 v_econ_raw = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
                 dist = float(distance_nm)
 
-                if _raw_speeds_differ(v_notch_raw, v_econ_raw, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
-                    if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
+                if _raw_speed_advantage_exists(v_notch_raw, v_econ_raw):
+                    if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):␊
                         diff_total = float((v_notch_per_nm - v_min_per_nm) * dist)
                     else:
                         diff_total = float("nan")
@@ -2853,10 +2876,10 @@ else:
                     fallback_v_notch=float(v_notch_ui),
                 )
 
-                if _raw_speeds_differ(v_notch_ui, econ_for_ui, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
+                if _raw_speed_advantage_exists(v_notch_ui, econ_for_ui):
                     if np.isfinite(res_in.docmin_eur_per_nm) and np.isfinite(res_in.docnotch_eur_per_nm):
                         diff_total = float((res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm) * dist)
-                    else:
+                    else:␊
                         diff_total = float("nan")
                 else:
                     diff_total = 0.0

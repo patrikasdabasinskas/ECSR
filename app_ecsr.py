@@ -2368,7 +2368,6 @@ if run_btn:
         breakpoint_saving_eur_per_nm=float(saving_custom_nm or 0.0),
     )
 
-            global_cloud = pd.DataFrame()
     with st.spinner("Skaičiuojama..."):
         try:
             output_parent = _pipeline_output_parent()

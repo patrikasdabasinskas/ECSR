@@ -1143,8 +1143,8 @@ def _cached_input_doc_curve_5d(
         wind_kt=float(wind_kt),
         time_cost_eur_per_hr=float(time_cost_eur_per_hr),
         fuel_price_eur_per_kg=float(fuel_price_eur_per_kg),
-        ngrid=400,
-        min_valid_grid_points=40,
+        ngrid=300,
+        min_valid_grid_points=30,
     )
 
 def _plot_doc_vs_ias_input_5d(
@@ -1248,14 +1248,14 @@ def _plot_doc_vs_ias_input_5d(
 def _cached_econ_vs_time_cost_interpolated(
     longform_tbl: pd.DataFrame,
     fl_ft: float,
-    wt_kg: float,
+    weight_kg: float,
     isa_c: float,
     wind_kt: float,
 ) -> pd.DataFrame:
     return compute_econ_vs_time_cost_interpolated(
         longform_tbl,
         fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
+        weight_kg=float(weight_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
     )
@@ -1265,14 +1265,14 @@ def _cached_econ_vs_time_cost_interpolated(
 def _cached_econ_vs_fuel_price_interpolated(
     fuel_longform_tbl: pd.DataFrame,
     fl_ft: float,
-    wt_kg: float,
+    weight_kg: float,
     isa_c: float,
     wind_kt: float,
 ) -> pd.DataFrame:
     return compute_econ_vs_fuel_price_interpolated(
         fuel_longform_tbl,
         fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
+        weight_kg=float(weight_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
     )

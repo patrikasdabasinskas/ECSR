@@ -1044,6 +1044,7 @@ def compute_quick_metrics_interpolated(
     hi_v = _interp_scalar_4d(pts, q, e_hi, name="ECSR_high_kt")
     v_ecsr_v = _interp_scalar_4d(pts, q, v_ecsr, name="V_ECSR_kt")
     v_notch_v = _interp_scalar_4d(pts, q, v_notch, name="V_notch_kt")
+    v_ecsr_v = min(v_ecsr_v, v_notch_v)
 
     docmin_nm_v = _interp_scalar_4d(pts, q, docmin, name="DOCmin_EurPerNM")
     docnotch_nm_v = _interp_scalar_4d(pts, q, docnotch, name="DOCnotch_EurPerNM")

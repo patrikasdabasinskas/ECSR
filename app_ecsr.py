@@ -2732,7 +2732,7 @@ if mode == "Scenarijus":
                 dist = float(distance_nm)
 
                 if _raw_speed_advantage_exists(v_notch_raw, v_econ_raw):
-                    if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):␊
+                    if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
                         diff_total = float((v_notch_per_nm - v_min_per_nm) * dist)
                     else:
                         diff_total = float("nan")

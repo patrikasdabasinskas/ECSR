@@ -176,6 +176,21 @@ def _fmt_eur(v: float, *, decimals: int = 1) -> str:
         return ""
     return f"{float(v):.{int(decimals)}f}".replace(".", ",")
 
+def _fmt_saving_eur(v: float) -> str:
+    """
+    Display savings with precision that keeps small non-zero values visible.
+    """
+    if not np.isfinite(v):
+        return ""
+    av = abs(float(v))
+    if av < 1.0:
+        dec = 3
+    elif av < 10.0:
+        dec = 2
+    else:
+        dec = 1
+    return _fmt_eur(float(v), decimals=dec)
+
 def _econ_from_docmin_with_notch_rule(v_docmin: float, v_notch: float, *, min_gap_kt: float = 1.0) -> float:
     """
     ECON rule:
@@ -2695,7 +2710,7 @@ if mode == "Scenarijus":
 
                 if _raw_speeds_differ(v_notch_raw, v_econ_raw, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
                     if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
-                        diff_total = round(float((v_notch_per_nm - v_min_per_nm) * dist), 1)
+                        diff_total = float((v_notch_per_nm - v_min_per_nm) * dist)
                     else:
                         diff_total = float("nan")
                 else:
@@ -2735,7 +2750,7 @@ if mode == "Scenarijus":
         _show_result_card("", "")
     else:
         if is_saving_per_x:
-            v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else "0,0"
+            v = _fmt_saving_eur(diff_total) if np.isfinite(diff_total) else "0,000"
             _show_result_card(v, "EUR")
         else:
             _show_result_card(shown_value, shown_unit)
@@ -2840,7 +2855,7 @@ else:
 
                 if _raw_speeds_differ(v_notch_ui, econ_for_ui, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
                     if np.isfinite(res_in.docmin_eur_per_nm) and np.isfinite(res_in.docnotch_eur_per_nm):
-                        diff_total = round(float((res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm) * dist), 1)
+                        diff_total = float((res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm) * dist)
                     else:
                         diff_total = float("nan")
                 else:
@@ -2877,7 +2892,7 @@ else:
         _show_result_card("", "")
     else:
         if col_key == "__SAVING_PER_X__":
-            v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else "0,0"
+            v = _fmt_saving_eur(diff_total) if np.isfinite(diff_total) else "0,000"
             _show_result_card(v, "EUR")
         else:
             _show_result_card(shown_value, shown_unit)

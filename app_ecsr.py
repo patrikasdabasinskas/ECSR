@@ -2875,7 +2875,7 @@ if mode == "Scenarijus":
                             time_cost_eur_per_hr=float(cfg.time_cost_operational),
                             cfg=cfg,
                         )
-                        v_min_per_nm = float(cur_sc["doc_econ_raw_per_nm"])
+                        v_min_per_nm = float(cur_sc["doc_econ_per_nm"])
                         v_notch_per_nm = float(cur_sc["doc_notch_per_nm"])
                         v_notch_raw = float(cur_sc["v_notch"])
                         v_econ_raw = float(cur_sc["v_econ"])

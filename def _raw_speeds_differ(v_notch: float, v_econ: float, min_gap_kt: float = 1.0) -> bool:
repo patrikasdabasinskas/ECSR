@@ -362,37 +362,6 @@ def _scenario_docmin_econ_display_kt(
     return _fmt_speed_econ_safe(v_econ, v_notch)
 
 
-def _input_docmin_econ_kt(
-    scenarios: List[Dict[str, Any]],
-    summary_tbl: pd.DataFrame,
-    *,
-    fl_ft: float,
-    wt_kg: float,
-    isa_c: float,
-    wind_kt: float,
-    fallback_v_econ: float,
-    fallback_v_notch: float,
-) -> float:
-    try:
-        doc_curve_res = _compute_input_doc_curve_knn(
-            scenarios,
-            summary_tbl,
-            fl_ft=float(fl_ft),
-            wt_kg=float(wt_kg),
-            isa_c=float(isa_c),
-            wind_kt=float(wind_kt),
-        )
-        v_docmin = float(doc_curve_res["IAS_opt"])
-    except Exception:
-        v_docmin = float(fallback_v_econ)
-
-    return _econ_from_docmin_with_notch_rule(
-        v_docmin,
-        float(fallback_v_notch),
-        min_gap_kt=1.0,
-    )
-
-
 def _group_label(group_col: str, group_val: float) -> str:
     name, unit = _GROUP_META.get(group_col, (group_col, ""))
     unit_txt = f" {unit}" if unit else ""
@@ -1264,12 +1233,15 @@ def _compute_input_doc_curve_knn(
 
     v_opt = _econ_from_docmin_with_notch_rule(v_opt_raw, v_notch, min_gap_kt=1.0)
     doc_opt = float(np.interp(v_opt, x_full, y_full))
+    doc_notch = float(np.interp(v_notch, x_full, y_full))
 
     return {
         "IAS_grid": x_full,
         "DOC_grid_per_nm": y_full,
         "IAS_opt": v_opt,
+        "IAS_notch": v_notch,
         "DOC_opt_per_nm": doc_opt,
+        "DOC_notch_per_nm": doc_notch,
     }
 
 def _plot_doc_vs_ias_input_knn(
@@ -2725,15 +2697,26 @@ if mode == "Scenarijus":
                 shown_unit = "€/kg" if (shown_value and shown_value != "Nėra lūžio taško") else ""
 
             elif col_key == "__SAVING_PER_X__":
+                dist = float(distance_nm)
                 v_min_per_nm = float(pd.to_numeric(row.get("DOCmin_EurPerNM", np.nan), errors="coerce"))
                 v_notch_per_nm = float(pd.to_numeric(row.get("DOCnotch_EurPerNM", np.nan), errors="coerce"))
                 v_notch_raw = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
                 v_econ_raw = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
-                dist = float(distance_nm)
+
+                sc_obj = _scenario_lookup(scenarios, str(pick_scn))
+                if sc_obj is not None:
+                    try:
+                        cur_sc = compute_doc_curve_pchip(sc_obj, float(cfg.time_cost_operational), cfg, ngrid=700)
+                        v_min_per_nm = float(cur_sc["DOC_opt_per_nm"])
+                        v_notch_per_nm = float(cur_sc["DOC_notch_per_nm"])
+                        v_notch_raw = float(cur_sc["IAS_notch"])
+                        v_econ_raw = float(cur_sc["IAS_opt"])
+                    except Exception:
+                        pass
 
                 if _raw_speed_advantage_exists(v_notch_raw, v_econ_raw):
                     if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
-                        diff_total = float((v_notch_per_nm - v_min_per_nm) * dist)
+                        diff_total = max(0.0, float((v_notch_per_nm - v_min_per_nm) * dist))
                     else:
                         diff_total = float("nan")
                 else:
@@ -2773,7 +2756,7 @@ if mode == "Scenarijus":
         _show_result_card("", "")
     else:
         if is_saving_per_x:
-            v = _fmt_saving_eur(diff_total) if np.isfinite(diff_total) else "0,000"
+            v = _fmt_saving_eur(diff_total) if np.isfinite(diff_total) else "0,0"
             _show_result_card(v, "EUR")
         else:
             _show_result_card(shown_value, shown_unit)
@@ -2864,21 +2847,28 @@ else:
                 dist = float(distance_nm)
                 v_econ_ui = float(res_in.v_ecsr_kt)
                 v_notch_ui = float(res_in.v_notch_kt)
+                docmin_nm = float(res_in.docmin_eur_per_nm)
+                docnotch_nm = float(res_in.docnotch_eur_per_nm)
 
-                econ_for_ui = _input_docmin_econ_kt(
-                    scenarios,
-                    summary_tbl,
-                    fl_ft=float(in_fl),
-                    wt_kg=float(in_wt),
-                    isa_c=float(in_isa),
-                    wind_kt=float(in_wind),
-                    fallback_v_econ=float(res_in.v_ecsr_kt),
-                    fallback_v_notch=float(v_notch_ui),
-                )
+                try:
+                    cur_in = _compute_input_doc_curve_knn(
+                        scenarios,
+                        summary_tbl,
+                        fl_ft=float(in_fl),
+                        wt_kg=float(in_wt),
+                        isa_c=float(in_isa),
+                        wind_kt=float(in_wind),
+                    )
+                    v_econ_ui = float(cur_in["IAS_opt"])
+                    v_notch_ui = float(cur_in["IAS_notch"])
+                    docmin_nm = float(cur_in["DOC_opt_per_nm"])
+                    docnotch_nm = float(cur_in["DOC_notch_per_nm"])
+                except Exception:
+                    pass
 
-                if _raw_speed_advantage_exists(v_notch_ui, econ_for_ui):
-                    if np.isfinite(res_in.docmin_eur_per_nm) and np.isfinite(res_in.docnotch_eur_per_nm):
-                        diff_total = float((res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm) * dist)
+                if _raw_speed_advantage_exists(v_notch_ui, v_econ_ui):
+                    if np.isfinite(docmin_nm) and np.isfinite(docnotch_nm):
+                        diff_total = max(0.0, float((docnotch_nm - docmin_nm) * dist))
                     else:
                         diff_total = float("nan")
                 else:
@@ -2915,7 +2905,7 @@ else:
         _show_result_card("", "")
     else:
         if col_key == "__SAVING_PER_X__":
-            v = _fmt_saving_eur(diff_total) if np.isfinite(diff_total) else "0,000"
+            v = _fmt_saving_eur(diff_total) if np.isfinite(diff_total) else "0,0"
             _show_result_card(v, "EUR")
         else:
             _show_result_card(shown_value, shown_unit)

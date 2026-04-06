@@ -1884,30 +1884,17 @@ def _plot_saving_vs_grouped(
     dist_nm = max(float(distance_nm), 0.0)
 
     v_notch = pd.to_numeric(df["V_notch_kt"], errors="coerce")
+    v_econ = pd.to_numeric(df["V_ECSR_kt"], errors="coerce")
 
-    v_econ_vals: List[float] = []
-    for _, row in df.iterrows():
-        ve = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
-
-        if scenarios is not None and cfg is not None and "ScenarioName" in row:
-            sc_name = str(row.get("ScenarioName", ""))
-            sc = _scenario_lookup(scenarios, sc_name)
-            if sc is not None:
-                try:
-                    ve = float(_scenario_docmin_econ_kt(sc, cfg))
-                except Exception:
-                    pass
-
-        v_econ_vals.append(ve)
-
-    v_econ = pd.Series(v_econ_vals, index=df.index, dtype="float64")
-
-    speed_gap_ok = []
     gap_tol = float(cfg.breakpoint_speed_tol_kt) if cfg is not None else 1.0
-    for ve, vn in zip(v_econ.tolist(), v_notch.tolist()):
-        speed_gap_ok.append(_raw_speeds_differ(float(vn), float(ve), min_gap_kt=gap_tol))
-
-    speed_gap_ok = pd.Series(speed_gap_ok, index=df.index)
+    speed_gap_ok = pd.Series(
+        [
+            _raw_speeds_differ(float(vn), float(ve), min_gap_kt=gap_tol)
+            for ve, vn in zip(v_econ.tolist(), v_notch.tolist())
+        ],
+        index=df.index,
+        dtype=bool,
+    )
 
     raw_saving = (df["DOCnotch_EurPerNM"] - df["DOCmin_EurPerNM"]).clip(lower=0.0)
     df["Saving_Eur"] = np.where(speed_gap_ok, raw_saving * dist_nm, 0.0)
@@ -2703,13 +2690,8 @@ if mode == "Scenarijus":
                 v_min_per_nm = float(pd.to_numeric(row.get("DOCmin_EurPerNM", np.nan), errors="coerce"))
                 v_notch_per_nm = float(pd.to_numeric(row.get("DOCnotch_EurPerNM", np.nan), errors="coerce"))
                 v_notch_raw = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
+                v_econ_raw = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
                 dist = float(distance_nm)
-
-                sc = _scenario_lookup(scenarios, pick_scn)
-                v_econ_docmin = float("nan")
-                if sc is not None:
-                    v_econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
-                    v_econ_raw = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
 
                 if _raw_speeds_differ(v_notch_raw, v_econ_raw, min_gap_kt=float(cfg.breakpoint_speed_tol_kt)):
                     if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):

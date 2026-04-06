@@ -114,6 +114,8 @@ class Config:
 def default_config() -> Config:
     return Config()
 
+def _dbg(msg: str) -> None:
+    print(f"[ECSR DEBUG] {msg}", flush=True)
 
 # ========================= SORT =========================
 
@@ -2078,10 +2080,15 @@ def run_pipeline(
     root_dir = root_dir.resolve()
     output_parent = (output_parent or root_dir).resolve()
 
+    _dbg(f"run_pipeline start | root_dir={root_dir}")
+
     out_dir = output_parent / f"ECSR_Output_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     out_dir.mkdir(parents=True, exist_ok=True)
+    _dbg(f"output dir created | out_dir={out_dir}")
 
     files = list_scenario_files(root_dir)
+    _dbg(f"files discovered | count={len(files)}")
+
     if not files:
         raise RuntimeError("No scenario files found. Expected *.csv, *.txt, *.csv.txt, *.CSV, etc.")
 
@@ -2089,37 +2096,59 @@ def run_pipeline(
     outlier_frames: List[pd.DataFrame] = []
     logs: List[str] = []
 
-    for f in files:
+    for i, f in enumerate(files, start=1):
         fp = Path(f["fullpath"])
+        _dbg(f"processing file {i}/{len(files)} | name={f['name']}")
         try:
             sc, outliers = process_scenario_file(fp, cfg)
             logs.append(f"OK: {f['name']} | rows(raw/final)={sc['audit']['nRawRows']}/{sc['audit']['nFinalRows']}")
             scenarios.append(sc)
             if outliers is not None and not outliers.empty:
                 outlier_frames.append(outliers)
+            _dbg(f"processed OK | scenario={sc['scenarioName']}")
         except Exception as e:
             logs.append(f"FAIL: {f['name']} -> {e}")
+            _dbg(f"processed FAIL | name={f['name']} | error={e}")
+
+    _dbg(f"scenario processing finished | ok_count={len(scenarios)}")
 
     if not scenarios:
         raise RuntimeError("No scenarios processed successfully.")
 
     outlier_rows = pd.concat(outlier_frames, ignore_index=True) if outlier_frames else make_empty_outlier_table()
+    _dbg(f"outlier table ready | rows={len(outlier_rows)}")
 
     time_cost_vec = np.arange(cfg.time_cost_min, cfg.time_cost_max + 1e-9, cfg.time_cost_step, dtype=float)
+    _dbg(f"time sweep start | steps={len(time_cost_vec)} | scenarios={len(scenarios)}")
     for i in range(len(scenarios)):
+        if i % 25 == 0 or i == len(scenarios) - 1:
+            _dbg(f"time sweep progress | {i+1}/{len(scenarios)}")
         scenarios[i] = run_parametric_sweep(scenarios[i], time_cost_vec, cfg)
+    _dbg("time sweep done")
 
     fuel_price_vec = np.arange(cfg.fuel_price_min, cfg.fuel_price_max + 1e-12, cfg.fuel_price_step, dtype=float)
+    _dbg(f"fuel sweep start | steps={len(fuel_price_vec)} | scenarios={len(scenarios)}")
     for i in range(len(scenarios)):
+        if i % 25 == 0 or i == len(scenarios) - 1:
+            _dbg(f"fuel sweep progress | {i+1}/{len(scenarios)}")
         scenarios[i] = run_fuel_price_sweep(scenarios[i], fuel_price_vec, cfg)
+    _dbg("fuel sweep done")
 
+    _dbg("building summary table")
     summary_tbl = build_summary_table(scenarios, cfg)
+    _dbg(f"summary table done | shape={summary_tbl.shape}")
+
+    _dbg("building longform table")
     longform_tbl = build_longform_table(scenarios)
+    _dbg(f"longform table done | shape={longform_tbl.shape}")
 
     summary_tbl, longform_tbl = _sort_tables_for_export(summary_tbl, longform_tbl)
+    _dbg("sort tables done")
 
     xlsx_path: Optional[Path] = None
     base = (out_dir, xlsx_path, summary_tbl, longform_tbl, outlier_rows, logs)
+
+    _dbg("run_pipeline success")
 
     if return_scenarios:
         return (*base, scenarios)

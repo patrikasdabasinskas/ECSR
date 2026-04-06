@@ -951,24 +951,31 @@ def compute_ecsr_band_interpolated(
 
     pts = np.column_stack([zp, wt, isa, wnd]).astype(float)
 
-    need = ["V_ECSR_kt", "ECSR_low_kt", "ECSR_high_kt"]
+    need = ["V_ECSR_kt", "V_notch_kt", "ECSR_low_kt", "ECSR_high_kt"]
     _require_columns(df, need)
     v_ecsr = _numeric_col(df, "V_ECSR_kt")
+    v_notch = _numeric_col(df, "V_notch_kt")
     e_lo = _numeric_col(df, "ECSR_low_kt")
     e_hi = _numeric_col(df, "ECSR_high_kt")
 
     itp_v = LinearNDInterpolator(pts, v_ecsr, fill_value=np.nan)
+    itp_notch = LinearNDInterpolator(pts, v_notch, fill_value=np.nan)
     itp_lo = LinearNDInterpolator(pts, e_lo, fill_value=np.nan)
     itp_hi = LinearNDInterpolator(pts, e_hi, fill_value=np.nan)
 
     q = np.array([[float(fl_ft), float(weight_kg), float(isa_c), float(wind_kt)]], dtype=float)
 
     v = float(itp_v(q)[0])
+    v_notch_q = float(itp_notch(q)[0])
     lo = float(itp_lo(q)[0])
     hi = float(itp_hi(q)[0])
 
-    if not (np.isfinite(v) and np.isfinite(lo) and np.isfinite(hi)):
+    if not (np.isfinite(v) and np.isfinite(v_notch_q) and np.isfinite(lo) and np.isfinite(hi)):
         raise ValueError("Negalima interpoliuoti šioms sąlygoms: trūksta duomenų.")
+    
+    v = min(v, v_notch_q)
+    hi = min(hi, v_notch_q)
+    lo = min(lo, hi)
 
     return EcsrInterpResult(
         fl_ft=float(fl_ft),
@@ -980,6 +987,129 @@ def compute_ecsr_band_interpolated(
         ecsr_high_kt=float(max(lo, hi)),
     )
 
+def compute_econ_vs_time_cost_interpolated(
+    longform_tbl: pd.DataFrame,
+    *,
+    fl_ft: float,
+    weight_kg: float,
+    isa_c: float,
+    wind_kt: float,
+    min_points_required: int = 8,
+) -> pd.DataFrame:
+    need = ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt", "TIME_COST", "IASopt"]
+    _require_columns(longform_tbl, need)
+
+    df = longform_tbl.copy()
+    for c in need:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=need)
+
+    if df.empty:
+        raise ValueError("Negalima atlikti interpoliacijos.")
+
+    for col, label, unit, val in [
+        ("ZP_ft", "Aukštis", "ft", fl_ft),
+        ("WEIGHT_kg", "Masė", "kg", weight_kg),
+        ("ISA_C", "ISA", "°C", isa_c),
+        ("WIND_kt", "Vėjas", "kt", wind_kt),
+    ]:
+        _range_check(float(val), _numeric_col(df, col), label, unit)
+
+    rows: List[Dict[str, float]] = []
+    q = np.array([[float(fl_ft), float(weight_kg), float(isa_c), float(wind_kt)]], dtype=float)
+
+    for tc in sorted(df["TIME_COST"].dropna().unique().tolist()):
+        sub = df.loc[df["TIME_COST"] == float(tc)].copy()
+        if sub.shape[0] < int(min_points_required):
+            continue
+
+        pts = np.column_stack(
+            [
+                _numeric_col(sub, "ZP_ft"),
+                _numeric_col(sub, "WEIGHT_kg"),
+                _numeric_col(sub, "ISA_C"),
+                _numeric_col(sub, "WIND_kt"),
+            ]
+        ).astype(float)
+        y = _numeric_col(sub, "IASopt")
+
+        ok = np.all(np.isfinite(pts), axis=1) & np.isfinite(y)
+        pts = pts[ok]
+        y = y[ok]
+        if pts.shape[0] < int(min_points_required):
+            continue
+
+        itp = LinearNDInterpolator(pts, y, fill_value=np.nan)
+        val = float(itp(q)[0])
+        if np.isfinite(val):
+            rows.append({"TIME_COST": float(tc), "IASopt": float(val)})
+
+    out = pd.DataFrame(rows)
+    if out.shape[0] < 2:
+        raise ValueError("Nepakanka taškų ECON priklausomybei nuo laiko sąnaudų sudaryti.")
+    return out.sort_values("TIME_COST").reset_index(drop=True)
+
+def compute_econ_vs_fuel_price_interpolated(
+    fuel_longform_tbl: pd.DataFrame,
+    *,
+    fl_ft: float,
+    weight_kg: float,
+    isa_c: float,
+    wind_kt: float,
+    min_points_required: int = 8,
+) -> pd.DataFrame:
+    need = ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt", "FUEL_PRICE", "IASopt"]
+    _require_columns(fuel_longform_tbl, need)
+
+    df = fuel_longform_tbl.copy()
+    for c in need:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=need)
+
+    if df.empty:
+        raise ValueError("Negalima atlikti interpoliacijos.")
+
+    for col, label, unit, val in [
+        ("ZP_ft", "Aukštis", "ft", fl_ft),
+        ("WEIGHT_kg", "Masė", "kg", weight_kg),
+        ("ISA_C", "ISA", "°C", isa_c),
+        ("WIND_kt", "Vėjas", "kt", wind_kt),
+    ]:
+        _range_check(float(val), _numeric_col(df, col), label, unit)
+
+    rows: List[Dict[str, float]] = []
+    q = np.array([[float(fl_ft), float(weight_kg), float(isa_c), float(wind_kt)]], dtype=float)
+
+    for fp in sorted(df["FUEL_PRICE"].dropna().unique().tolist()):
+        sub = df.loc[df["FUEL_PRICE"] == float(fp)].copy()
+        if sub.shape[0] < int(min_points_required):
+            continue
+
+        pts = np.column_stack(
+            [
+                _numeric_col(sub, "ZP_ft"),
+                _numeric_col(sub, "WEIGHT_kg"),
+                _numeric_col(sub, "ISA_C"),
+                _numeric_col(sub, "WIND_kt"),
+            ]
+        ).astype(float)
+        y = _numeric_col(sub, "IASopt")
+
+        ok = np.all(np.isfinite(pts), axis=1) & np.isfinite(y)
+        pts = pts[ok]
+        y = y[ok]
+        if pts.shape[0] < int(min_points_required):
+            continue
+
+        itp = LinearNDInterpolator(pts, y, fill_value=np.nan)
+        val = float(itp(q)[0])
+        if np.isfinite(val):
+            rows.append({"FUEL_PRICE": float(fp), "IASopt": float(val)})
+
+    out = pd.DataFrame(rows)
+    if out.shape[0] < 2:
+        raise ValueError("Nepakanka taškų ECON priklausomybei nuo degalų kainos sudaryti.")
+    return out.sort_values("FUEL_PRICE").reset_index(drop=True)
 
 def _interp_scalar_4d(pts: np.ndarray, q: np.ndarray, y: np.ndarray, *, name: str) -> float:
     itp = LinearNDInterpolator(pts, y, fill_value=np.nan)
@@ -1044,7 +1174,10 @@ def compute_quick_metrics_interpolated(
     hi_v = _interp_scalar_4d(pts, q, e_hi, name="ECSR_high_kt")
     v_ecsr_v = _interp_scalar_4d(pts, q, v_ecsr, name="V_ECSR_kt")
     v_notch_v = _interp_scalar_4d(pts, q, v_notch, name="V_notch_kt")
+
     v_ecsr_v = min(v_ecsr_v, v_notch_v)
+    hi_v = min(hi_v, v_notch_v)
+    lo_v = min(lo_v, hi_v)
 
     docmin_nm_v = _interp_scalar_4d(pts, q, docmin, name="DOCmin_EurPerNM")
     docnotch_nm_v = _interp_scalar_4d(pts, q, docnotch, name="DOCnotch_EurPerNM")

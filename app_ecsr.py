@@ -2879,7 +2879,7 @@ else:
                 if _raw_speed_advantage_exists(v_notch_ui, econ_for_ui):
                     if np.isfinite(res_in.docmin_eur_per_nm) and np.isfinite(res_in.docnotch_eur_per_nm):
                         diff_total = float((res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm) * dist)
-                    else:␊
+                    else:
                         diff_total = float("nan")
                 else:
                     diff_total = 0.0

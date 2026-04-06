@@ -778,9 +778,6 @@ def compute_optimum_at_time_cost(sc: Dict[str, Any], tc: float, cfg: Config) -> 
     return {"IAS_opt_kt": v_opt, "DOC_min_EurPerNM": doc_min, "DOC_notch_EurPerNM": doc_notch}
 
 def run_parametric_sweep(sc: Dict[str, Any], time_cost_vec: np.ndarray, cfg: Config) -> Dict[str, Any]:
-    if not isinstance(sc, dict):
-        raise ValueError("Invalid scenario object in run_parametric_sweep (expected dict).")
-
     time_cost_vec = np.asarray(time_cost_vec, float).reshape(-1)
     sc["timeCostVec"] = time_cost_vec
 
@@ -801,16 +798,21 @@ def run_parametric_sweep(sc: Dict[str, Any], time_cost_vec: np.ndarray, cfg: Con
     fuel_notch = float(fuel_itp(np.array([v_notch]))[0])
     time_notch = float(time_itp(np.array([v_notch]))[0])
 
-    doc_grid_2d = (
-        float(cfg.fuel_price_eur_per_kg) * fuel_grid.reshape(1, -1)
-        + time_cost_vec.reshape(-1, 1) * time_grid.reshape(1, -1)
-    )
-    j = np.nanargmin(doc_grid_2d, axis=1).astype(int)
-    row_idx = np.arange(time_cost_vec.size, dtype=int)
+    doc_min = np.full(time_cost_vec.size, np.nan, dtype=float)
+    ias_opt = np.full(time_cost_vec.size, np.nan, dtype=float)
+    doc_notch = np.full(time_cost_vec.size, np.nan, dtype=float)
 
-    doc_min = doc_grid_2d[row_idx, j].astype(float)
-    ias_opt = ias_grid[j].astype(float)
-    doc_notch = (float(cfg.fuel_price_eur_per_kg) * fuel_notch + time_cost_vec * time_notch).astype(float)
+    for i, tc in enumerate(time_cost_vec):
+        doc_grid = cfg.fuel_price_eur_per_kg * fuel_grid + float(tc) * time_grid
+        j = int(np.nanargmin(doc_grid))
+        doc_min[i] = float(doc_grid[j])
+        ias_opt[i] = float(ias_grid[j])
+        doc_notch[i] = float(cfg.fuel_price_eur_per_kg * fuel_notch + float(tc) * time_notch)
+
+    sc["DOC_min_EurPerNM"] = doc_min
+    sc["IAS_opt_kt"] = ias_opt
+    sc["DOC_notch_EurPerNM"] = doc_notch
+    return sc
 
 def run_fuel_price_sweep(sc: Dict[str, Any], fuel_price_vec: np.ndarray, cfg: Config) -> Dict[str, Any]:
     if not isinstance(sc, dict):

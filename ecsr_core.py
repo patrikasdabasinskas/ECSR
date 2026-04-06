@@ -704,7 +704,7 @@ def compute_doc_curve_pchip(sc: Dict[str, Any], tc: float, cfg: Config, *, ngrid
     if not np.isfinite(x_min) or not np.isfinite(x_max) or x_max <= x_min:
         raise ValueError("Neteisingas IAS intervalas (min/max).")
 
-    ngrid = int(max(300, ngrid))
+    ngrid = int(max(180, min(320, ngrid)))
     ias_grid = np.linspace(x_min, x_max, ngrid)
 
     doc_grid = cfg.fuel_price_eur_per_kg * fuel_itp(ias_grid) + float(tc) * time_itp(ias_grid)
@@ -750,6 +750,45 @@ def compute_optimum_at_time_cost(sc: Dict[str, Any], tc: float, cfg: Config) -> 
 
     return {"IAS_opt_kt": v_opt, "DOC_min_EurPerNM": doc_min, "DOC_notch_EurPerNM": doc_notch}
 
+def current_operating_point_result(
+    sc: Dict[str, Any],
+    *,
+    fuel_price_eur_per_kg: float,
+    time_cost_eur_per_hr: float,
+    cfg: Config,
+) -> Dict[str, float]:
+    fuel_itp, time_itp, iasu = _build_fuel_time_interpolators(sc)
+    v_notch = float(sc["V_notch"])
+
+    def doc_at(x_ias: np.ndarray) -> np.ndarray:
+        return float(fuel_price_eur_per_kg) * fuel_itp(x_ias) + float(time_cost_eur_per_hr) * time_itp(x_ias)
+
+    ngrid = max(180, int(iasu.size * 16))
+    ias_grid = np.linspace(float(iasu.min()), float(iasu.max()), ngrid)
+    doc_grid = doc_at(ias_grid)
+
+    j = int(np.nanargmin(doc_grid))
+    v_docmin = float(ias_grid[j])
+    v_econ = _econ_from_docmin_with_notch_rule(
+        v_docmin,
+        v_notch,
+        min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+    )
+
+    doc_econ = float(doc_at(np.array([v_econ]))[0])
+    doc_notch = float(doc_at(np.array([v_notch]))[0])
+
+    saving_per_nm = max(0.0, float(doc_notch - doc_econ))
+
+    return {
+        "v_docmin": float(v_docmin),
+        "v_econ": float(v_econ),
+        "v_notch": float(v_notch),
+        "doc_econ_per_nm": float(doc_econ),
+        "doc_notch_per_nm": float(doc_notch),
+        "saving_per_nm": float(saving_per_nm),
+    }
+
 
 def run_parametric_sweep(sc: Dict[str, Any], time_cost_vec: np.ndarray, cfg: Config) -> Dict[str, Any]:
     time_cost_vec = np.asarray(time_cost_vec, float).reshape(-1)
@@ -761,7 +800,7 @@ def run_parametric_sweep(sc: Dict[str, Any], time_cost_vec: np.ndarray, cfg: Con
     def doc_at(x_ias: np.ndarray, tc: float) -> np.ndarray:
         return cfg.fuel_price_eur_per_kg * fuel_itp(x_ias) + tc * time_itp(x_ias)
 
-    ngrid = max(200, int(iasu.size * 20))
+    ngrid = max(120, int(iasu.size * 10))
     ias_grid = np.linspace(float(iasu.min()), float(iasu.max()), ngrid)
 
     doc_min = np.full(time_cost_vec.size, np.nan, dtype=float)
@@ -771,14 +810,8 @@ def run_parametric_sweep(sc: Dict[str, Any], time_cost_vec: np.ndarray, cfg: Con
     for i, tc in enumerate(time_cost_vec):
         doc_grid = doc_at(ias_grid, float(tc))
         j = int(np.nanargmin(doc_grid))
-        v_opt_raw = float(ias_grid[j])
-        v_opt = _econ_from_docmin_with_notch_rule(
-            v_opt_raw,
-            v_notch,
-            min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
-        )
-        ias_opt[i] = float(v_opt)
-        doc_min[i] = float(doc_at(np.array([v_opt], dtype=float), float(tc))[0])
+        doc_min[i] = float(doc_grid[j])
+        ias_opt[i] = float(ias_grid[j])
         doc_notch[i] = float(doc_at(np.array([v_notch]), float(tc))[0])
 
     sc["DOC_min_EurPerNM"] = doc_min
@@ -798,7 +831,7 @@ def run_fuel_price_sweep(sc: Dict[str, Any], fuel_price_vec: np.ndarray, cfg: Co
     def doc_at(x_ias: np.ndarray, fp: float) -> np.ndarray:
         return float(fp) * fuel_itp(x_ias) + tc_op * time_itp(x_ias)
 
-    ngrid = max(200, int(iasu.size * 20))
+    ngrid = max(120, int(iasu.size * 10))
     ias_grid = np.linspace(float(iasu.min()), float(iasu.max()), ngrid)
 
     doc_min = np.full(fuel_price_vec.size, np.nan, dtype=float)
@@ -808,14 +841,8 @@ def run_fuel_price_sweep(sc: Dict[str, Any], fuel_price_vec: np.ndarray, cfg: Co
     for i, fp in enumerate(fuel_price_vec):
         doc_grid = doc_at(ias_grid, float(fp))
         j = int(np.nanargmin(doc_grid))
-        v_opt_raw = float(ias_grid[j])
-        v_opt = _econ_from_docmin_with_notch_rule(
-            v_opt_raw,
-            v_notch,
-            min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
-        )
-        ias_opt[i] = float(v_opt)
-        doc_min[i] = float(doc_at(np.array([v_opt], dtype=float), float(fp))[0])
+        doc_min[i] = float(doc_grid[j])
+        ias_opt[i] = float(ias_grid[j])
         doc_notch[i] = float(doc_at(np.array([v_notch]), float(fp))[0])
 
     sc["DOC_min_EurPerNM_fp"] = doc_min
@@ -831,7 +858,7 @@ def compute_ecsr_band(sc: Dict[str, Any], tc: float, cfg: Config) -> Dict[str, f
     time = sc["Time_h_per_NM"]
     iasu, fuelu, timeu = unique_x(ias, fuel, time)
 
-    ngrid = max(300, int(iasu.size * 30))
+    ngrid = max(160, int(iasu.size * 12))
     ias_grid = np.linspace(float(iasu.min()), float(iasu.max()), ngrid)
 
     fuel_grid = _pchip_fn(iasu, fuelu)(ias_grid)
@@ -1711,114 +1738,43 @@ def _last_true_x(x: np.ndarray, cond: np.ndarray) -> float:
 
 def compute_threshold_x_time_break(sc: Dict[str, Any], cfg: Config) -> Dict[str, float]:
     tc = np.asarray(sc.get("timeCostVec", []), float)
-    v_notch = float(sc.get("V_notch", np.nan))
-    v_econ = np.asarray(sc.get("IAS_opt_kt", []), float)
-    doc_min = np.asarray(sc.get("DOC_min_EurPerNM", []), float)
-    doc_notch = np.asarray(sc.get("DOC_notch_EurPerNM", []), float)
-
-    ok = np.isfinite(tc) & np.isfinite(v_econ) & np.isfinite(doc_min) & np.isfinite(doc_notch) & np.isfinite(v_notch)
-    tc = tc[ok]
-    v_econ = v_econ[ok]
-    doc_min = doc_min[ok]
-    doc_notch = doc_notch[ok]
+    tc = tc[np.isfinite(tc)]
     if tc.size < 2:
         return {"X_timeCost_EurPerHr": float("nan")}
 
-    v_notch_arr = np.full_like(v_econ, float(v_notch), dtype=float)
-    speed_ok = _raw_speed_gap_ok(v_notch_arr, v_econ, float(cfg.breakpoint_speed_tol_kt))
-    econ_ok = _doc_advantage_ok(doc_notch, doc_min)
+    worth = np.zeros(tc.size, dtype=bool)
 
-    if _use_money_gate(cfg):
-        fuel_itp, time_itp, _ = _build_fuel_time_interpolators(sc)
+    for i, tci in enumerate(tc.tolist()):
+        cur = current_operating_point_result(
+            sc,
+            fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
+            time_cost_eur_per_hr=float(tci),
+            cfg=cfg,
+        )
+        worth[i] = bool(int(round(float(cur["econ_exists"]))))
 
-        gs_econ = 1.0 / time_itp(v_econ)
-        gs_notch = 1.0 / time_itp(v_notch_arr)
-
-        mode = str(cfg.breakpoint_saving_mode).strip().lower()
-
-        if mode == "per_nm":
-            delta_val = doc_notch - doc_min
-            money_ok = delta_val >= float(cfg.breakpoint_saving_eur_per_nm)
-
-        elif mode == "per_hour_trip":
-            delta_val = _delta_doc_trip_avg_per_hour(
-                doc_notch_per_nm=doc_notch,
-                doc_min_per_nm=doc_min,
-                gs_notch_kt=gs_notch,
-                gs_econ_kt=gs_econ,
-                trip_distance_nm=float(cfg.breakpoint_trip_distance_nm),
-            )
-            money_ok = delta_val >= float(cfg.breakpoint_saving_eur_per_hour)
-
-        else:
-            money_ok = np.ones_like(speed_ok, dtype=bool)
-    else:
-        money_ok = np.ones_like(speed_ok, dtype=bool)
-
-    worth = speed_ok & econ_ok & money_ok
     return {"X_timeCost_EurPerHr": float(_last_true_x(tc, worth))}
 
 
 def _optimum_at_fuel_price(sc: Dict[str, Any], fp: float, cfg: Config) -> Tuple[float, float, float]:
     tc_op = float(cfg.time_cost_operational)
-    v_notch = float(sc.get("V_notch", np.nan))
-    if not np.isfinite(v_notch):
-        return float("nan"), float("nan"), float("nan")
-
-    fuel_itp, time_itp, iasu = _build_fuel_time_interpolators(sc)
-    ngrid = max(250, int(iasu.size * 25))
-    ias_grid = np.linspace(float(iasu.min()), float(iasu.max()), ngrid)
-
-    doc_grid = float(fp) * fuel_itp(ias_grid) + tc_op * time_itp(ias_grid)
-    j = int(np.nanargmin(doc_grid))
-    v_opt_raw = float(ias_grid[j])
-    v_opt = _econ_from_docmin_with_notch_rule(
-        v_opt_raw,
-        v_notch,
-        min_gap_kt=float(cfg.breakpoint_speed_tol_kt),
+    cur = current_operating_point_result(
+        sc,
+        fuel_price_eur_per_kg=float(fp),
+        time_cost_eur_per_hr=tc_op,
+        cfg=cfg,
     )
-    doc_min = float(float(fp) * fuel_itp(np.array([v_opt]))[0] + tc_op * time_itp(np.array([v_opt]))[0])
-    doc_notch = float(float(fp) * fuel_itp(np.array([v_notch]))[0] + tc_op * time_itp(np.array([v_notch]))[0])
-    return v_opt, doc_min, doc_notch
+    return float(cur["v_econ"]), float(cur["doc_econ_per_nm"]), float(cur["doc_notch_per_nm"])
 
 
 def _worth_at_fuel_price(sc: Dict[str, Any], fp: float, cfg: Config) -> bool:
-    v_opt, doc_min, doc_notch = _optimum_at_fuel_price(sc, fp, cfg)
-    v_notch = float(sc.get("V_notch", np.nan))
-    if not (np.isfinite(v_opt) and np.isfinite(doc_min) and np.isfinite(doc_notch) and np.isfinite(v_notch)):
-        return False
-
-    speed_ok = bool(_raw_speed_gap_ok(np.array([v_notch]), np.array([v_opt]), float(cfg.breakpoint_speed_tol_kt))[0])
-    econ_ok = bool(_doc_advantage_ok(np.array([doc_notch]), np.array([doc_min]))[0])
-
-    if not speed_ok or not econ_ok:
-        return False
-
-    if _use_money_gate(cfg):
-        fuel_itp, time_itp, _ = _build_fuel_time_interpolators(sc)
-
-        gs_opt = float(1.0 / time_itp(np.array([v_opt]))[0])
-        gs_notch = float(1.0 / time_itp(np.array([v_notch]))[0])
-
-        mode = str(cfg.breakpoint_saving_mode).strip().lower()
-
-        if mode == "per_nm":
-            delta_val = float(doc_notch - doc_min)
-            return bool(delta_val >= float(cfg.breakpoint_saving_eur_per_nm))
-
-        elif mode == "per_hour_trip":
-            delta_val = float(
-                _delta_doc_trip_avg_per_hour(
-                    doc_notch_per_nm=np.array([doc_notch], dtype=float),
-                    doc_min_per_nm=np.array([doc_min], dtype=float),
-                    gs_notch_kt=np.array([gs_notch], dtype=float),
-                    gs_econ_kt=np.array([gs_opt], dtype=float),
-                    trip_distance_nm=float(cfg.breakpoint_trip_distance_nm),
-                )[0]
-            )
-            return bool(delta_val >= float(cfg.breakpoint_saving_eur_per_hour))
-
-    return True
+    cur = current_operating_point_result(
+        sc,
+        fuel_price_eur_per_kg=float(fp),
+        time_cost_eur_per_hr=float(cfg.time_cost_operational),
+        cfg=cfg,
+    )
+    return bool(int(round(float(cur["econ_exists"]))))
 
 def current_operating_point_result(
     sc: Dict[str, Any],
@@ -1972,52 +1928,67 @@ def _find_fuel_break_even_auto(sc: Dict[str, Any], cfg: Config) -> float:
     return hi
 
 
-def compute_threshold_x_fuel_break(sc: Dict[str, Any], cfg: Config) -> Dict[str, float]:
-    fp = np.asarray(sc.get("fuelPriceVec", []), float)
-    v_notch = float(sc.get("V_notch", np.nan))
-    v_econ = np.asarray(sc.get("IAS_opt_kt_fp", []), float)
-    doc_min = np.asarray(sc.get("DOC_min_EurPerNM_fp", []), float)
-    doc_notch = np.asarray(sc.get("DOC_notch_EurPerNM_fp", []), float)
+def compute_threshold_x_time_break(sc: Dict[str, Any], cfg: Config) -> Dict[str, float]:
+    tc = np.asarray(sc.get("timeCostVec", []), float)
+    if tc.size < 2:
+        return {"X_timeCost_EurPerHr": float("nan")}
 
-    ok = np.isfinite(fp) & np.isfinite(v_econ) & np.isfinite(doc_min) & np.isfinite(doc_notch) & np.isfinite(v_notch)
-    fp2 = fp[ok]
-    v_econ2 = v_econ[ok]
-    doc_min2 = doc_min[ok]
-    doc_notch2 = doc_notch[ok]
+    worth = np.zeros(tc.size, dtype=bool)
 
-    if fp2.size >= 2:
-        v_notch_arr = np.full_like(v_econ2, float(v_notch), dtype=float)
-        speed_ok = _raw_speed_gap_ok(v_notch_arr, v_econ2, float(cfg.breakpoint_speed_tol_kt))
-        econ_ok = _doc_advantage_ok(doc_notch2, doc_min2)
+    for i, tci in enumerate(tc.tolist()):
+        cur = current_operating_point_result(
+            sc,
+            fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
+            time_cost_eur_per_hr=float(tci),
+            cfg=cfg,
+        )
+
+        v_econ = float(cur["v_econ"])
+        v_notch = float(cur["v_notch"])
+        doc_econ = float(cur["doc_econ_per_nm"])
+        doc_notch = float(cur["doc_notch_per_nm"])
+
+        speed_ok = bool(_raw_speed_gap_ok(np.array([v_notch]), np.array([v_econ]), float(cfg.breakpoint_speed_tol_kt))[0])
+        econ_ok = bool(_doc_advantage_ok(np.array([doc_notch]), np.array([doc_econ]))[0])
+
+        if not (speed_ok and econ_ok):
+            worth[i] = False
+            continue
 
         if _use_money_gate(cfg):
             fuel_itp, time_itp, _ = _build_fuel_time_interpolators(sc)
-
-            gs_econ2 = 1.0 / time_itp(v_econ2)
-            gs_notch2 = 1.0 / time_itp(v_notch_arr)
+            gs_econ = float(1.0 / time_itp(np.array([v_econ]))[0])
+            gs_notch = float(1.0 / time_itp(np.array([v_notch]))[0])
 
             mode = str(cfg.breakpoint_saving_mode).strip().lower()
 
             if mode == "per_nm":
-                delta_val = doc_notch2 - doc_min2
-                money_ok = delta_val >= float(cfg.breakpoint_saving_eur_per_nm)
-
+                worth[i] = float(doc_notch - doc_econ) >= float(cfg.breakpoint_saving_eur_per_nm)
             elif mode == "per_hour_trip":
-                delta_val = _delta_doc_trip_avg_per_hour(
-                    doc_notch_per_nm=doc_notch2,
-                    doc_min_per_nm=doc_min2,
-                    gs_notch_kt=gs_notch2,
-                    gs_econ_kt=gs_econ2,
-                    trip_distance_nm=float(cfg.breakpoint_trip_distance_nm),
+                delta_val = float(
+                    _delta_doc_trip_avg_per_hour(
+                        doc_notch_per_nm=np.array([doc_notch], dtype=float),
+                        doc_min_per_nm=np.array([doc_econ], dtype=float),
+                        gs_notch_kt=np.array([gs_notch], dtype=float),
+                        gs_econ_kt=np.array([gs_econ], dtype=float),
+                        trip_distance_nm=float(cfg.breakpoint_trip_distance_nm),
+                    )[0]
                 )
-                money_ok = delta_val >= float(cfg.breakpoint_saving_eur_per_hour)
-
+                worth[i] = delta_val >= float(cfg.breakpoint_saving_eur_per_hour)
             else:
-                money_ok = np.ones_like(speed_ok, dtype=bool)
+                worth[i] = True
         else:
-            money_ok = np.ones_like(speed_ok, dtype=bool)
+            worth[i] = True
 
-        worth = speed_ok & econ_ok & money_ok
+    return {"X_timeCost_EurPerHr": float(_last_true_x(tc, worth))}
+
+
+def compute_threshold_x_fuel_break(sc: Dict[str, Any], cfg: Config) -> Dict[str, float]:
+    fp = np.asarray(sc.get("fuelPriceVec", []), float)
+    fp2 = fp[np.isfinite(fp)]
+
+    if fp2.size >= 2:
+        worth = np.array([_worth_at_fuel_price(sc, float(v), cfg) for v in fp2], dtype=bool)
         x = _first_true_x(fp2, worth)
         if np.isfinite(x):
             return {"X_fuelPrice_EurPerKg": float(x)}
@@ -2026,49 +1997,20 @@ def compute_threshold_x_fuel_break(sc: Dict[str, Any], cfg: Config) -> Dict[str,
     return {"X_fuelPrice_EurPerKg": float(x_auto)}
 
 
-def compute_break_even_time_cost_rounded(sc: Dict[str, Any], x_continuous: float, cfg: Config) -> float:
+def compute_break_even_time_cost_rounded(sc: Dict[str, Any], x_continuous: float) -> float:
     if not np.isfinite(x_continuous):
-        return float(x_continuous)
+        return float("nan")
     tc = np.asarray(sc.get("timeCostVec", []), float)
     tc = tc[np.isfinite(tc)]
     if tc.size == 0:
         return float("nan")
-    tc = np.sort(tc)
-
-    v_notch = float(sc.get("V_notch", np.nan))
-    v_econ = np.asarray(sc.get("IAS_opt_kt", []), float)
-    doc_min = np.asarray(sc.get("DOC_min_EurPerNM", []), float)
-    doc_notch = np.asarray(sc.get("DOC_notch_EurPerNM", []), float)
-    tc_raw = np.asarray(sc.get("timeCostVec", []), float)
-
-    ok = np.isfinite(tc_raw) & np.isfinite(v_econ) & np.isfinite(doc_min) & np.isfinite(doc_notch) & np.isfinite(v_notch)
-    tc_raw = tc_raw[ok]
-    v_econ = v_econ[ok]
-    doc_min = doc_min[ok]
-    doc_notch = doc_notch[ok]
-
-    if tc_raw.size == 0:
-        return float("nan")
-
-    v_notch_arr = np.full_like(v_econ, float(v_notch), dtype=float)
-    speed_ok = _raw_speed_gap_ok(v_notch_arr, v_econ, float(cfg.breakpoint_speed_tol_kt))
-    econ_ok = _doc_advantage_ok(doc_notch, doc_min)
-    worth = speed_ok & econ_ok
-
-    df = pd.DataFrame({"tc": tc_raw, "worth": worth}).sort_values("tc", kind="mergesort")
-    worth_by_tc = df.groupby("tc", as_index=False)["worth"].max()
-
-    valid = worth_by_tc.loc[worth_by_tc["worth"].astype(bool), "tc"].to_numpy(float)
-    valid = valid[np.isfinite(valid)]
-    if valid.size > 0:
-        return float(np.nanmax(valid))
-
-    return float("nan")
+    j = int(np.nanargmin(np.abs(tc - float(x_continuous))))
+    return float(tc[j])
 
 
 def compute_break_even_fuel_price_rounded(sc: Dict[str, Any], x_continuous: float, cfg: Config) -> float:
     if not np.isfinite(x_continuous):
-        return float(x_continuous)
+        return float("nan")
 
     fp = np.asarray(sc.get("fuelPriceVec", []), float)
     fp = fp[np.isfinite(fp)]
@@ -2081,56 +2023,10 @@ def compute_break_even_fuel_price_rounded(sc: Dict[str, Any], x_continuous: floa
     if x > float(fp.max()) + 1e-12:
         return x
 
-    v_notch = float(sc.get("V_notch", np.nan))
-    v_econ = np.asarray(sc.get("IAS_opt_kt_fp", []), float)
-    doc_min = np.asarray(sc.get("DOC_min_EurPerNM_fp", []), float)
-    doc_notch = np.asarray(sc.get("DOC_notch_EurPerNM_fp", []), float)
-    fp_raw = np.asarray(sc.get("fuelPriceVec", []), float)
-
-    ok = np.isfinite(fp_raw) & np.isfinite(v_econ) & np.isfinite(doc_min) & np.isfinite(doc_notch) & np.isfinite(v_notch)
-    fp_raw = fp_raw[ok]
-    v_econ = v_econ[ok]
-    doc_min = doc_min[ok]
-    doc_notch = doc_notch[ok]
-
-    if fp_raw.size == 0:
-        return float("inf")
-
-    v_notch_arr = np.full_like(v_econ, float(v_notch), dtype=float)
-    speed_ok = _raw_speed_gap_ok(v_notch_arr, v_econ, float(cfg.breakpoint_speed_tol_kt))
-    econ_ok = _doc_advantage_ok(doc_notch, doc_min)
-
-    if _use_money_gate(cfg):
-        fuel_itp, time_itp, _ = _build_fuel_time_interpolators(sc)
-        gs_econ = 1.0 / time_itp(v_econ)
-        gs_notch = 1.0 / time_itp(v_notch_arr)
-
-        mode = str(cfg.breakpoint_saving_mode).strip().lower()
-        if mode == "per_nm":
-            delta_val = doc_notch - doc_min
-            money_ok = delta_val >= float(cfg.breakpoint_saving_eur_per_nm)
-        elif mode == "per_hour_trip":
-            delta_val = _delta_doc_trip_avg_per_hour(
-                doc_notch_per_nm=doc_notch,
-                doc_min_per_nm=doc_min,
-                gs_notch_kt=gs_notch,
-                gs_econ_kt=gs_econ,
-                trip_distance_nm=float(cfg.breakpoint_trip_distance_nm),
-            )
-            money_ok = delta_val >= float(cfg.breakpoint_saving_eur_per_hour)
-        else:
-            money_ok = np.ones_like(speed_ok, dtype=bool)
-    else:
-        money_ok = np.ones_like(speed_ok, dtype=bool)
-
-    worth = speed_ok & econ_ok & money_ok
-
-    df = pd.DataFrame({"fp": fp_raw, "worth": worth}).sort_values("fp", kind="mergesort")
-    worth_by_fp = df.groupby("fp", as_index=False)["worth"].max()
-    valid = worth_by_fp.loc[worth_by_fp["worth"].astype(bool), "fp"].to_numpy(float)
-    valid = valid[np.isfinite(valid)]
-    if valid.size > 0:
-        return float(np.nanmin(valid))
+    candidates = fp[fp >= x - 1e-12]
+    for val in candidates.tolist():
+        if _worth_at_fuel_price(sc, float(val), cfg):
+            return float(val)
 
     return float("inf")
 
@@ -2141,7 +2037,7 @@ def build_summary_table(scenarios: List[Dict[str, Any]], cfg: Config) -> pd.Data
 
     for sc in scenarios:
         th_t = compute_threshold_x_time_break(sc, cfg)
-        tc_be = compute_break_even_time_cost_rounded(sc, float(th_t["X_timeCost_EurPerHr"]), cfg)
+        tc_be = compute_break_even_time_cost_rounded(sc, float(th_t["X_timeCost_EurPerHr"]))
 
         th_f = compute_threshold_x_fuel_break(sc, cfg)
         fp_be = compute_break_even_fuel_price_rounded(sc, float(th_f["X_fuelPrice_EurPerKg"]), cfg)

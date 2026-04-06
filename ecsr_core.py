@@ -2014,20 +2014,49 @@ def compute_threshold_x_fuel_break(sc: Dict[str, Any], cfg: Config) -> Dict[str,
     return {"X_fuelPrice_EurPerKg": float(x_auto)}
 
 
-def compute_break_even_time_cost_rounded(sc: Dict[str, Any], x_continuous: float) -> float:
+def compute_break_even_time_cost_rounded(sc: Dict[str, Any], x_continuous: float, cfg: Config) -> float:
     if not np.isfinite(x_continuous):
-        return float("nan")
+        return float(x_continuous)
     tc = np.asarray(sc.get("timeCostVec", []), float)
     tc = tc[np.isfinite(tc)]
     if tc.size == 0:
         return float("nan")
-    j = int(np.nanargmin(np.abs(tc - float(x_continuous))))
-    return float(tc[j])
+    tc = np.sort(tc)
+
+    v_notch = float(sc.get("V_notch", np.nan))
+    v_econ = np.asarray(sc.get("IAS_opt_kt", []), float)
+    doc_min = np.asarray(sc.get("DOC_min_EurPerNM", []), float)
+    doc_notch = np.asarray(sc.get("DOC_notch_EurPerNM", []), float)
+    tc_raw = np.asarray(sc.get("timeCostVec", []), float)
+
+    ok = np.isfinite(tc_raw) & np.isfinite(v_econ) & np.isfinite(doc_min) & np.isfinite(doc_notch) & np.isfinite(v_notch)
+    tc_raw = tc_raw[ok]
+    v_econ = v_econ[ok]
+    doc_min = doc_min[ok]
+    doc_notch = doc_notch[ok]
+
+    if tc_raw.size == 0:
+        return float("nan")
+
+    v_notch_arr = np.full_like(v_econ, float(v_notch), dtype=float)
+    speed_ok = _raw_speed_gap_ok(v_notch_arr, v_econ, float(cfg.breakpoint_speed_tol_kt))
+    econ_ok = _doc_advantage_ok(doc_notch, doc_min)
+    worth = speed_ok & econ_ok
+
+    df = pd.DataFrame({"tc": tc_raw, "worth": worth}).sort_values("tc", kind="mergesort")
+    worth_by_tc = df.groupby("tc", as_index=False)["worth"].max()
+
+    valid = worth_by_tc.loc[worth_by_tc["worth"].astype(bool), "tc"].to_numpy(float)
+    valid = valid[np.isfinite(valid)]
+    if valid.size > 0:
+        return float(np.nanmax(valid))
+
+    return float("nan")
 
 
 def compute_break_even_fuel_price_rounded(sc: Dict[str, Any], x_continuous: float, cfg: Config) -> float:
     if not np.isfinite(x_continuous):
-        return float("nan")
+        return float(x_continuous)
 
     fp = np.asarray(sc.get("fuelPriceVec", []), float)
     fp = fp[np.isfinite(fp)]
@@ -2040,8 +2069,7 @@ def compute_break_even_fuel_price_rounded(sc: Dict[str, Any], x_continuous: floa
     if x > float(fp.max()) + 1e-12:
         return x
 
-    candidates = fp[fp >= x - 1e-12]
-    for val in candidates.tolist():
+    for val in fp.tolist():
         if _worth_at_fuel_price(sc, float(val), cfg):
             return float(val)
 
@@ -2054,7 +2082,7 @@ def build_summary_table(scenarios: List[Dict[str, Any]], cfg: Config) -> pd.Data
 
     for sc in scenarios:
         th_t = compute_threshold_x_time_break(sc, cfg)
-        tc_be = compute_break_even_time_cost_rounded(sc, float(th_t["X_timeCost_EurPerHr"]))
+        tc_be = compute_break_even_time_cost_rounded(sc, float(th_t["X_timeCost_EurPerHr"]), cfg)
 
         th_f = compute_threshold_x_fuel_break(sc, cfg)
         fp_be = compute_break_even_fuel_price_rounded(sc, float(th_f["X_fuelPrice_EurPerKg"]), cfg)

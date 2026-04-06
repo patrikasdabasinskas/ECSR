@@ -1126,6 +1126,8 @@ def _compute_input_doc_curve_knn(
     wt_kg: float,
     isa_c: float,
     wind_kt: float,
+    fuel_price_eur_per_kg: Optional[float] = None,
+    time_cost_eur_per_hr: Optional[float] = None,
 ) -> Dict[str, Any]:
     msg = _validate_interp_inputs(
         summary_tbl,
@@ -1243,6 +1245,77 @@ def _compute_input_doc_curve_knn(
         "DOC_opt_per_nm": doc_opt,
         "DOC_notch_per_nm": doc_notch,
     }
+
+def _compute_input_fuel_break_even_consistent(
+    scenarios: List[Dict[str, Any]],
+    summary_tbl: pd.DataFrame,
+    cfg: Config,
+    *,
+    fl_ft: float,
+    wt_kg: float,
+    isa_c: float,
+    wind_kt: float,
+) -> float:
+    fuel_grid = np.arange(
+        float(cfg.fuel_price_min),
+        float(cfg.fuel_price_max) + 1e-12,
+        float(cfg.fuel_price_step),
+        dtype=float,
+    )
+
+    original_fp = float(cfg.fuel_price_eur_per_kg)
+
+    for fp in fuel_grid.tolist():
+        cfg_local = replace(cfg, fuel_price_eur_per_kg=float(fp))
+        try:
+            cur = _compute_input_doc_curve_knn(
+                scenarios,
+                summary_tbl,
+                fl_ft=float(fl_ft),
+                wt_kg=float(wt_kg),
+                isa_c=float(isa_c),
+                wind_kt=float(wind_kt),
+            )
+        except Exception:
+            try:
+                qres = compute_quick_metrics_interpolated(
+                    summary_tbl,
+                    fl_ft=float(fl_ft),
+                    weight_kg=float(wt_kg),
+                    isa_c=float(isa_c),
+                    wind_kt=float(wind_kt),
+                )
+                docmin_nm = float(qres.docmin_eur_per_nm)
+                docnotch_nm = float(qres.docnotch_eur_per_nm)
+            except Exception:
+                continue
+        else:
+            try:
+                cur = compute_doc_curve_pchip(
+                    {
+                        **{
+                            "scenarioName": "__tmp__",
+                            "ZP_ft": fl_ft,
+                            "WEIGHT_kg": wt_kg,
+                            "ISA_C": isa_c,
+                            "WIND_kt": wind_kt,
+                        }
+                    },
+                    float(cfg_local.time_cost_operational),
+                    cfg_local,
+                    ngrid=700,
+                )
+            except Exception:
+                pass
+
+            docmin_nm = float(cur["DOC_opt_per_nm"])
+            docnotch_nm = float(cur["DOC_notch_per_nm"])
+
+        if np.isfinite(docmin_nm) and np.isfinite(docnotch_nm):
+            if float(docnotch_nm) > float(docmin_nm):
+                return float(fp)
+
+    return float("inf")
 
 def _plot_doc_vs_ias_input_knn(
     scenarios: List[Dict[str, Any]],
@@ -2822,7 +2895,15 @@ else:
                     shown_value = "Nėra lūžio taško"
                     shown_unit = ""
             elif col_key == "__BREAK_FUEL__":
-                v = float(res_in.be_fuel_price_eur_per_kg)
+                v = _compute_input_fuel_break_even_consistent(
+                    scenarios,
+                    summary_tbl,
+                    cfg,
+                    fl_ft=float(in_fl),
+                    wt_kg=float(in_wt),
+                    isa_c=float(in_isa),
+                    wind_kt=float(in_wind),
+                )
                 if np.isfinite(v) and v <= float(fuel_ceiling) + 1e-12:
                     shown_value = f"{v:.2f}"
                     shown_unit = "€/kg"

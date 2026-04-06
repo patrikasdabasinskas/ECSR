@@ -3736,10 +3736,12 @@ else:
 
                 filtered_local = _build_interpolated_sweep_table(
                     summary_tbl,
+                    longform_tbl,
                     scenarios,
                     x_col=x_col,
                     fixed=fixed_in,
                     include_x_value=current_x_value,
+                    cfg=cfg,
                 )
 
                 if filtered_local.empty:

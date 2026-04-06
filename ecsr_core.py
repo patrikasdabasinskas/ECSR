@@ -970,15 +970,15 @@ def compute_ecsr_band_interpolated(
     if not (np.isfinite(v) and np.isfinite(lo) and np.isfinite(hi)):
         raise ValueError("Negalima interpoliuoti šioms sąlygoms: trūksta duomenų.")
 
-        return EcsrInterpResult(
-            fl_ft=float(fl_ft),
-            weight_kg=float(weight_kg),
-            isa_c=float(isa_c),
-            wind_kt=float(wind_kt),
-            v_ecsr_kt=float(v),
-            ecsr_low_kt=float(min(lo, hi)),
-            ecsr_high_kt=float(max(lo, hi)),
-        )
+    return EcsrInterpResult(
+        fl_ft=float(fl_ft),
+        weight_kg=float(weight_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+        v_ecsr_kt=float(v),
+        ecsr_low_kt=float(min(lo, hi)),
+        ecsr_high_kt=float(max(lo, hi)),
+    )
 
 
 def _interp_scalar_4d(pts: np.ndarray, q: np.ndarray, y: np.ndarray, *, name: str) -> float:

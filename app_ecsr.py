@@ -3,6 +3,7 @@
 # =========================
 from __future__ import annotations
 
+import html
 import re
 import tempfile
 import textwrap
@@ -160,8 +161,9 @@ def _show_fig(fig) -> None:
 def _black_note(text: str) -> None:
     if not text:
         return
+    safe_text = html.escape(str(text))
     st.markdown(
-        f"<div style='color:inherit; font-size:16px; margin-top:6px;'>{text}</div>",
+        f"<div style='color:inherit; font-size:16px; margin-top:6px;'>{safe_text}</div>",
         unsafe_allow_html=True,
     )
 
@@ -484,10 +486,23 @@ def _validate_sweep_input(value: float, *, lo: float, hi: float, label: str, uni
 
 
 def _normalize_ui_error(exc: Exception) -> str:
-    msg = str(exc).strip()
-    if msg:
-        return msg
-    return "Nepakanka duomenų interpolacijai arba įvestis už leistinų ribų."
+    try:
+        msg = str(exc)
+    except Exception:
+        msg = ""
+
+    msg = (msg or "").strip().replace("\x00", "")
+    msg = re.sub(r"\s+", " ", msg)
+
+    msg = msg.replace("<", "‹").replace(">", "›")
+
+    if not msg:
+        return "Nepakanka duomenų interpolacijai arba įvestis už leistinų ribų."
+
+    if len(msg) > 400:
+        msg = msg[:400].rstrip() + "..."
+
+    return msg
 
 
 
@@ -610,9 +625,10 @@ def _build_economical_scenarios_table(
 # ------------------------- Result card -------------------------
 
 def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int = 170, box_height_px: int = 42) -> str:
-    safe_value = (value or "").strip()
+    safe_value = html.escape((value or "").strip())
     value_html = safe_value if safe_value else "&nbsp;"
-    safe_unit = (unit or "").strip()
+    safe_unit = html.escape((unit or "").strip())
+    safe_caption = html.escape((caption or "").strip())
 
     unit_html = (
         f"<span class='cc-unit' style='margin-left:6px;line-height:1;'>{safe_unit}</span>"
@@ -620,7 +636,7 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
         else ""
     )
 
-    html = f"""
+    card_html = f"""
 <style>
   :root {{
     --cc-border: rgba(0,0,0,0.18);
@@ -714,12 +730,12 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
       {unit_html}
     </div>
     <div class="cc-caption" style="text-align:center;font-size:15px;margin-top:8px;">
-      {caption}
+      {safe_caption}
     </div>
   </div>
 </div>
 """
-    return textwrap.dedent(html).strip()
+    return textwrap.dedent(card_html).strip()
 
 
 def _render_result_card(value: str, unit: str, caption: str, *, max_width_px: int = 170, box_height_px: int = 42) -> None:
@@ -734,7 +750,7 @@ def _render_result_card(value: str, unit: str, caption: str, *, max_width_px: in
 def _mpl_academic_fig(figsize: Tuple[float, float] = (8.6, 5.2)):
     import matplotlib.pyplot as plt
 
-    fig = plt.figure(figsize=figsize, dpi=260)
+    fig = plt.figure(figsize=figsize, dpi=170)
     ax = fig.add_subplot(1, 1, 1)
     ax.grid(True, which="both", linestyle="--", linewidth=0.6, alpha=0.6)
     return fig, ax
@@ -1143,8 +1159,8 @@ def _cached_input_doc_curve_5d(
         wind_kt=float(wind_kt),
         time_cost_eur_per_hr=float(time_cost_eur_per_hr),
         fuel_price_eur_per_kg=float(fuel_price_eur_per_kg),
-        ngrid=300,
-        min_valid_grid_points=30,
+        ngrid=140,
+        min_valid_grid_points=16,
     )
 
 def _plot_doc_vs_ias_input_5d(
@@ -1183,13 +1199,24 @@ def _plot_doc_vs_ias_input_5d(
     v_opt = float(cur["IAS_opt"])
     doc_opt = float(cur["DOC_opt_per_nm"])
 
-    qres = compute_quick_metrics_interpolated(
-        summary_tbl,
-        fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
-        isa_c=float(isa_c),
-        wind_kt=float(wind_kt),
-    )
+    prebuilt = st.session_state.get("summary_prebuilt_4d", None)
+    if prebuilt is not None:
+        qres = compute_quick_metrics_interpolated_from_prebuilt(
+            summary_tbl,
+            prebuilt,
+            fl_ft=float(fl_ft),
+            weight_kg=float(wt_kg),
+            isa_c=float(isa_c),
+            wind_kt=float(wind_kt),
+        )
+    else:
+        qres = compute_quick_metrics_interpolated(
+            summary_tbl,
+            fl_ft=float(fl_ft),
+            weight_kg=float(wt_kg),
+            isa_c=float(isa_c),
+            wind_kt=float(wind_kt),
+        )
     v_notch = float(qres.v_notch_kt)
 
     same = (v_opt >= (v_notch - 1.0))
@@ -1248,14 +1275,14 @@ def _plot_doc_vs_ias_input_5d(
 def _cached_econ_vs_time_cost_interpolated(
     longform_tbl: pd.DataFrame,
     fl_ft: float,
-    weight_kg: float,
+    wt_kg: float,
     isa_c: float,
     wind_kt: float,
 ) -> pd.DataFrame:
     return compute_econ_vs_time_cost_interpolated(
         longform_tbl,
         fl_ft=float(fl_ft),
-        weight_kg=float(weight_kg),
+        weight_kg=float(wt_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
     )
@@ -1265,14 +1292,14 @@ def _cached_econ_vs_time_cost_interpolated(
 def _cached_econ_vs_fuel_price_interpolated(
     fuel_longform_tbl: pd.DataFrame,
     fl_ft: float,
-    weight_kg: float,
+    wt_kg: float,
     isa_c: float,
     wind_kt: float,
 ) -> pd.DataFrame:
     return compute_econ_vs_fuel_price_interpolated(
         fuel_longform_tbl,
         fl_ft=float(fl_ft),
-        weight_kg=float(weight_kg),
+        weight_kg=float(wt_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
     )
@@ -1318,13 +1345,24 @@ def _plot_econ_vs_time_cost_input_4d(
     if x.size < 2:
         raise ValueError("Nepakanka duomenų ECON kreivei nubraižyti.")
 
-    qres = compute_quick_metrics_interpolated(
-        summary_tbl,
-        fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
-        isa_c=float(isa_c),
-        wind_kt=float(wind_kt),
-    )
+    prebuilt = st.session_state.get("summary_prebuilt_4d", None)
+    if prebuilt is not None:
+        qres = compute_quick_metrics_interpolated_from_prebuilt(
+            summary_tbl,
+            prebuilt,
+            fl_ft=float(fl_ft),
+            weight_kg=float(wt_kg),
+            isa_c=float(isa_c),
+            wind_kt=float(wind_kt),
+        )
+    else:
+        qres = compute_quick_metrics_interpolated(
+            summary_tbl,
+            fl_ft=float(fl_ft),
+            weight_kg=float(wt_kg),
+            isa_c=float(isa_c),
+            wind_kt=float(wind_kt),
+        )
     
     v_notch_q = float(qres.v_notch_kt)
 
@@ -1419,13 +1457,24 @@ def _plot_econ_vs_fuel_price_input_4d(
     if x.size < 2:
         raise ValueError("Nepakanka duomenų ECON kreivei nubraižyti.")
 
-    qres = compute_quick_metrics_interpolated(
-        summary_tbl,
-        fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
-        isa_c=float(isa_c),
-        wind_kt=float(wind_kt),
-    )
+    prebuilt = st.session_state.get("summary_prebuilt_4d", None)
+    if prebuilt is not None:
+        qres = compute_quick_metrics_interpolated_from_prebuilt(
+            summary_tbl,
+            prebuilt,
+            fl_ft=float(fl_ft),
+            weight_kg=float(wt_kg),
+            isa_c=float(isa_c),
+            wind_kt=float(wind_kt),
+        )
+    else:
+        qres = compute_quick_metrics_interpolated(
+            summary_tbl,
+            fl_ft=float(fl_ft),
+            weight_kg=float(wt_kg),
+            isa_c=float(isa_c),
+            wind_kt=float(wind_kt),
+        )
 
     v_notch_q = float(qres.v_notch_kt)
 
@@ -2201,7 +2250,7 @@ def _init_state() -> None:
     st.session_state.setdefault("uploaded_names", [])
     st.session_state.setdefault("input_root_label", "uploaded_files")
 
-
+    st.session_state.setdefault("summary_prebuilt_4d", None)
 # ========================= UI =========================
 st.set_page_config(layout="wide")
 
@@ -2360,7 +2409,11 @@ if run_btn:
         # -------------------------
         fuel_longform_tbl = build_longform_fuel_table(scenarios)
 
-        # Precompute per-scenario DOC(IAS) vectors for Graph 1 (Įvestis) kNN
+        try:
+            summary_prebuilt_4d = build_summary_interpolators_4d(summary_tbl, min_points_required=20)
+        except Exception:
+            summary_prebuilt_4d = None
+
         try:
             global_cloud = build_global_point_cloud(scenarios)
         except Exception:
@@ -2371,6 +2424,7 @@ if run_btn:
     # -------------------------
     st.session_state["fuel_longform_tbl"] = fuel_longform_tbl
     st.session_state["global_cloud"] = global_cloud
+    st.session_state["summary_prebuilt_4d"] = summary_prebuilt_4d
     st.session_state["last_cfg"] = cfg
     st.session_state["summary_tbl"] = summary_tbl
     st.session_state["longform_tbl"] = longform_tbl
@@ -2611,7 +2665,6 @@ if mode == "Scenarijus":
                         v_econ = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
                         v_notch = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
                         shown_value = _fmt_speed_econ_safe(v_econ, v_notch)
-                        shown_unit = "kt" if shown_value else ""
                         shown_unit = "kt" if shown_value else ""
                     elif col_key == "V_notch_kt":
                         shown_value = _fmt_speed_notch(val)

@@ -2839,8 +2839,8 @@ else:
                     diff_total = float("nan")
             else:
                 if col_key == "V_ECSR_kt":
-                    if np.isfinite(res_in.v_ecsr_kt):
-                        shown_value = _fmt_speed_econ(float(res_in.v_ecsr_kt))
+                    if np.isfinite(res_in.v_ecsr_kt) and np.isfinite(res_in.v_notch_kt):
+                        shown_value = _fmt_speed_econ_safe(float(res_in.v_ecsr_kt), float(res_in.v_notch_kt))
                         shown_unit = "kt" if shown_value else ""
 
                 else:

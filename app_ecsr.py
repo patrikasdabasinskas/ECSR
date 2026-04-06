@@ -21,12 +21,15 @@ from ecsr_core import (
     InterpQuickResult,
     build_global_point_cloud,
     build_longform_fuel_table,
+    build_summary_interpolators_4d,
     compute_doc_curve_interpolated_from_cloud,
     compute_doc_curve_pchip,
     compute_econ_vs_fuel_price_interpolated,
     compute_econ_vs_time_cost_interpolated,
     compute_ecsr_band_interpolated,
     compute_quick_metrics_interpolated,
+    compute_quick_metrics_interpolated_from_prebuilt,
+    current_operating_point_result,
     default_config,
     run_pipeline,
     write_excel_results,
@@ -324,10 +327,13 @@ def _scenario_docmin_econ_kt(
     sc: Dict[str, Any],
     cfg: Config,
 ) -> float:
-    cur = compute_doc_curve_pchip(sc, float(cfg.time_cost_operational), cfg, ngrid=700)
-    v_docmin = float(cur["IAS_opt"])
-    v_notch = float(cur["IAS_notch"])
-    return _econ_from_docmin_with_notch_rule(v_docmin, v_notch, min_gap_kt=1.0)
+    cur = current_operating_point_result(
+        sc,
+        fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
+        time_cost_eur_per_hr=float(cfg.time_cost_operational),
+        cfg=cfg,
+    )
+    return float(cur["v_econ"])
 
 
 def _scenario_docmin_econ_display_kt(
@@ -1109,15 +1115,36 @@ def _compute_input_doc_curve_5d(
     if global_cloud is None or global_cloud.empty:
         raise ValueError("Nepakanka duomenų 5D DOC kreivei.")
 
+    return _cached_input_doc_curve_5d(
+        global_cloud,
+        float(fl_ft),
+        float(wt_kg),
+        float(isa_c),
+        float(wind_kt),
+        float(cfg.time_cost_operational),
+        float(cfg.fuel_price_eur_per_kg),
+    )
+
+@st.cache_data(show_spinner=False)
+def _cached_input_doc_curve_5d(
+    cloud_df: pd.DataFrame,
+    fl_ft: float,
+    wt_kg: float,
+    isa_c: float,
+    wind_kt: float,
+    time_cost_eur_per_hr: float,
+    fuel_price_eur_per_kg: float,
+) -> Dict[str, Any]:
     return compute_doc_curve_interpolated_from_cloud(
-        cloud=global_cloud,
+        cloud=cloud_df,
         fl_ft=float(fl_ft),
         weight_kg=float(wt_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
-        time_cost_eur_per_hr=float(cfg.time_cost_operational),
-        fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
-        ngrid=700,
+        time_cost_eur_per_hr=float(time_cost_eur_per_hr),
+        fuel_price_eur_per_kg=float(fuel_price_eur_per_kg),
+        ngrid=400,
+        min_valid_grid_points=40,
     )
 
 def _plot_doc_vs_ias_input_5d(
@@ -1217,6 +1244,39 @@ def _plot_doc_vs_ias_input_5d(
     fig.tight_layout()
     return fig
 
+@st.cache_data(show_spinner=False)
+def _cached_econ_vs_time_cost_interpolated(
+    longform_tbl: pd.DataFrame,
+    fl_ft: float,
+    wt_kg: float,
+    isa_c: float,
+    wind_kt: float,
+) -> pd.DataFrame:
+    return compute_econ_vs_time_cost_interpolated(
+        longform_tbl,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _cached_econ_vs_fuel_price_interpolated(
+    fuel_longform_tbl: pd.DataFrame,
+    fl_ft: float,
+    wt_kg: float,
+    isa_c: float,
+    wind_kt: float,
+) -> pd.DataFrame:
+    return compute_econ_vs_fuel_price_interpolated(
+        fuel_longform_tbl,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+    )
+
 def _plot_econ_vs_time_cost_input_4d(
     longform_tbl: pd.DataFrame,
     summary_tbl: pd.DataFrame,
@@ -1241,7 +1301,7 @@ def _plot_econ_vs_time_cost_input_4d(
     if tc_msg:
         raise ValueError(tc_msg)
 
-    curve = compute_econ_vs_time_cost_interpolated(
+    curve = _cached_econ_vs_time_cost_interpolated(
         longform_tbl,
         fl_ft=float(fl_ft),
         weight_kg=float(wt_kg),
@@ -1342,7 +1402,7 @@ def _plot_econ_vs_fuel_price_input_4d(
     if fp_msg:
         raise ValueError(fp_msg)
 
-    curve = compute_econ_vs_fuel_price_interpolated(
+    curve = _cached_econ_vs_fuel_price_interpolated(
         fuel_longform_tbl,
         fl_ft=float(fl_ft),
         weight_kg=float(wt_kg),
@@ -1990,20 +2050,6 @@ def _build_interpolated_sweep_table(
     fixed: Dict[str, Optional[float]],
     include_x_value: Optional[float] = None,
 ) -> pd.DataFrame:
-    """
-    Build an interpolated sweep table for Įvestis mode graphs.
-
-    For each available x-axis value in summary_tbl[x_col], interpolate:
-    - V_ECSR_kt
-    - V_notch_kt
-    - DOCmin_EurPerNM
-    - DOCnotch_EurPerNM
-    - BreakEven_TIME_COST_EurPerHr
-    - BreakEven_FUEL_PRICE_EurPerKg
-
-    ECON is always clamped so that:
-        V_ECSR_kt <= V_notch_kt
-    """
     if summary_tbl is None or summary_tbl.empty:
         return pd.DataFrame()
 
@@ -2014,6 +2060,8 @@ def _build_interpolated_sweep_table(
     if not x_vals:
         return pd.DataFrame()
 
+    prebuilt = build_summary_interpolators_4d(summary_tbl, min_points_required=20)
+
     rows: List[Dict[str, float]] = []
 
     for x_val in x_vals:
@@ -2023,19 +2071,14 @@ def _build_interpolated_sweep_table(
         wind_kt = float(x_val) if x_col == "WIND_kt" else float(fixed["WIND_kt"])
 
         try:
-            qres = compute_quick_metrics_interpolated(
+            qres = compute_quick_metrics_interpolated_from_prebuilt(
                 summary_tbl,
+                prebuilt,
                 fl_ft=zp_ft,
                 weight_kg=weight_kg,
                 isa_c=isa_c,
                 wind_kt=wind_kt,
             )
-
-            v_notch = float(qres.v_notch_kt)
-            v_econ = float(qres.v_ecsr_kt)
-
-            if np.isfinite(v_econ) and np.isfinite(v_notch):
-                v_econ = min(v_econ, v_notch)
 
             rows.append(
                 {
@@ -2043,8 +2086,8 @@ def _build_interpolated_sweep_table(
                     "WEIGHT_kg": weight_kg,
                     "ISA_C": isa_c,
                     "WIND_kt": wind_kt,
-                    "V_ECSR_kt": float(v_econ),
-                    "V_notch_kt": float(v_notch),
+                    "V_ECSR_kt": float(qres.v_ecsr_kt),
+                    "V_notch_kt": float(qres.v_notch_kt),
                     "DOCmin_EurPerNM": float(qres.docmin_eur_per_nm),
                     "DOCnotch_EurPerNM": float(qres.docnotch_eur_per_nm),
                     "BreakEven_TIME_COST_EurPerHr": float(qres.be_time_cost_eur_per_hr),
@@ -2544,11 +2587,16 @@ if mode == "Scenarijus":
                 sc_obj = _scenario_lookup(scenarios, str(pick_scn))
                 if sc_obj is not None:
                     try:
-                        cur_sc = compute_doc_curve_pchip(sc_obj, float(cfg.time_cost_operational), cfg, ngrid=700)
-                        v_min_per_nm = float(cur_sc["DOC_opt_per_nm"])
-                        v_notch_per_nm = float(cur_sc["DOC_notch_per_nm"])
-                        v_notch_raw = float(cur_sc["IAS_notch"])
-                        v_econ_raw = float(cur_sc["IAS_opt"])
+                        cur_sc = current_operating_point_result(
+                            sc_obj,
+                            fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
+                            time_cost_eur_per_hr=float(cfg.time_cost_operational),
+                            cfg=cfg,
+                        )
+                        v_min_per_nm = float(cur_sc["doc_econ_per_nm"])
+                        v_notch_per_nm = float(cur_sc["doc_notch_per_nm"])
+                        v_notch_raw = float(cur_sc["v_notch"])
+                        v_econ_raw = float(cur_sc["v_econ"])
                     except Exception:
                         pass
 
@@ -3460,13 +3508,13 @@ if "IASnotch, kt" in display_tbl.columns:
     vals = pd.to_numeric(display_tbl["IASnotch, kt"], errors="coerce")
     display_tbl["IASnotch, kt"] = vals.map(lambda v: _fmt_speed_notch(v))
 
-if "ECON, kt" in display_tbl.columns:
-    econ_vals = pd.to_numeric(summary_tbl.get("V_ECSR_kt", np.nan), errors="coerce")
-    notch_vals = pd.to_numeric(summary_tbl.get("V_notch_kt", np.nan), errors="coerce")
+if "ECON, kt" in display_tbl.columns and "IASnotch, kt" in display_tbl.columns:
+    vals_e = pd.to_numeric(summary_tbl.get("V_ECSR_kt", np.nan), errors="coerce")
+    vals_n = pd.to_numeric(summary_tbl.get("V_notch_kt", np.nan), errors="coerce")
     display_tbl["ECON, kt"] = [
-        _fmt_speed_econ_safe(v_econ, v_notch)
-        for v_econ, v_notch in zip(econ_vals.tolist(), notch_vals.tolist())
-    ] 
+        _fmt_speed_econ_safe(ve, vn) if np.isfinite(ve) and np.isfinite(vn) else ""
+        for ve, vn in zip(vals_e.tolist(), vals_n.tolist())
+    ]
 
 if "IASlow, kt" in display_tbl.columns:
     vals = pd.to_numeric(display_tbl["IASlow, kt"], errors="coerce")

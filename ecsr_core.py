@@ -2069,9 +2069,56 @@ def compute_break_even_fuel_price_rounded(sc: Dict[str, Any], x_continuous: floa
     if x > float(fp.max()) + 1e-12:
         return x
 
-    for val in fp.tolist():
-        if _worth_at_fuel_price(sc, float(val), cfg):
-            return float(val)
+    v_notch = float(sc.get("V_notch", np.nan))
+    v_econ = np.asarray(sc.get("IAS_opt_kt_fp", []), float)
+    doc_min = np.asarray(sc.get("DOC_min_EurPerNM_fp", []), float)
+    doc_notch = np.asarray(sc.get("DOC_notch_EurPerNM_fp", []), float)
+    fp_raw = np.asarray(sc.get("fuelPriceVec", []), float)
+
+    ok = np.isfinite(fp_raw) & np.isfinite(v_econ) & np.isfinite(doc_min) & np.isfinite(doc_notch) & np.isfinite(v_notch)
+    fp_raw = fp_raw[ok]
+    v_econ = v_econ[ok]
+    doc_min = doc_min[ok]
+    doc_notch = doc_notch[ok]
+
+    if fp_raw.size == 0:
+        return float("inf")
+
+    v_notch_arr = np.full_like(v_econ, float(v_notch), dtype=float)
+    speed_ok = _raw_speed_gap_ok(v_notch_arr, v_econ, float(cfg.breakpoint_speed_tol_kt))
+    econ_ok = _doc_advantage_ok(doc_notch, doc_min)
+
+    if _use_money_gate(cfg):
+        fuel_itp, time_itp, _ = _build_fuel_time_interpolators(sc)
+        gs_econ = 1.0 / time_itp(v_econ)
+        gs_notch = 1.0 / time_itp(v_notch_arr)
+
+        mode = str(cfg.breakpoint_saving_mode).strip().lower()
+        if mode == "per_nm":
+            delta_val = doc_notch - doc_min
+            money_ok = delta_val >= float(cfg.breakpoint_saving_eur_per_nm)
+        elif mode == "per_hour_trip":
+            delta_val = _delta_doc_trip_avg_per_hour(
+                doc_notch_per_nm=doc_notch,
+                doc_min_per_nm=doc_min,
+                gs_notch_kt=gs_notch,
+                gs_econ_kt=gs_econ,
+                trip_distance_nm=float(cfg.breakpoint_trip_distance_nm),
+            )
+            money_ok = delta_val >= float(cfg.breakpoint_saving_eur_per_hour)
+        else:
+            money_ok = np.ones_like(speed_ok, dtype=bool)
+    else:
+        money_ok = np.ones_like(speed_ok, dtype=bool)
+
+    worth = speed_ok & econ_ok & money_ok
+
+    df = pd.DataFrame({"fp": fp_raw, "worth": worth}).sort_values("fp", kind="mergesort")
+    worth_by_fp = df.groupby("fp", as_index=False)["worth"].max()
+    valid = worth_by_fp.loc[worth_by_fp["worth"].astype(bool), "fp"].to_numpy(float)
+    valid = valid[np.isfinite(valid)]
+    if valid.size > 0:
+        return float(np.nanmin(valid))
 
     return float("inf")
 

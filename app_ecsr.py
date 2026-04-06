@@ -2348,10 +2348,7 @@ if run_btn:
             st.error("ECSR epsilon negali būti neigiamas.")
             st.stop()
 
-        if saving_mode_nm:
-            saving_mode_value = "per_nm"
-        else:
-            saving_mode_value = "default"
+        saving_mode_value = "per_nm" if saving_mode_nm else "default"
 
         cfg = replace(
             cfg0,
@@ -2398,14 +2395,19 @@ if run_btn:
                 st.session_state["uploaded_names"] = saved_names
                 st.session_state["input_root_label"] = "uploaded_files"
 
-            st.session_state["last_cfg"] = cfg
-            st.session_state["summary_tbl"] = summary_tbl
-            st.session_state["longform_tbl"] = longform_tbl
-            st.session_state["scenarios"] = scenarios
-            st.session_state["generated_out_dir"] = str(out_dir)
-            st.session_state["outliers_tbl"] = outliers_tbl if isinstance(outliers_tbl, pd.DataFrame) else pd.DataFrame()
+            if not isinstance(summary_tbl, pd.DataFrame) or summary_tbl.empty:
+                raise ValueError("Nepavyko sugeneruoti Summary lentelės.")
 
-            fuel_longform_tbl = build_longform_fuel_table(scenarios)
+            if not isinstance(longform_tbl, pd.DataFrame):
+                longform_tbl = pd.DataFrame()
+
+            if not isinstance(scenarios, list) or len(scenarios) == 0:
+                raise ValueError("Nepavyko nuskaityti scenarijų.")
+
+            try:
+                fuel_longform_tbl = build_longform_fuel_table(scenarios)
+            except Exception:
+                fuel_longform_tbl = pd.DataFrame()
 
             try:
                 summary_prebuilt_4d = build_summary_interpolators_4d(summary_tbl, min_points_required=20)
@@ -2417,9 +2419,15 @@ if run_btn:
             except Exception:
                 global_cloud = pd.DataFrame()
 
+            st.session_state["last_cfg"] = cfg
+            st.session_state["summary_tbl"] = summary_tbl
+            st.session_state["longform_tbl"] = longform_tbl
             st.session_state["fuel_longform_tbl"] = fuel_longform_tbl
             st.session_state["global_cloud"] = global_cloud
             st.session_state["summary_prebuilt_4d"] = summary_prebuilt_4d
+            st.session_state["scenarios"] = scenarios
+            st.session_state["generated_out_dir"] = str(out_dir)
+            st.session_state["outliers_tbl"] = outliers_tbl if isinstance(outliers_tbl, pd.DataFrame) else pd.DataFrame()
             st.session_state["excel_written_msg"] = ""
 
         for k in ["fig_g1", "fig_g2", "fig_g3"]:
@@ -2452,16 +2460,40 @@ if run_btn:
     except Exception as e:
         st.error(_normalize_ui_error(e))
         st.stop()
+        
+summary_tbl_obj = st.session_state.get("summary_tbl", None)
+if not isinstance(summary_tbl_obj, pd.DataFrame) or summary_tbl_obj.empty:
+    st.info("Pasirinkite duomenų šaltinį ir spauskite „Generuoti“.")
+    st.stop()
 
-summary_tbl: pd.DataFrame = st.session_state["summary_tbl"]
-longform_tbl: pd.DataFrame = st.session_state["longform_tbl"]
-fuel_longform_tbl: pd.DataFrame = st.session_state.get("fuel_longform_tbl", pd.DataFrame())
-global_cloud: pd.DataFrame = st.session_state.get("global_cloud", pd.DataFrame())
-scenarios: List[Dict[str, Any]] = st.session_state.get("scenarios", [])
+longform_tbl_obj = st.session_state.get("longform_tbl", None)
+if not isinstance(longform_tbl_obj, pd.DataFrame):
+    longform_tbl_obj = pd.DataFrame()
+
+fuel_longform_tbl_obj = st.session_state.get("fuel_longform_tbl", None)
+if not isinstance(fuel_longform_tbl_obj, pd.DataFrame):
+    fuel_longform_tbl_obj = pd.DataFrame()
+
+global_cloud_obj = st.session_state.get("global_cloud", None)
+if not isinstance(global_cloud_obj, pd.DataFrame):
+    global_cloud_obj = pd.DataFrame()
+
+scenarios_obj = st.session_state.get("scenarios", [])
+if not isinstance(scenarios_obj, list):
+    scenarios_obj = []
+
+summary_tbl: pd.DataFrame = summary_tbl_obj
+longform_tbl: pd.DataFrame = longform_tbl_obj
+fuel_longform_tbl: pd.DataFrame = fuel_longform_tbl_obj
+global_cloud: pd.DataFrame = global_cloud_obj
+scenarios: List[Dict[str, Any]] = scenarios_obj
 cfg: Config = st.session_state.get("last_cfg", cfg0)
 fuel_ceiling = float(getattr(getattr(cfg, "break_search", None), "fuel_ceiling_eur_per_kg", float("inf")))
 
-scenario_names = sorted([sc.get("scenarioName", "") for sc in scenarios if sc.get("scenarioName")], key=_scenario_sort_key)
+scenario_names = sorted(
+    [str(sc.get("scenarioName", "")) for sc in scenarios if isinstance(sc, dict) and sc.get("scenarioName")],
+    key=_scenario_sort_key,
+)
 if not scenario_names:
     st.warning("Nerasta scenarijų šiame įkeltų failų rinkinyje.")
     st.stop()

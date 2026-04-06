@@ -661,6 +661,14 @@ def _pchip_fn(x: np.ndarray, y: np.ndarray) -> PchipInterpolator:
 
 
 def _build_fuel_time_interpolators(sc: Dict[str, Any]) -> Tuple[PchipInterpolator, PchipInterpolator, np.ndarray]:
+    cache = sc.get("_cache")
+    if isinstance(cache, dict):
+        fuel_itp = cache.get("fuel_itp")
+        time_itp = cache.get("time_itp")
+        iasu = cache.get("iasu")
+        if fuel_itp is not None and time_itp is not None and iasu is not None:
+            return fuel_itp, time_itp, iasu
+
     df: pd.DataFrame = sc["pointTable"]
     ias = df["IAS"].to_numpy(float)
     fuel = sc["Fuel_kg_per_NM"]
@@ -669,6 +677,23 @@ def _build_fuel_time_interpolators(sc: Dict[str, Any]) -> Tuple[PchipInterpolato
     fuel_itp = _pchip_fn(iasu, fuelu)
     time_itp = _pchip_fn(iasu, timeu)
     return fuel_itp, time_itp, iasu
+
+def _prepare_scenario_runtime_cache(sc: Dict[str, Any]) -> Dict[str, Any]:
+    fuel_itp, time_itp, iasu = _build_fuel_time_interpolators(sc)
+    v_notch = float(sc["V_notch"])
+
+    dense_grid = np.linspace(float(iasu.min()), float(iasu.max()), max(400, int(iasu.size * 40)))
+    sweep_grid = np.linspace(float(iasu.min()), float(iasu.max()), max(120, int(iasu.size * 10)))
+
+    sc["_cache"] = {
+        "fuel_itp": fuel_itp,
+        "time_itp": time_itp,
+        "iasu": iasu,
+        "v_notch": v_notch,
+        "dense_grid": dense_grid,
+        "sweep_grid": sweep_grid,
+    }
+    return sc
 
 
 def compute_doc_curve_pchip(sc: Dict[str, Any], tc: float, cfg: Config, *, ngrid: int = 700) -> Dict[str, Any]:
@@ -752,67 +777,81 @@ def compute_optimum_at_time_cost(sc: Dict[str, Any], tc: float, cfg: Config) -> 
 
     return {"IAS_opt_kt": v_opt, "DOC_min_EurPerNM": doc_min, "DOC_notch_EurPerNM": doc_notch}
 
-
 def run_parametric_sweep(sc: Dict[str, Any], time_cost_vec: np.ndarray, cfg: Config) -> Dict[str, Any]:
     time_cost_vec = np.asarray(time_cost_vec, float).reshape(-1)
     sc["timeCostVec"] = time_cost_vec
 
-    v_notch = float(sc["V_notch"])
-    fuel_itp, time_itp, iasu = _build_fuel_time_interpolators(sc)
+    cache = sc.get("_cache", {})
+    fuel_itp = cache.get("fuel_itp")
+    time_itp = cache.get("time_itp")
+    v_notch = cache.get("v_notch")
+    ias_grid = cache.get("sweep_grid")
 
-    def doc_at(x_ias: np.ndarray, tc: float) -> np.ndarray:
-        return cfg.fuel_price_eur_per_kg * fuel_itp(x_ias) + tc * time_itp(x_ias)
+    if fuel_itp is None or time_itp is None or v_notch is None or ias_grid is None:
+        v_notch = float(sc["V_notch"])
+        fuel_itp, time_itp, iasu = _build_fuel_time_interpolators(sc)
+        ngrid = max(120, int(iasu.size * 10))
+        ias_grid = np.linspace(float(iasu.min()), float(iasu.max()), ngrid)
 
-    ngrid = max(120, int(iasu.size * 10))
-    ias_grid = np.linspace(float(iasu.min()), float(iasu.max()), ngrid)
+    fuel_grid = fuel_itp(ias_grid)
+    time_grid = time_itp(ias_grid)
+    fuel_notch = float(fuel_itp(np.array([v_notch]))[0])
+    time_notch = float(time_itp(np.array([v_notch]))[0])
 
     doc_min = np.full(time_cost_vec.size, np.nan, dtype=float)
     ias_opt = np.full(time_cost_vec.size, np.nan, dtype=float)
     doc_notch = np.full(time_cost_vec.size, np.nan, dtype=float)
 
     for i, tc in enumerate(time_cost_vec):
-        doc_grid = doc_at(ias_grid, float(tc))
+        doc_grid = cfg.fuel_price_eur_per_kg * fuel_grid + float(tc) * time_grid
         j = int(np.nanargmin(doc_grid))
         doc_min[i] = float(doc_grid[j])
         ias_opt[i] = float(ias_grid[j])
-        doc_notch[i] = float(doc_at(np.array([v_notch]), float(tc))[0])
+        doc_notch[i] = float(cfg.fuel_price_eur_per_kg * fuel_notch + float(tc) * time_notch)
 
     sc["DOC_min_EurPerNM"] = doc_min
     sc["IAS_opt_kt"] = ias_opt
     sc["DOC_notch_EurPerNM"] = doc_notch
     return sc
 
-
 def run_fuel_price_sweep(sc: Dict[str, Any], fuel_price_vec: np.ndarray, cfg: Config) -> Dict[str, Any]:
     fuel_price_vec = np.asarray(fuel_price_vec, float).reshape(-1)
     sc["fuelPriceVec"] = fuel_price_vec
 
     tc_op = float(cfg.time_cost_operational)
-    v_notch = float(sc["V_notch"])
-    fuel_itp, time_itp, iasu = _build_fuel_time_interpolators(sc)
 
-    def doc_at(x_ias: np.ndarray, fp: float) -> np.ndarray:
-        return float(fp) * fuel_itp(x_ias) + tc_op * time_itp(x_ias)
+    cache = sc.get("_cache", {})
+    fuel_itp = cache.get("fuel_itp")
+    time_itp = cache.get("time_itp")
+    v_notch = cache.get("v_notch")
+    ias_grid = cache.get("sweep_grid")
 
-    ngrid = max(120, int(iasu.size * 10))
-    ias_grid = np.linspace(float(iasu.min()), float(iasu.max()), ngrid)
+    if fuel_itp is None or time_itp is None or v_notch is None or ias_grid is None:
+        v_notch = float(sc["V_notch"])
+        fuel_itp, time_itp, iasu = _build_fuel_time_interpolators(sc)
+        ngrid = max(120, int(iasu.size * 10))
+        ias_grid = np.linspace(float(iasu.min()), float(iasu.max()), ngrid)
+
+    fuel_grid = fuel_itp(ias_grid)
+    time_grid = time_itp(ias_grid)
+    fuel_notch = float(fuel_itp(np.array([v_notch]))[0])
+    time_notch = float(time_itp(np.array([v_notch]))[0])
 
     doc_min = np.full(fuel_price_vec.size, np.nan, dtype=float)
     ias_opt = np.full(fuel_price_vec.size, np.nan, dtype=float)
     doc_notch = np.full(fuel_price_vec.size, np.nan, dtype=float)
 
     for i, fp in enumerate(fuel_price_vec):
-        doc_grid = doc_at(ias_grid, float(fp))
+        doc_grid = float(fp) * fuel_grid + tc_op * time_grid
         j = int(np.nanargmin(doc_grid))
         doc_min[i] = float(doc_grid[j])
         ias_opt[i] = float(ias_grid[j])
-        doc_notch[i] = float(doc_at(np.array([v_notch]), float(fp))[0])
+        doc_notch[i] = float(float(fp) * fuel_notch + tc_op * time_notch)
 
     sc["DOC_min_EurPerNM_fp"] = doc_min
     sc["IAS_opt_kt_fp"] = ias_opt
     sc["DOC_notch_EurPerNM_fp"] = doc_notch
     return sc
-
 
 def compute_ecsr_band(sc: Dict[str, Any], tc: float, cfg: Config) -> Dict[str, float]:
     df: pd.DataFrame = sc["pointTable"]
@@ -1749,23 +1788,30 @@ def current_operating_point_result(
 
     If ECON does not truly exist at current operating point, result is collapsed to IASnotch.
     """
-    v_notch = float(sc.get("V_notch", np.nan))
-    if not np.isfinite(v_notch):
-        return {
-            "econ_exists": 0.0,
-            "v_docmin_raw": float("nan"),
-            "v_econ": float("nan"),
-            "v_notch": float("nan"),
-            "doc_econ_per_nm": float("nan"),
-            "doc_notch_per_nm": float("nan"),
-            "gs_econ_kt": float("nan"),
-            "gs_notch_kt": float("nan"),
-        }
+    cache = sc.get("_cache", {})
+    fuel_itp = cache.get("fuel_itp")
+    time_itp = cache.get("time_itp")
+    iasu = cache.get("iasu")
+    v_notch = cache.get("v_notch")
+    ias_grid = cache.get("dense_grid")
 
-    fuel_itp, time_itp, iasu = _build_fuel_time_interpolators(sc)
+    if fuel_itp is None or time_itp is None or iasu is None or v_notch is None or ias_grid is None:
+        v_notch = float(sc.get("V_notch", np.nan))
+        if not np.isfinite(v_notch):
+            return {
+                "econ_exists": 0.0,
+                "v_docmin_raw": float("nan"),
+                "v_econ": float("nan"),
+                "v_notch": float("nan"),
+                "doc_econ_per_nm": float("nan"),
+                "doc_notch_per_nm": float("nan"),
+                "gs_econ_kt": float("nan"),
+                "gs_notch_kt": float("nan"),
+            }
 
-    ngrid = max(400, int(iasu.size * 40))
-    ias_grid = np.linspace(float(iasu.min()), float(iasu.max()), ngrid)
+        fuel_itp, time_itp, iasu = _build_fuel_time_interpolators(sc)
+        ngrid = max(400, int(iasu.size * 40))
+        ias_grid = np.linspace(float(iasu.min()), float(iasu.max()), ngrid)
 
     doc_grid = (
         float(fuel_price_eur_per_kg) * fuel_itp(ias_grid)
@@ -2114,6 +2160,13 @@ def run_pipeline(
 
     if not scenarios:
         raise RuntimeError("No scenarios processed successfully.")
+
+    _dbg("building per-scenario runtime cache")
+    for i in range(len(scenarios)):
+        if i % 25 == 0 or i == len(scenarios) - 1:
+            _dbg(f"cache progress | {i+1}/{len(scenarios)}")
+        scenarios[i] = _prepare_scenario_runtime_cache(scenarios[i])
+    _dbg("runtime cache done")
 
     outlier_rows = pd.concat(outlier_frames, ignore_index=True) if outlier_frames else make_empty_outlier_table()
     _dbg(f"outlier table ready | rows={len(outlier_rows)}")

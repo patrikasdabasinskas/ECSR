@@ -19,12 +19,15 @@ from ecsr_core import (
     Config,
     EcsrInterpResult,
     InterpQuickResult,
+    build_global_point_cloud,
     build_longform_fuel_table,
+    compute_doc_curve_interpolated_from_cloud,
     compute_doc_curve_pchip,
+    compute_econ_vs_fuel_price_interpolated,
+    compute_econ_vs_time_cost_interpolated,
     compute_ecsr_band_interpolated,
     compute_quick_metrics_interpolated,
     default_config,
-    interpolate_curve_knn_from_scenarios,
     run_pipeline,
     write_excel_results,
 )
@@ -1094,194 +1097,31 @@ def _plot_econ_vs_fuel_price(
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
     return fig
 
-def _compute_input_doc_curve_knn(
-    scenarios: List[Dict[str, Any]],
-    summary_tbl: pd.DataFrame,
+def _compute_input_doc_curve_5d(
+    global_cloud: pd.DataFrame,
     *,
     fl_ft: float,
     wt_kg: float,
     isa_c: float,
     wind_kt: float,
-    fuel_price_eur_per_kg: Optional[float] = None,
-    time_cost_eur_per_hr: Optional[float] = None,
-) -> Dict[str, Any]:
-    msg = _validate_interp_inputs(
-        summary_tbl,
-        fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
-        isa_c=float(isa_c),
-        wind_kt=float(wind_kt),
-    )
-    if msg:
-        raise ValueError(msg)
-
-    fuel_price_use = float(fuel_price_eur_per_kg) if fuel_price_eur_per_kg is not None else float(
-        st.session_state.get("last_cfg", cfg0).fuel_price_eur_per_kg
-    )
-    time_cost_use = float(time_cost_eur_per_hr) if time_cost_eur_per_hr is not None else float(
-        st.session_state.get("last_cfg", cfg0).time_cost_operational
-    )
-    
-    usable: List[Dict[str, Any]] = []
-    for sc in scenarios:
-        try:
-            cfg_local = replace(
-                st.session_state.get("last_cfg", cfg0),
-                fuel_price_eur_per_kg=float(fuel_price_use),
-                time_cost_operational=float(time_cost_use),
-            )
-            cur_sc = compute_doc_curve_pchip(sc, float(time_cost_use), cfg_local, ngrid=400)
-            sc_local = dict(sc)
-            sc_local["docIASVec"] = np.asarray(cur_sc["IAS_grid"], float)
-            sc_local["docVec"] = np.asarray(cur_sc["DOC_grid_per_nm"], float)
-            if sc_local["docIASVec"].size >= 2 and sc_local["docVec"].size >= 2:
-                usable.append(sc_local)
-        except Exception:
-            continue
-    
-    if len(usable) < 8:
-        raise ValueError("Nepakanka scenarijų DOC interpolacijai (reikia bent 8 su DOC vektoriais).")
-
-    ias_lo = min(float(np.nanmin(sc["docIASVec"])) for sc in usable)
-    ias_hi = max(float(np.nanmax(sc["docIASVec"])) for sc in usable)
-    if not np.isfinite(ias_lo) or not np.isfinite(ias_hi) or ias_hi <= ias_lo:
-        raise ValueError("Nepavyko nustatyti galiojančio IAS intervalo DOC kreivei.")
-
-    k_use = min(8, len(usable))
-    min_nb = min(4, k_use)
-
-    x_full = np.linspace(ias_lo, ias_hi, 500, dtype=float)
-    y_full, _diag1 = interpolate_curve_knn_from_scenarios(
-        usable,
-        fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
-        isa_c=float(isa_c),
-        wind_kt=float(wind_kt),
-        x_grid=x_full,
-        x_vec_key="docIASVec",
-        y_vec_key="docVec",
-        k=k_use,
-        power=2.0,
-        min_neighbors=min_nb,
-    )
-
-    x_full = np.asarray(x_full, float)
-    y_full = np.asarray(y_full, float)
-
-    ok = np.isfinite(x_full) & np.isfinite(y_full)
-    if int(ok.sum()) < 80:
-        raise ValueError("Nepakanka duomenų DOC kreivei nubraižyti.")
-
-    x_full = x_full[ok]
-    y_full = y_full[ok]
-
-    j0 = int(np.nanargmin(y_full))
-
-    left_i = max(0, j0 - 3)
-    right_i = min(len(x_full) - 1, j0 + 3)
-
-    x_left = float(x_full[left_i])
-    x_right = float(x_full[right_i])
-
-    if not np.isfinite(x_left) or not np.isfinite(x_right) or x_right <= x_left:
-        x_left = float(max(ias_lo, x_full[j0] - 2.0))
-        x_right = float(min(ias_hi, x_full[j0] + 2.0))
-
-    x_fine = np.linspace(x_left, x_right, 800, dtype=float)
-    y_fine, _diag2 = interpolate_curve_knn_from_scenarios(
-        usable,
-        fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
-        isa_c=float(isa_c),
-        wind_kt=float(wind_kt),
-        x_grid=x_fine,
-        x_vec_key="docIASVec",
-        y_vec_key="docVec",
-        k=k_use,
-        power=2.0,
-        min_neighbors=min_nb,
-    )
-
-    x_fine = np.asarray(x_fine, float)
-    y_fine = np.asarray(y_fine, float)
-
-    ok2 = np.isfinite(x_fine) & np.isfinite(y_fine)
-
-    if int(ok2.sum()) >= 80:
-        x_min_search = x_fine[ok2]
-        y_min_search = y_fine[ok2]
-    else:
-        x_min_search = x_full
-        y_min_search = y_full
-
-    j = int(np.nanargmin(y_min_search))
-    v_opt_raw = float(x_min_search[j])
-
-    qres = compute_quick_metrics_interpolated(
-        summary_tbl,
-        fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
-        isa_c=float(isa_c),
-        wind_kt=float(wind_kt),
-    )
-    v_notch = float(qres.v_notch_kt)
-
-    v_opt = _econ_from_docmin_with_notch_rule(v_opt_raw, v_notch, min_gap_kt=1.0)
-    doc_opt = float(np.interp(v_opt, x_full, y_full))
-    doc_notch = float(np.interp(v_notch, x_full, y_full))
-
-    return {
-        "IAS_grid": x_full,
-        "DOC_grid_per_nm": y_full,
-        "IAS_opt": v_opt,
-        "IAS_notch": v_notch,
-        "DOC_opt_per_nm": doc_opt,
-        "DOC_notch_per_nm": doc_notch,
-    }
-
-def _compute_input_fuel_break_even_consistent(
-    scenarios: List[Dict[str, Any]],
-    summary_tbl: pd.DataFrame,
     cfg: Config,
-    *,
-    fl_ft: float,
-    wt_kg: float,
-    isa_c: float,
-    wind_kt: float,
-) -> float:
-    fuel_grid = np.arange(
-        float(cfg.fuel_price_min),
-        float(cfg.fuel_price_max) + 1e-12,
-        float(cfg.fuel_price_step),
-        dtype=float,
+) -> Dict[str, Any]:
+    if global_cloud is None or global_cloud.empty:
+        raise ValueError("Nepakanka duomenų 5D DOC kreivei.")
+
+    return compute_doc_curve_interpolated_from_cloud(
+        cloud=global_cloud,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+        time_cost_eur_per_hr=float(cfg.time_cost_operational),
+        fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
+        ngrid=700,
     )
 
-    for fp in fuel_grid.tolist():
-        try:
-            cur = _compute_input_doc_curve_knn(
-                scenarios,
-                summary_tbl,
-                fl_ft=float(fl_ft),
-                wt_kg=float(wt_kg),
-                isa_c=float(isa_c),
-                wind_kt=float(wind_kt),
-                fuel_price_eur_per_kg=float(fp),
-                time_cost_eur_per_hr=float(cfg.time_cost_operational),
-            )
-        except Exception:
-            continue
-
-        docmin_nm = float(cur["DOC_opt_per_nm"])
-        docnotch_nm = float(cur["DOC_notch_per_nm"])
-
-        if np.isfinite(docmin_nm) and np.isfinite(docnotch_nm):
-            if float(docnotch_nm) > float(docmin_nm):
-                return float(fp)
-
-    return float("inf")
-
-def _plot_doc_vs_ias_input_knn(
-    scenarios: List[Dict[str, Any]],
+def _plot_doc_vs_ias_input_5d(
+    global_cloud: pd.DataFrame,
     summary_tbl: pd.DataFrame,
     *,
     fl_ft: float,
@@ -1294,48 +1134,27 @@ def _plot_doc_vs_ias_input_knn(
     if msg:
         raise ValueError(msg)
 
-    usable = [
-        sc for sc in scenarios
-        if isinstance(sc.get("docIASVec"), np.ndarray) and isinstance(sc.get("docVec"), np.ndarray)
-        and sc.get("docIASVec").size >= 2 and sc.get("docVec").size >= 2
-    ]
-    if len(usable) < 8:
-        raise ValueError("Nepakanka scenarijų DOC(KNN) interpolacijai (reikia bent 8 su DOC vektoriais).")
-
-    ias_lo = min(float(np.nanmin(sc["docIASVec"])) for sc in usable)
-    ias_hi = max(float(np.nanmax(sc["docIASVec"])) for sc in usable)
-    x_grid = np.linspace(ias_lo, ias_hi, 500, dtype=float)
-
-    k_use = min(8, len(usable))
-    min_nb = min(4, k_use)
-
-    y_grid, _diag = interpolate_curve_knn_from_scenarios(
-        usable,
+    cur = _compute_input_doc_curve_5d(
+        global_cloud,
         fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
+        wt_kg=float(wt_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
-        x_grid=x_grid,
-        x_vec_key="docIASVec",
-        y_vec_key="docVec",
-        k=k_use,
-        power=2.0,
-        min_neighbors=min_nb,
+        cfg=cfg,
     )
 
-    x = np.asarray(x_grid, float)
-    y = np.asarray(y_grid, float)
+    x = np.asarray(cur["IAS_grid"], float)
+    y = np.asarray(cur["DOC_grid_per_nm"], float)
 
     ok = np.isfinite(x) & np.isfinite(y)
     if int(ok.sum()) < 50:
-        raise ValueError("Nepakanka duomenų DOC kreivei nubraižyti (KNN).")
+        raise ValueError("Nepakanka duomenų DOC kreivei nubraižyti (5D).")
 
     x = x[ok]
     y = y[ok]
 
-    j = int(np.nanargmin(y))
-    v_opt = float(x[j])
-    doc_opt = float(y[j])
+    v_opt = float(cur["IAS_opt"])
+    doc_opt = float(cur["DOC_opt_per_nm"])
 
     qres = compute_quick_metrics_interpolated(
         summary_tbl,
@@ -1349,7 +1168,7 @@ def _plot_doc_vs_ias_input_knn(
     same = (v_opt >= (v_notch - 1.0))
 
     fig, ax = _mpl_academic_fig()
-    ax.plot(x, y, linewidth=2.2, color="darkred", label="DOC kreivė (KNN)")
+    ax.plot(x, y, linewidth=2.2, color="darkred", label="DOC kreivė (5D)")
 
     econ_kt = int(round(v_opt))
     notch_kt = int(round(v_notch))
@@ -1358,22 +1177,39 @@ def _plot_doc_vs_ias_input_knn(
         y_notch = float(np.interp(v_notch, x, y))
         ax.scatter([v_notch], [y_notch], s=95, marker="x", color="black",
                    label=f"ECON / IASnotch ({notch_kt} kt)")
-        _annotate_tiny_above(ax, v_notch, y_notch,
-                             f"ECON = IASnotch = {notch_kt} kt",
-                             color="black")
+        _annotate_tiny_above(
+            ax,
+            v_notch,
+            y_notch,
+            f"ECON = IASnotch = {notch_kt} kt",
+            color="black",
+        )
     else:
         ax.scatter([v_opt], [doc_opt], s=95, marker="x", color="orange",
                    label=f"ECON ({econ_kt} kt)")
-        _annotate_tiny_above(ax, v_opt, doc_opt, f"ECON {econ_kt} kt",
-                             color="orange", dx_pts=-60, dy_pts=40)
+        _annotate_tiny_above(
+            ax,
+            v_opt,
+            doc_opt,
+            f"ECON {econ_kt} kt",
+            color="orange",
+            dx_pts=-60,
+            dy_pts=40,
+        )
 
         y_notch = float(np.interp(v_notch, x, y))
         ax.scatter([v_notch], [y_notch], s=95, marker="x", color="dodgerblue",
                    label=f"IASnotch ({notch_kt} kt)")
-        _annotate_tiny_above(ax, v_notch, y_notch, f"IASnotch {notch_kt} kt",
-                             color="dodgerblue", dx_pts=14)
+        _annotate_tiny_above(
+            ax,
+            v_notch,
+            y_notch,
+            f"IASnotch {notch_kt} kt",
+            color="dodgerblue",
+            dx_pts=14,
+        )
 
-    ax.set_title("DOC priklausomybė nuo IAS — Įvestis (KNN)")
+    ax.set_title("DOC priklausomybė nuo IAS — Įvestis (5D)")
     ax.set_xlabel("IAS (kt)")
     ax.set_ylabel("DOC (EUR/NM)")
     _add_axis_arrows(ax)
@@ -1381,8 +1217,8 @@ def _plot_doc_vs_ias_input_knn(
     fig.tight_layout()
     return fig
 
-def _plot_econ_vs_time_cost_input_knn(
-    scenarios: List[Dict[str, Any]],
+def _plot_econ_vs_time_cost_input_4d(
+    longform_tbl: pd.DataFrame,
     summary_tbl: pd.DataFrame,
     *,
     fl_ft: float,
@@ -1405,6 +1241,23 @@ def _plot_econ_vs_time_cost_input_knn(
     if tc_msg:
         raise ValueError(tc_msg)
 
+    curve = compute_econ_vs_time_cost_interpolated(
+        longform_tbl,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+    )
+
+    x = pd.to_numeric(curve["TIME_COST"], errors="coerce").to_numpy(float)
+    y = pd.to_numeric(curve["IASopt"], errors="coerce").to_numpy(float)
+
+    ok = np.isfinite(x) & np.isfinite(y)
+    x = x[ok]
+    y = y[ok]
+    if x.size < 2:
+        raise ValueError("Nepakanka duomenų ECON kreivei nubraižyti.")
+
     qres = compute_quick_metrics_interpolated(
         summary_tbl,
         fl_ft=float(fl_ft),
@@ -1414,38 +1267,7 @@ def _plot_econ_vs_time_cost_input_knn(
     )
 
     fig, ax = _mpl_academic_fig(figsize=(9.0, 4.8))
-    x_grid = np.arange(
-        float(cfg.time_cost_min),
-        float(cfg.time_cost_max) + 1e-9,
-        float(cfg.time_cost_step),
-        dtype=float,
-    )
-
-    y_grid, _diag = interpolate_curve_knn_from_scenarios(
-        scenarios,
-        fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
-        isa_c=float(isa_c),
-        wind_kt=float(wind_kt),
-        x_grid=x_grid,
-        x_vec_key="timeCostVec",
-        y_vec_key="IAS_opt_kt",
-        k=min(8, len(scenarios)),
-        min_neighbors=min(4, len(scenarios)),
-        power=2.0,
-    )
-
-    x = x_grid
-    y = np.asarray(y_grid, float)
-
-    if y.size < 2 or not np.all(np.isfinite(y)):
-        raise ValueError("Nepakanka duomenų ECON kreivei nubraižyti.")
-
-    c_curve = "darkred"
-    c_be = "purple"
-    c_in = "orange"
-
-    ax.plot(x, y, linewidth=2.4, color=c_curve, label="ECON kreivė", zorder=2)
+    ax.plot(x, y, linewidth=2.4, color="darkred", label="ECON kreivė", zorder=2)
 
     x_min, x_max = float(np.nanmin(x)), float(np.nanmax(x))
     y_min, y_max = float(np.nanmin(y)), float(np.nanmax(y))
@@ -1459,6 +1281,9 @@ def _plot_econ_vs_time_cost_input_knn(
 
     be = float(qres.be_time_cost_eur_per_hr)
     tc_in = float(cfg.time_cost_operational)
+
+    c_be = "purple"
+    c_in = "orange"
 
     be_ok = np.isfinite(be) and (x_min <= be <= x_max)
     in_ok = np.isfinite(tc_in) and (x_min <= tc_in <= x_max)
@@ -1488,9 +1313,9 @@ def _plot_econ_vs_time_cost_input_knn(
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
     return fig
 
-
-def _plot_econ_vs_fuel_price_input_knn(
-    scenarios: List[Dict[str, Any]],
+ 
+def _plot_econ_vs_fuel_price_input_4d(
+    fuel_longform_tbl: pd.DataFrame,
     summary_tbl: pd.DataFrame,
     *,
     fl_ft: float,
@@ -1513,6 +1338,23 @@ def _plot_econ_vs_fuel_price_input_knn(
     if fp_msg:
         raise ValueError(fp_msg)
 
+    curve = compute_econ_vs_fuel_price_interpolated(
+        fuel_longform_tbl,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+    )
+
+    x = pd.to_numeric(curve["FUEL_PRICE"], errors="coerce").to_numpy(float)
+    y = pd.to_numeric(curve["IASopt"], errors="coerce").to_numpy(float)
+
+    ok = np.isfinite(x) & np.isfinite(y)
+    x = x[ok]
+    y = y[ok]
+    if x.size < 2:
+        raise ValueError("Nepakanka duomenų ECON kreivei nubraižyti.")
+
     qres = compute_quick_metrics_interpolated(
         summary_tbl,
         fl_ft=float(fl_ft),
@@ -1522,38 +1364,7 @@ def _plot_econ_vs_fuel_price_input_knn(
     )
 
     fig, ax = _mpl_academic_fig(figsize=(9.0, 4.8))
-    x_grid = np.arange(
-        float(cfg.fuel_price_min),
-        float(cfg.fuel_price_max) + 1e-12,
-        float(cfg.fuel_price_step),
-        dtype=float,
-    )
-
-    y_grid, _diag = interpolate_curve_knn_from_scenarios(
-        scenarios,
-        fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
-        isa_c=float(isa_c),
-        wind_kt=float(wind_kt),
-        x_grid=x_grid,
-        x_vec_key="fuelPriceVec",
-        y_vec_key="IAS_opt_kt_fp",
-        k=min(8, len(scenarios)),
-        min_neighbors=min(4, len(scenarios)),
-        power=2.0,
-    )
-
-    x = x_grid
-    y = np.asarray(y_grid, float)
-
-    if y.size < 2 or not np.all(np.isfinite(y)):
-        raise ValueError("Nepakanka duomenų ECON kreivei nubraižyti.")
-
-    c_curve = "darkred"
-    c_be = "purple"
-    c_in = "orange"
-
-    ax.plot(x, y, linewidth=2.4, color=c_curve, label="ECON kreivė", zorder=2)
+    ax.plot(x, y, linewidth=2.4, color="darkred", label="ECON kreivė", zorder=2)
 
     x_min, x_max = float(np.nanmin(x)), float(np.nanmax(x))
     y_min, y_max = float(np.nanmin(y)), float(np.nanmax(y))
@@ -1565,18 +1376,11 @@ def _plot_econ_vs_fuel_price_input_knn(
     def _econ_at(price: float) -> float:
         return float(np.interp(float(price), x, y))
 
-    be = float(
-        _compute_input_fuel_break_even_consistent(
-            scenarios,
-            summary_tbl,
-            cfg,
-            fl_ft=float(fl_ft),
-            wt_kg=float(wt_kg),
-            isa_c=float(isa_c),
-            wind_kt=float(wind_kt),
-        )
-    )
+    be = float(qres.be_fuel_price_eur_per_kg)
     fp_in = float(cfg.fuel_price_eur_per_kg)
+
+    c_be = "purple"
+    c_in = "orange"
 
     be_ok = np.isfinite(be) and (x_min <= be <= x_max)
     in_ok = np.isfinite(fp_in) and (x_min <= fp_in <= x_max)
@@ -2220,19 +2024,7 @@ def _build_interpolated_sweep_table(
             )
 
             v_notch = float(qres.v_notch_kt)
-
-            try:
-                doc_curve_res = _compute_input_doc_curve_knn(
-                    scenarios,
-                    summary_tbl,
-                    fl_ft=zp_ft,
-                    wt_kg=weight_kg,
-                    isa_c=isa_c,
-                    wind_kt=wind_kt,
-                )
-                v_econ = float(doc_curve_res["IAS_opt"])
-            except Exception:
-                v_econ = float(qres.v_ecsr_kt)
+            v_econ = float(qres.v_ecsr_kt)
 
             if np.isfinite(v_econ) and np.isfinite(v_notch):
                 v_econ = min(v_econ, v_notch)
@@ -2518,18 +2310,16 @@ if run_btn:
         fuel_longform_tbl = build_longform_fuel_table(scenarios)
 
         # Precompute per-scenario DOC(IAS) vectors for Graph 1 (Įvestis) kNN
-        for sc in scenarios:
-            try:
-                cur = compute_doc_curve_pchip(sc, float(cfg.time_cost_operational), cfg, ngrid=400)
-                sc["docIASVec"] = np.asarray(cur["IAS_grid"], float)
-                sc["docVec"] = np.asarray(cur["DOC_grid_per_nm"], float)
-            except Exception:
-                sc.pop("docIASVec", None)
-                sc.pop("docVec", None)
+        try:
+            global_cloud = build_global_point_cloud(scenarios)
+        except Exception:
+            global_cloud = pd.DataFrame()
 
     # -------------------------
     # Save state (outside spinner)
     # -------------------------
+    st.session_state["fuel_longform_tbl"] = fuel_longform_tbl
+    st.session_state["global_cloud"] = global_cloud
     st.session_state["last_cfg"] = cfg
     st.session_state["summary_tbl"] = summary_tbl
     st.session_state["longform_tbl"] = longform_tbl
@@ -2574,6 +2364,8 @@ if "summary_tbl" not in st.session_state:
 
 summary_tbl: pd.DataFrame = st.session_state["summary_tbl"]
 longform_tbl: pd.DataFrame = st.session_state["longform_tbl"]
+fuel_longform_tbl: pd.DataFrame = st.session_state.get("fuel_longform_tbl", pd.DataFrame())
+global_cloud: pd.DataFrame = st.session_state.get("global_cloud", pd.DataFrame())
 scenarios: List[Dict[str, Any]] = st.session_state.get("scenarios", [])
 cfg: Config = st.session_state.get("last_cfg", cfg0)
 fuel_ceiling = float(getattr(getattr(cfg, "break_search", None), "fuel_ceiling_eur_per_kg", float("inf")))
@@ -2868,20 +2660,13 @@ else:
                     shown_value = "Nėra lūžio taško"
                     shown_unit = ""
             elif col_key == "__BREAK_FUEL__":
-                v = _compute_input_fuel_break_even_consistent(
-                    scenarios,
-                    summary_tbl,
-                    cfg,
-                    fl_ft=float(in_fl),
-                    wt_kg=float(in_wt),
-                    isa_c=float(in_isa),
-                    wind_kt=float(in_wind),
-                )
+                v = float(res_in.be_fuel_price_eur_per_kg)
                 if np.isfinite(v) and v <= float(fuel_ceiling) + 1e-12:
                     shown_value = f"{v:.2f}"
                     shown_unit = "€/kg"
                 else:
                     shown_value = "Nėra lūžio taško"
+                    shown_unit = ""
             elif col_key == "__SAVING_PER_X__":
                 dist = float(distance_nm)
                 docmin_nm = float(res_in.docmin_eur_per_nm)
@@ -3181,8 +2966,8 @@ else:
             if st.button("Generuoti grafiką", key="btn_g1i", use_container_width=True):
                 st.session_state["open_g1"] = True
                 try:
-                    st.session_state["fig_g1"] = _plot_doc_vs_ias_input_knn(
-                        scenarios,
+                    st.session_state["fig_g1"] = _plot_doc_vs_ias_input_5d(
+                        global_cloud,
                         summary_tbl,
                         fl_ft=fl,
                         wt_kg=wt,
@@ -3323,15 +3108,15 @@ else:
             if st.button("Generuoti grafiką", key="btn_g2i", use_container_width=True):
                 st.session_state["open_g2"] = True
                 try:
-                    st.session_state["fig_g2"] = _plot_econ_vs_time_cost_input_knn(
-                        scenarios,
-                        summary_tbl,
-                        fl_ft=fl,
-                        wt_kg=wt,
-                        isa_c=isa,
-                        wind_kt=wind,
-                        cfg=cfg,
-                    )
+                    st.session_state["fig_g2"] = _plot_econ_vs_time_cost_input_4d(
+                                                    longform_tbl,
+                                                    summary_tbl,
+                                                    fl_ft=fl,
+                                                    wt_kg=wt,
+                                                    isa_c=isa,
+                                                    wind_kt=wind,
+                                                    cfg=cfg,
+                                                )
                     st.session_state["err_g2"] = ""
                 except Exception as e:
                     st.session_state["fig_g2"] = None
@@ -3357,15 +3142,15 @@ else:
             if st.button("Generuoti grafiką", key="btn_g3i", use_container_width=True):
                 st.session_state["open_g3"] = True
                 try:
-                    st.session_state["fig_g3"] = _plot_econ_vs_fuel_price_input_knn(
-                        scenarios,
-                        summary_tbl,
-                        fl_ft=fl,
-                        wt_kg=wt,
-                        isa_c=isa,
-                        wind_kt=wind,
-                        cfg=cfg,
-                    )
+                    st.session_state["fig_g3"] = _plot_econ_vs_fuel_price_input_4d(
+                                                    fuel_longform_tbl,
+                                                    summary_tbl,
+                                                    fl_ft=fl,
+                                                    wt_kg=wt,
+                                                    isa_c=isa,
+                                                    wind_kt=wind,
+                                                    cfg=cfg,
+                                                )
                     st.session_state["err_g3"] = ""
                 except Exception as e:
                     st.session_state["fig_g3"] = None

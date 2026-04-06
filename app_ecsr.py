@@ -1,9 +1,8 @@
-# =========================
+This is my newest code, just ack: # =========================
 # File: app_ecsr.py
 # =========================
 from __future__ import annotations
 
-import html
 import re
 import tempfile
 import textwrap
@@ -20,18 +19,12 @@ from ecsr_core import (
     Config,
     EcsrInterpResult,
     InterpQuickResult,
-    build_global_point_cloud,
     build_longform_fuel_table,
-    build_summary_interpolators_4d,
-    compute_doc_curve_interpolated_from_cloud,
     compute_doc_curve_pchip,
-    compute_econ_vs_fuel_price_interpolated,
-    compute_econ_vs_time_cost_interpolated,
     compute_ecsr_band_interpolated,
     compute_quick_metrics_interpolated,
-    compute_quick_metrics_interpolated_from_prebuilt,
-    current_operating_point_result,
     default_config,
+    interpolate_curve_knn_from_scenarios,
     run_pipeline,
     write_excel_results,
 )
@@ -161,9 +154,8 @@ def _show_fig(fig) -> None:
 def _black_note(text: str) -> None:
     if not text:
         return
-    safe_text = html.escape(str(text))
     st.markdown(
-        f"<div style='color:inherit; font-size:16px; margin-top:6px;'>{safe_text}</div>",
+        f"<div style='color:inherit; font-size:16px; margin-top:6px;'>{text}</div>",
         unsafe_allow_html=True,
     )
 
@@ -183,21 +175,6 @@ def _fmt_eur(v: float, *, decimals: int = 1) -> str:
     if not np.isfinite(v):
         return ""
     return f"{float(v):.{int(decimals)}f}".replace(".", ",")
-
-def _fmt_saving_eur(v: float) -> str:
-    """
-    Display savings with precision that keeps small non-zero values visible.
-    """
-    if not np.isfinite(v):
-        return ""
-    av = abs(float(v))
-    if av < 1.0:
-        dec = 3
-    elif av < 10.0:
-        dec = 2
-    else:
-        dec = 1
-    return _fmt_eur(float(v), decimals=dec)
 
 def _econ_from_docmin_with_notch_rule(v_docmin: float, v_notch: float, *, min_gap_kt: float = 1.0) -> float:
     """
@@ -239,20 +216,6 @@ def _disp_gap_kt(v_notch: float, v_econ: float) -> Optional[int]:
 def _disp_speeds_differ(v_notch: float, v_econ: float, min_gap_kt: int = 1) -> bool:
     gap = _disp_gap_kt(v_notch, v_econ)
     return gap is not None and gap >= int(min_gap_kt)
-
-def _raw_speeds_differ(v_notch: float, v_econ: float, min_gap_kt: float = 1.0) -> bool:
-    if not (np.isfinite(v_notch) and np.isfinite(v_econ)):
-        return False
-    return (float(v_notch) - float(v_econ)) >= float(min_gap_kt)
-
-def _raw_speed_advantage_exists(v_notch: float, v_econ: float, *, atol_kt: float = 1e-6) -> bool:
-    """
-    True when ECON is genuinely below IASnotch in raw values (no 1 kt display gating).
-    Used for savings display so tiny but real differences are not forced to zero.
-    """
-    if not (np.isfinite(v_notch) and np.isfinite(v_econ)):
-        return False
-    return float(v_notch) > float(v_econ) + float(atol_kt)
 
 
 def _fmt_speed_econ(v: float) -> str:
@@ -315,27 +278,15 @@ def _ecsr_range_str(
 
     return f"{lo_i}" if lo_i == hi_i else f"{lo_i}–{hi_i}"
 
-def _ecsr_range_str_simple(lo: float, hi: float) -> str:
-    if not (np.isfinite(lo) and np.isfinite(hi)):
-        return ""
-
-    lo_i = int(round(float(min(lo, hi))))
-    hi_i = int(round(float(max(lo, hi))))
-
-    return f"{lo_i}" if lo_i == hi_i else f"{lo_i}–{hi_i}"
-
 
 def _scenario_docmin_econ_kt(
     sc: Dict[str, Any],
     cfg: Config,
 ) -> float:
-    cur = current_operating_point_result(
-        sc,
-        fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
-        time_cost_eur_per_hr=float(cfg.time_cost_operational),
-        cfg=cfg,
-    )
-    return float(cur["v_econ"])
+    cur = compute_doc_curve_pchip(sc, float(cfg.time_cost_operational), cfg, ngrid=700)
+    v_docmin = float(cur["IAS_opt"])
+    v_notch = float(cur["IAS_notch"])
+    return _econ_from_docmin_with_notch_rule(v_docmin, v_notch, min_gap_kt=1.0)
 
 
 def _scenario_docmin_econ_display_kt(
@@ -347,6 +298,37 @@ def _scenario_docmin_econ_display_kt(
     if not np.isfinite(v_notch):
         v_notch = float(pd.to_numeric(sc.get("IAS_notch", np.nan), errors="coerce"))
     return _fmt_speed_econ_safe(v_econ, v_notch)
+
+
+def _input_docmin_econ_kt(
+    scenarios: List[Dict[str, Any]],
+    summary_tbl: pd.DataFrame,
+    *,
+    fl_ft: float,
+    wt_kg: float,
+    isa_c: float,
+    wind_kt: float,
+    fallback_v_econ: float,
+    fallback_v_notch: float,
+) -> float:
+    try:
+        doc_curve_res = _compute_input_doc_curve_knn(
+            scenarios,
+            summary_tbl,
+            fl_ft=float(fl_ft),
+            wt_kg=float(wt_kg),
+            isa_c=float(isa_c),
+            wind_kt=float(wind_kt),
+        )
+        v_docmin = float(doc_curve_res["IAS_opt"])
+    except Exception:
+        v_docmin = float(fallback_v_econ)
+
+    return _econ_from_docmin_with_notch_rule(
+        v_docmin,
+        float(fallback_v_notch),
+        min_gap_kt=1.0,
+    )
 
 
 def _group_label(group_col: str, group_val: float) -> str:
@@ -486,23 +468,10 @@ def _validate_sweep_input(value: float, *, lo: float, hi: float, label: str, uni
 
 
 def _normalize_ui_error(exc: Exception) -> str:
-    try:
-        msg = str(exc)
-    except Exception:
-        msg = ""
-
-    msg = (msg or "").strip().replace("\x00", "")
-    msg = re.sub(r"\s+", " ", msg)
-
-    msg = msg.replace("<", "‹").replace(">", "›")
-
-    if not msg:
-        return "Nepakanka duomenų interpolacijai arba įvestis už leistinų ribų."
-
-    if len(msg) > 400:
-        msg = msg[:400].rstrip() + "..."
-
-    return msg
+    msg = str(exc).strip()
+    if msg:
+        return msg
+    return "Nepakanka duomenų interpolacijai arba įvestis už leistinų ribų."
 
 
 
@@ -625,10 +594,9 @@ def _build_economical_scenarios_table(
 # ------------------------- Result card -------------------------
 
 def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int = 170, box_height_px: int = 42) -> str:
-    safe_value = html.escape((value or "").strip())
+    safe_value = (value or "").strip()
     value_html = safe_value if safe_value else "&nbsp;"
-    safe_unit = html.escape((unit or "").strip())
-    safe_caption = html.escape((caption or "").strip())
+    safe_unit = (unit or "").strip()
 
     unit_html = (
         f"<span class='cc-unit' style='margin-left:6px;line-height:1;'>{safe_unit}</span>"
@@ -636,7 +604,7 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
         else ""
     )
 
-    card_html = f"""
+    html = f"""
 <style>
   :root {{
     --cc-border: rgba(0,0,0,0.18);
@@ -730,12 +698,12 @@ def _result_card_html(value: str, unit: str, caption: str, *, max_width_px: int 
       {unit_html}
     </div>
     <div class="cc-caption" style="text-align:center;font-size:15px;margin-top:8px;">
-      {safe_caption}
+      {caption}
     </div>
   </div>
 </div>
 """
-    return textwrap.dedent(card_html).strip()
+    return textwrap.dedent(html).strip()
 
 
 def _render_result_card(value: str, unit: str, caption: str, *, max_width_px: int = 170, box_height_px: int = 42) -> None:
@@ -750,7 +718,7 @@ def _render_result_card(value: str, unit: str, caption: str, *, max_width_px: in
 def _mpl_academic_fig(figsize: Tuple[float, float] = (8.6, 5.2)):
     import matplotlib.pyplot as plt
 
-    fig = plt.figure(figsize=figsize, dpi=170)
+    fig = plt.figure(figsize=figsize, dpi=260)
     ax = fig.add_subplot(1, 1, 1)
     ax.grid(True, which="both", linestyle="--", linewidth=0.6, alpha=0.6)
     return fig, ax
@@ -896,10 +864,13 @@ def _plot_doc_vs_ias(sc: Dict[str, Any], cfg: Config, time_cost_eur_per_hr: floa
     doc_opt_eur = float(cur["DOC_opt_per_nm"]) * float(distance_nm)
     doc_notch_eur = float(cur["DOC_notch_per_nm"]) * float(distance_nm)
 
-    econ_kt = _safe_display_econ_kt(float(cur["IAS_opt"]), float(cur["IAS_notch"]))
-    notch_kt = _disp_notch_kt(float(cur["IAS_notch"]))
+    econ_raw = float(cur["IAS_opt"])
+    notch_raw = float(cur["IAS_notch"])
 
-    same = (float(cur["IAS_opt"]) >= (float(cur["IAS_notch"]) - 1.0))
+    econ_kt = _safe_display_econ_kt(econ_raw, notch_raw)
+    notch_kt = _disp_notch_kt(notch_raw)
+
+    same = not _disp_speeds_differ(notch_raw, econ_raw, min_gap_kt=1)
 
     if same:
         econ_color = "black"
@@ -916,6 +887,7 @@ def _plot_doc_vs_ias(sc: Dict[str, Any], cfg: Config, time_cost_eur_per_hr: floa
     ax.autoscale_view()
 
     if same:
+        # Show ONE point at IASnotch (black), like in scenario mode requirement
         x_same = float(cur["IAS_notch"])
         y_same = doc_notch_eur
 
@@ -1119,84 +1091,131 @@ def _plot_econ_vs_fuel_price(
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
     return fig
 
-def _compute_input_doc_curve_5d(
-    global_cloud: pd.DataFrame,
+def _compute_input_doc_curve_knn(
+    scenarios: List[Dict[str, Any]],
+    summary_tbl: pd.DataFrame,
     *,
     fl_ft: float,
     wt_kg: float,
     isa_c: float,
     wind_kt: float,
-    cfg: Config,
 ) -> Dict[str, Any]:
-    if global_cloud is None or global_cloud.empty:
-        raise ValueError("Nepakanka duomenų 5D DOC kreivei.")
-
-    return _cached_input_doc_curve_5d(
-        global_cloud,
-        float(fl_ft),
-        float(wt_kg),
-        float(isa_c),
-        float(wind_kt),
-        float(cfg.time_cost_operational),
-        float(cfg.fuel_price_eur_per_kg),
-    )
-
-@st.cache_data(show_spinner=False)
-def _cached_input_doc_curve_5d(
-    cloud_df: pd.DataFrame,
-    fl_ft: float,
-    wt_kg: float,
-    isa_c: float,
-    wind_kt: float,
-    time_cost_eur_per_hr: float,
-    fuel_price_eur_per_kg: float,
-) -> Dict[str, Any]:
-    return compute_doc_curve_interpolated_from_cloud(
-        cloud=cloud_df,
+    msg = _validate_interp_inputs(
+        summary_tbl,
         fl_ft=float(fl_ft),
         weight_kg=float(wt_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
-        time_cost_eur_per_hr=float(time_cost_eur_per_hr),
-        fuel_price_eur_per_kg=float(fuel_price_eur_per_kg),
-        ngrid=140,
-        min_valid_grid_points=16,
+    )
+    if msg:
+        raise ValueError(msg)
+
+    usable = [
+        sc for sc in scenarios
+        if isinstance(sc.get("docIASVec"), np.ndarray)
+        and isinstance(sc.get("docVec"), np.ndarray)
+        and sc.get("docIASVec").size >= 2
+        and sc.get("docVec").size >= 2
+    ]
+    if len(usable) < 8:
+        raise ValueError("Nepakanka scenarijų DOC interpolacijai (reikia bent 8 su DOC vektoriais).")
+
+    ias_lo = min(float(np.nanmin(sc["docIASVec"])) for sc in usable)
+    ias_hi = max(float(np.nanmax(sc["docIASVec"])) for sc in usable)
+    if not np.isfinite(ias_lo) or not np.isfinite(ias_hi) or ias_hi <= ias_lo:
+        raise ValueError("Nepavyko nustatyti galiojančio IAS intervalo DOC kreivei.")
+
+    k_use = min(30, len(usable))
+    min_nb = min(8, max(3, len(usable) // 2))
+
+    x_full = np.linspace(ias_lo, ias_hi, 500, dtype=float)
+    y_full, _diag1 = interpolate_curve_knn_from_scenarios(
+        usable,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+        x_grid=x_full,
+        x_vec_key="docIASVec",
+        y_vec_key="docVec",
+        k=k_use,
+        power=2.0,
+        min_neighbors=min_nb,
     )
 
-def _ensure_summary_prebuilt_4d(summary_tbl: pd.DataFrame):
-    prebuilt = st.session_state.get("summary_prebuilt_4d", None)
-    if prebuilt is None:
-        try:
-            st.session_state["summary_prebuilt_4d"] = build_summary_interpolators_4d(
-                summary_tbl,
-                min_points_required=20,
-            )
-        except Exception as e:
-            raise ValueError(f"Nepavyko paruošti 4D interpoliatoriaus: {_normalize_ui_error(e)}")
-    return st.session_state["summary_prebuilt_4d"]
+    x_full = np.asarray(x_full, float)
+    y_full = np.asarray(y_full, float)
 
+    ok = np.isfinite(x_full) & np.isfinite(y_full)
+    if int(ok.sum()) < 80:
+        raise ValueError("Nepakanka duomenų DOC kreivei nubraižyti.")
 
-def _ensure_global_cloud(scenarios: List[Dict[str, Any]]) -> pd.DataFrame:
-    cloud = st.session_state.get("global_cloud", None)
-    if not isinstance(cloud, pd.DataFrame) or cloud.empty:
-        try:
-            st.session_state["global_cloud"] = build_global_point_cloud(scenarios)
-        except Exception as e:
-            raise ValueError(f"Nepavyko sukurti global cloud: {_normalize_ui_error(e)}")
-    return st.session_state["global_cloud"]
+    x_full = x_full[ok]
+    y_full = y_full[ok]
 
+    j0 = int(np.nanargmin(y_full))
 
-def _ensure_fuel_longform_tbl(scenarios: List[Dict[str, Any]]) -> pd.DataFrame:
-    tbl = st.session_state.get("fuel_longform_tbl", None)
-    if not isinstance(tbl, pd.DataFrame) or tbl.empty:
-        try:
-            st.session_state["fuel_longform_tbl"] = build_longform_fuel_table(scenarios)
-        except Exception as e:
-            raise ValueError(f"Nepavyko sukurti fuel longform lentelės: {_normalize_ui_error(e)}")
-    return st.session_state["fuel_longform_tbl"]
+    left_i = max(0, j0 - 3)
+    right_i = min(len(x_full) - 1, j0 + 3)
 
-def _plot_doc_vs_ias_input_5d(
-    global_cloud: pd.DataFrame,
+    x_left = float(x_full[left_i])
+    x_right = float(x_full[right_i])
+
+    if not np.isfinite(x_left) or not np.isfinite(x_right) or x_right <= x_left:
+        x_left = float(max(ias_lo, x_full[j0] - 2.0))
+        x_right = float(min(ias_hi, x_full[j0] + 2.0))
+
+    x_fine = np.linspace(x_left, x_right, 800, dtype=float)
+    y_fine, _diag2 = interpolate_curve_knn_from_scenarios(
+        usable,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+        x_grid=x_fine,
+        x_vec_key="docIASVec",
+        y_vec_key="docVec",
+        k=k_use,
+        power=2.0,
+        min_neighbors=min_nb,
+    )
+
+    x_fine = np.asarray(x_fine, float)
+    y_fine = np.asarray(y_fine, float)
+
+    ok2 = np.isfinite(x_fine) & np.isfinite(y_fine)
+
+    if int(ok2.sum()) >= 80:
+        x_min_search = x_fine[ok2]
+        y_min_search = y_fine[ok2]
+    else:
+        x_min_search = x_full
+        y_min_search = y_full
+
+    j = int(np.nanargmin(y_min_search))
+    v_opt_raw = float(x_min_search[j])
+
+    qres = compute_quick_metrics_interpolated(
+        summary_tbl,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+    )
+    v_notch = float(qres.v_notch_kt)
+
+    v_opt = _econ_from_docmin_with_notch_rule(v_opt_raw, v_notch, min_gap_kt=1.0)
+    doc_opt = float(np.interp(v_opt, x_full, y_full))
+
+    return {
+        "IAS_grid": x_full,
+        "DOC_grid_per_nm": y_full,
+        "IAS_opt": v_opt,
+        "DOC_opt_per_nm": doc_opt,
+    }
+
+def _plot_doc_vs_ias_input_knn(
+    scenarios: List[Dict[str, Any]],
     summary_tbl: pd.DataFrame,
     *,
     fl_ft: float,
@@ -1205,64 +1224,47 @@ def _plot_doc_vs_ias_input_5d(
     wind_kt: float,
     cfg: Config,
 ):
-    msg = _validate_interp_inputs(summary_tbl, fl_ft=fl_ft, weight_kg=wt_kg, isa_c=isa_c, wind_kt=wind_kt)
-    if msg:
-        raise ValueError(msg)
-
-    cur = _compute_input_doc_curve_5d(
-        global_cloud,
+    cur = _compute_input_doc_curve_knn(
+        scenarios,
+        summary_tbl,
         fl_ft=float(fl_ft),
         wt_kg=float(wt_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
-        cfg=cfg,
     )
 
     x = np.asarray(cur["IAS_grid"], float)
     y = np.asarray(cur["DOC_grid_per_nm"], float)
-
-    ok = np.isfinite(x) & np.isfinite(y)
-    if int(ok.sum()) < 50:
-        raise ValueError("Nepakanka duomenų DOC kreivei nubraižyti (5D).")
-
-    x = x[ok]
-    y = y[ok]
-
     v_opt = float(cur["IAS_opt"])
     doc_opt = float(cur["DOC_opt_per_nm"])
 
-    prebuilt = st.session_state.get("summary_prebuilt_4d", None)
-    if prebuilt is not None:
-        qres = compute_quick_metrics_interpolated_from_prebuilt(
-            summary_tbl,
-            prebuilt,
-            fl_ft=float(fl_ft),
-            weight_kg=float(wt_kg),
-            isa_c=float(isa_c),
-            wind_kt=float(wind_kt),
-        )
-    else:
-        qres = compute_quick_metrics_interpolated(
-            summary_tbl,
-            fl_ft=float(fl_ft),
-            weight_kg=float(wt_kg),
-            isa_c=float(isa_c),
-            wind_kt=float(wind_kt),
-        )
+    qres = compute_quick_metrics_interpolated(
+        summary_tbl,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+    )
     v_notch = float(qres.v_notch_kt)
 
-    same = (v_opt >= (v_notch - 1.0))
+    same = not _disp_speeds_differ(v_notch, v_opt, min_gap_kt=1)
 
     fig, ax = _mpl_academic_fig()
-    ax.plot(x, y, linewidth=2.2, color="darkred", label="DOC kreivė (5D)")
+    ax.plot(x, y, linewidth=2.2, color="darkred", label="DOC kreivė")
 
     econ_kt = _safe_display_econ_kt(v_opt, v_notch)
     notch_kt = _disp_notch_kt(v_notch)
 
     if same:
         y_notch = float(np.interp(v_notch, x, y))
-        ax.scatter([v_notch], [y_notch], s=95, marker="x", color="black",
-                   label=f"ECON / IASnotch ({notch_kt} kt)")
+        ax.scatter(
+            [v_notch],
+            [y_notch],
+            s=95,
+            marker="x",
+            color="black",
+            label=f"ECON / IASnotch ({notch_kt} kt)",
+        )
         _annotate_tiny_above(
             ax,
             v_notch,
@@ -1271,8 +1273,14 @@ def _plot_doc_vs_ias_input_5d(
             color="black",
         )
     else:
-        ax.scatter([v_opt], [doc_opt], s=95, marker="x", color="orange",
-                   label=f"ECON ({econ_kt} kt)")
+        ax.scatter(
+            [v_opt],
+            [doc_opt],
+            s=95,
+            marker="x",
+            color="orange",
+            label=f"ECON ({econ_kt} kt)",
+        )
         _annotate_tiny_above(
             ax,
             v_opt,
@@ -1284,8 +1292,14 @@ def _plot_doc_vs_ias_input_5d(
         )
 
         y_notch = float(np.interp(v_notch, x, y))
-        ax.scatter([v_notch], [y_notch], s=95, marker="x", color="dodgerblue",
-                   label=f"IASnotch ({notch_kt} kt)")
+        ax.scatter(
+            [v_notch],
+            [y_notch],
+            s=95,
+            marker="x",
+            color="dodgerblue",
+            label=f"IASnotch ({notch_kt} kt)",
+        )
         _annotate_tiny_above(
             ax,
             v_notch,
@@ -1295,7 +1309,7 @@ def _plot_doc_vs_ias_input_5d(
             dx_pts=14,
         )
 
-    ax.set_title("DOC priklausomybė nuo IAS — Įvestis (5D)")
+    ax.set_title("DOC priklausomybė nuo IAS")
     ax.set_xlabel("IAS (kt)")
     ax.set_ylabel("DOC (EUR/NM)")
     _add_axis_arrows(ax)
@@ -1303,41 +1317,8 @@ def _plot_doc_vs_ias_input_5d(
     fig.tight_layout()
     return fig
 
-@st.cache_data(show_spinner=False)
-def _cached_econ_vs_time_cost_interpolated(
-    longform_tbl: pd.DataFrame,
-    fl_ft: float,
-    wt_kg: float,
-    isa_c: float,
-    wind_kt: float,
-) -> pd.DataFrame:
-    return compute_econ_vs_time_cost_interpolated(
-        longform_tbl,
-        fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
-        isa_c=float(isa_c),
-        wind_kt=float(wind_kt),
-    )
-
-
-@st.cache_data(show_spinner=False)
-def _cached_econ_vs_fuel_price_interpolated(
-    fuel_longform_tbl: pd.DataFrame,
-    fl_ft: float,
-    wt_kg: float,
-    isa_c: float,
-    wind_kt: float,
-) -> pd.DataFrame:
-    return compute_econ_vs_fuel_price_interpolated(
-        fuel_longform_tbl,
-        fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
-        isa_c=float(isa_c),
-        wind_kt=float(wind_kt),
-    )
-
-def _plot_econ_vs_time_cost_input_4d(
-    longform_tbl: pd.DataFrame,
+def _plot_econ_vs_time_cost_input_knn(
+    scenarios: List[Dict[str, Any]],
     summary_tbl: pd.DataFrame,
     *,
     fl_ft: float,
@@ -1360,46 +1341,51 @@ def _plot_econ_vs_time_cost_input_4d(
     if tc_msg:
         raise ValueError(tc_msg)
 
-    curve = _cached_econ_vs_time_cost_interpolated(
-        longform_tbl,
+    qres = compute_quick_metrics_interpolated(
+        summary_tbl,
         fl_ft=float(fl_ft),
         weight_kg=float(wt_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
     )
 
-    x = pd.to_numeric(curve["TIME_COST"], errors="coerce").to_numpy(float)
-    y = pd.to_numeric(curve["IASopt"], errors="coerce").to_numpy(float)
+    fig, ax = _mpl_academic_fig(figsize=(9.0, 4.8))
+    x_grid = np.arange(
+        float(cfg.time_cost_min),
+        float(cfg.time_cost_max) + 1e-9,
+        float(cfg.time_cost_step),
+        dtype=float,
+    )
 
-    ok = np.isfinite(x) & np.isfinite(y)
-    x = x[ok]
-    y = y[ok]
-    if x.size < 2:
+    y_grid, _diag = interpolate_curve_knn_from_scenarios(
+        scenarios,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+        x_grid=x_grid,
+        x_vec_key="timeCostVec",
+        y_vec_key="IAS_opt_kt",
+        k=min(30, len(scenarios)),
+        min_neighbors=min(8, max(3, len(scenarios) // 2)),
+        power=2.0,
+    )
+
+    x = x_grid
+    y = np.asarray(y_grid, float)
+
+    if y.size < 2 or not np.all(np.isfinite(y)):
         raise ValueError("Nepakanka duomenų ECON kreivei nubraižyti.")
 
-    prebuilt = st.session_state.get("summary_prebuilt_4d", None)
-    if prebuilt is not None:
-        qres = compute_quick_metrics_interpolated_from_prebuilt(
-            summary_tbl,
-            prebuilt,
-            fl_ft=float(fl_ft),
-            weight_kg=float(wt_kg),
-            isa_c=float(isa_c),
-            wind_kt=float(wind_kt),
-        )
-    else:
-        qres = compute_quick_metrics_interpolated(
-            summary_tbl,
-            fl_ft=float(fl_ft),
-            weight_kg=float(wt_kg),
-            isa_c=float(isa_c),
-            wind_kt=float(wind_kt),
-        )
-    
-    v_notch_q = float(qres.v_notch_kt)
+    v_notch_input = float(qres.v_notch_kt)
+    if np.isfinite(v_notch_input):
+        y = np.minimum(y, v_notch_input)
 
-    fig, ax = _mpl_academic_fig(figsize=(9.0, 4.8))
-    ax.plot(x, y, linewidth=2.4, color="darkred", label="ECON kreivė", zorder=2)
+    c_curve = "darkred"
+    c_be = "purple"
+    c_in = "orange"
+
+    ax.plot(x, y, linewidth=2.4, color=c_curve, label="ECON kreivė", zorder=2)
 
     x_min, x_max = float(np.nanmin(x)), float(np.nanmax(x))
     y_min, y_max = float(np.nanmin(y)), float(np.nanmax(y))
@@ -1414,18 +1400,14 @@ def _plot_econ_vs_time_cost_input_4d(
     be = float(qres.be_time_cost_eur_per_hr)
     tc_in = float(cfg.time_cost_operational)
 
-    c_be = "purple"
-    c_in = "orange"
-
     be_ok = np.isfinite(be) and (x_min <= be <= x_max)
     in_ok = np.isfinite(tc_in) and (x_min <= tc_in <= x_max)
 
     if be_ok and in_ok and abs(be - tc_in) < 1e-9:
         y0 = _econ_at(tc_in)
         ax.plot([tc_in, tc_in], [y_axis_bottom, y0], linewidth=2.0, linestyle="--", color=c_in, label=f"Laiko sąnaudų įvestis / lūžio taškas ({tc_in:.0f} €/h)", zorder=1)
-        econ_disp = _safe_display_econ_kt(y0, v_notch_q)
-        ax.scatter([tc_in], [y0], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{tc_in:.0f} €/h ({econ_disp} kt)", zorder=20)
-        _place_econ_annotation_inside(ax, x=tc_in, y=y0, text=f"{econ_disp} kt", prefer="right")
+        ax.scatter([tc_in], [y0], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{tc_in:.0f} €/h ({_safe_display_econ_kt(y0, v_notch_input)} kt)", zorder=20)
+        _place_econ_annotation_inside(ax, x=tc_in, y=y0, text=f"{_safe_display_econ_kt(y0, v_notch_input)} kt", prefer="right")
     else:
         if be_ok:
             y_be = _econ_at(be)
@@ -1435,9 +1417,8 @@ def _plot_econ_vs_time_cost_input_4d(
         if in_ok:
             econ_y = _econ_at(tc_in)
             ax.plot([tc_in, tc_in], [y_axis_bottom, econ_y], linewidth=2.0, linestyle="--", color=c_in, label=f"Laiko sąnaudų įvestis ({tc_in:.0f} €/h)", zorder=1)
-            econ_disp = _safe_display_econ_kt(econ_y, v_notch_q)
-            ax.scatter([tc_in], [econ_y], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{tc_in:.0f} €/h ({econ_disp} kt)", zorder=20)
-            _place_econ_annotation_inside(ax, x=tc_in, y=econ_y, text=f"{econ_disp} kt", prefer="right")
+            ax.scatter([tc_in], [econ_y], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{tc_in:.0f} €/h ({_safe_display_econ_kt(econ_y, v_notch_input)} kt)", zorder=20)
+            _place_econ_annotation_inside(ax, x=tc_in, y=econ_y, text=f"{_safe_display_econ_kt(econ_y, v_notch_input)} kt", prefer="right")
 
     ax.set_title("ECON priklausomybė nuo laiko sąnaudų", pad=22)
     ax.set_xlabel("Laiko sąnaudos (€/h)")
@@ -1447,9 +1428,9 @@ def _plot_econ_vs_time_cost_input_4d(
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
     return fig
 
- 
-def _plot_econ_vs_fuel_price_input_4d(
-    fuel_longform_tbl: pd.DataFrame,
+
+def _plot_econ_vs_fuel_price_input_knn(
+    scenarios: List[Dict[str, Any]],
     summary_tbl: pd.DataFrame,
     *,
     fl_ft: float,
@@ -1472,46 +1453,51 @@ def _plot_econ_vs_fuel_price_input_4d(
     if fp_msg:
         raise ValueError(fp_msg)
 
-    curve = _cached_econ_vs_fuel_price_interpolated(
-        fuel_longform_tbl,
+    qres = compute_quick_metrics_interpolated(
+        summary_tbl,
         fl_ft=float(fl_ft),
         weight_kg=float(wt_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
     )
 
-    x = pd.to_numeric(curve["FUEL_PRICE"], errors="coerce").to_numpy(float)
-    y = pd.to_numeric(curve["IASopt"], errors="coerce").to_numpy(float)
+    fig, ax = _mpl_academic_fig(figsize=(9.0, 4.8))
+    x_grid = np.arange(
+        float(cfg.fuel_price_min),
+        float(cfg.fuel_price_max) + 1e-12,
+        float(cfg.fuel_price_step),
+        dtype=float,
+    )
 
-    ok = np.isfinite(x) & np.isfinite(y)
-    x = x[ok]
-    y = y[ok]
-    if x.size < 2:
+    y_grid, _diag = interpolate_curve_knn_from_scenarios(
+        scenarios,
+        fl_ft=float(fl_ft),
+        weight_kg=float(wt_kg),
+        isa_c=float(isa_c),
+        wind_kt=float(wind_kt),
+        x_grid=x_grid,
+        x_vec_key="fuelPriceVec",
+        y_vec_key="IAS_opt_kt_fp",
+        k=min(30, len(scenarios)),
+        min_neighbors=min(8, max(3, len(scenarios) // 2)),
+        power=2.0,
+    )
+
+    x = x_grid
+    y = np.asarray(y_grid, float)
+
+    if y.size < 2 or not np.all(np.isfinite(y)):
         raise ValueError("Nepakanka duomenų ECON kreivei nubraižyti.")
 
-    prebuilt = st.session_state.get("summary_prebuilt_4d", None)
-    if prebuilt is not None:
-        qres = compute_quick_metrics_interpolated_from_prebuilt(
-            summary_tbl,
-            prebuilt,
-            fl_ft=float(fl_ft),
-            weight_kg=float(wt_kg),
-            isa_c=float(isa_c),
-            wind_kt=float(wind_kt),
-        )
-    else:
-        qres = compute_quick_metrics_interpolated(
-            summary_tbl,
-            fl_ft=float(fl_ft),
-            weight_kg=float(wt_kg),
-            isa_c=float(isa_c),
-            wind_kt=float(wind_kt),
-        )
+    v_notch_input = float(qres.v_notch_kt)
+    if np.isfinite(v_notch_input):
+        y = np.minimum(y, v_notch_input)
 
-    v_notch_q = float(qres.v_notch_kt)
+    c_curve = "darkred"
+    c_be = "purple"
+    c_in = "orange"
 
-    fig, ax = _mpl_academic_fig(figsize=(9.0, 4.8))
-    ax.plot(x, y, linewidth=2.4, color="darkred", label="ECON kreivė", zorder=2)
+    ax.plot(x, y, linewidth=2.4, color=c_curve, label="ECON kreivė", zorder=2)
 
     x_min, x_max = float(np.nanmin(x)), float(np.nanmax(x))
     y_min, y_max = float(np.nanmin(y)), float(np.nanmax(y))
@@ -1526,18 +1512,14 @@ def _plot_econ_vs_fuel_price_input_4d(
     be = float(qres.be_fuel_price_eur_per_kg)
     fp_in = float(cfg.fuel_price_eur_per_kg)
 
-    c_be = "purple"
-    c_in = "orange"
-
     be_ok = np.isfinite(be) and (x_min <= be <= x_max)
     in_ok = np.isfinite(fp_in) and (x_min <= fp_in <= x_max)
 
     if be_ok and in_ok and abs(be - fp_in) < 1e-12:
         y0 = _econ_at(fp_in)
         ax.plot([fp_in, fp_in], [y_axis_bottom, y0], linewidth=2.0, linestyle="--", color=c_in, label=f"Degalų įvestis / lūžio taškas ({fp_in:.2f} €/kg)", zorder=1)
-        econ_disp = _safe_display_econ_kt(y0, v_notch_q)
-        ax.scatter([fp_in], [y0], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{fp_in:.2f} €/kg ({econ_disp} kt)", zorder=20)
-        _place_econ_annotation_inside(ax, x=fp_in, y=y0, text=f"{econ_disp} kt", prefer="left")
+        ax.scatter([fp_in], [y0], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{fp_in:.2f} €/kg ({_safe_display_econ_kt(y0, v_notch_input)} kt)", zorder=20)
+        _place_econ_annotation_inside(ax, x=fp_in, y=y0, text=f"{_safe_display_econ_kt(y0, v_notch_input)} kt", prefer="left")
     else:
         if be_ok:
             y_be = _econ_at(be)
@@ -1547,9 +1529,8 @@ def _plot_econ_vs_fuel_price_input_4d(
         if in_ok:
             econ_y = _econ_at(fp_in)
             ax.plot([fp_in, fp_in], [y_axis_bottom, econ_y], linewidth=2.0, linestyle="--", color=c_in, label=f"Degalų įvestis ({fp_in:.2f} €/kg)", zorder=1)
-            econ_disp = _safe_display_econ_kt(econ_y, v_notch_q)
-            ax.scatter([fp_in], [econ_y], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{fp_in:.2f} €/kg ({econ_disp} kt)", zorder=20)
-            _place_econ_annotation_inside(ax, x=fp_in, y=econ_y, text=f"{econ_disp} kt", prefer="left")
+            ax.scatter([fp_in], [econ_y], s=95, marker="x", linewidths=2.2, color="black", label=f"ECON@{fp_in:.2f} €/kg ({_safe_display_econ_kt(econ_y, v_notch_input)} kt)", zorder=20)
+            _place_econ_annotation_inside(ax, x=fp_in, y=econ_y, text=f"{_safe_display_econ_kt(econ_y, v_notch_input)} kt", prefer="left")
 
     ax.set_title("ECON priklausomybė nuo degalų kainos", pad=22)
     ax.set_xlabel("Degalų kaina (€/kg)")
@@ -1872,8 +1853,6 @@ def _plot_saving_vs_grouped(
     group_col: Optional[str],
     show_point_labels: bool = False,
     distance_nm: float = 1.0,
-    scenarios: Optional[List[Dict[str, Any]]] = None,
-    cfg: Optional[Config] = None,
 ) -> Any:
     fig, ax = _mpl_academic_fig()
 
@@ -1892,9 +1871,17 @@ def _plot_saving_vs_grouped(
         raise ValueError("Nėra duomenų po filtravimo.")
 
     dist_nm = max(float(distance_nm), 0.0)
+    v_econ = pd.to_numeric(df["V_ECSR_kt"], errors="coerce")
+    v_notch = pd.to_numeric(df["V_notch_kt"], errors="coerce")
+
+    speed_gap_ok = []
+    for ve, vn in zip(v_econ.tolist(), v_notch.tolist()):
+        speed_gap_ok.append(_disp_speeds_differ(float(vn), float(ve), min_gap_kt=1))
+
+    speed_gap_ok = pd.Series(speed_gap_ok, index=df.index)
 
     raw_saving = (df["DOCnotch_EurPerNM"] - df["DOCmin_EurPerNM"]).clip(lower=0.0)
-    df["Saving_Eur"] = raw_saving * dist_nm
+    df["Saving_Eur"] = np.where(speed_gap_ok, raw_saving * dist_nm, 0.0)
 
     used_group = None
     if group_col and group_col in df.columns:
@@ -1936,7 +1923,7 @@ def _plot_saving_vs_grouped(
                 for x0, y0 in zip(xs.tolist(), ys.tolist()):
                     if np.isfinite(x0) and np.isfinite(y0):
                         label_candidates.append(
-                            (float(x0), float(y0), f"{float(y0):.4f}", str(grp_val))
+                            (float(x0), float(y0), f"{float(y0):.3f}", str(grp_val))
                         )
 
         if show_point_labels and label_candidates:
@@ -2131,6 +2118,20 @@ def _build_interpolated_sweep_table(
     fixed: Dict[str, Optional[float]],
     include_x_value: Optional[float] = None,
 ) -> pd.DataFrame:
+    """
+    Build an interpolated sweep table for Įvestis mode graphs.
+
+    For each available x-axis value in summary_tbl[x_col], interpolate:
+    - V_ECSR_kt
+    - V_notch_kt
+    - DOCmin_EurPerNM
+    - DOCnotch_EurPerNM
+    - BreakEven_TIME_COST_EurPerHr
+    - BreakEven_FUEL_PRICE_EurPerKg
+
+    ECON is always clamped so that:
+        V_ECSR_kt <= V_notch_kt
+    """
     if summary_tbl is None or summary_tbl.empty:
         return pd.DataFrame()
 
@@ -2141,8 +2142,6 @@ def _build_interpolated_sweep_table(
     if not x_vals:
         return pd.DataFrame()
 
-    prebuilt = _ensure_summary_prebuilt_4d(summary_tbl)
-
     rows: List[Dict[str, float]] = []
 
     for x_val in x_vals:
@@ -2152,14 +2151,31 @@ def _build_interpolated_sweep_table(
         wind_kt = float(x_val) if x_col == "WIND_kt" else float(fixed["WIND_kt"])
 
         try:
-            qres = compute_quick_metrics_interpolated_from_prebuilt(
+            qres = compute_quick_metrics_interpolated(
                 summary_tbl,
-                prebuilt,
                 fl_ft=zp_ft,
                 weight_kg=weight_kg,
                 isa_c=isa_c,
                 wind_kt=wind_kt,
             )
+
+            v_notch = float(qres.v_notch_kt)
+
+            try:
+                doc_curve_res = _compute_input_doc_curve_knn(
+                    scenarios,
+                    summary_tbl,
+                    fl_ft=zp_ft,
+                    wt_kg=weight_kg,
+                    isa_c=isa_c,
+                    wind_kt=wind_kt,
+                )
+                v_econ = float(doc_curve_res["IAS_opt"])
+            except Exception:
+                v_econ = float(qres.v_ecsr_kt)
+
+            if np.isfinite(v_econ) and np.isfinite(v_notch):
+                v_econ = min(v_econ, v_notch)
 
             rows.append(
                 {
@@ -2167,8 +2183,8 @@ def _build_interpolated_sweep_table(
                     "WEIGHT_kg": weight_kg,
                     "ISA_C": isa_c,
                     "WIND_kt": wind_kt,
-                    "V_ECSR_kt": float(qres.v_ecsr_kt),
-                    "V_notch_kt": float(qres.v_notch_kt),
+                    "V_ECSR_kt": float(v_econ),
+                    "V_notch_kt": float(v_notch),
                     "DOCmin_EurPerNM": float(qres.docmin_eur_per_nm),
                     "DOCnotch_EurPerNM": float(qres.docnotch_eur_per_nm),
                     "BreakEven_TIME_COST_EurPerHr": float(qres.be_time_cost_eur_per_hr),
@@ -2282,10 +2298,7 @@ def _init_state() -> None:
     st.session_state.setdefault("uploaded_names", [])
     st.session_state.setdefault("input_root_label", "uploaded_files")
 
-    st.session_state.setdefault("summary_prebuilt_4d", None)
-    st.session_state.setdefault("debug_step", "")
-    st.session_state.setdefault("debug_detail", "")
-    st.session_state.setdefault("generation_ok", False)
+
 # ========================= UI =========================
 st.set_page_config(layout="wide")
 
@@ -2370,173 +2383,142 @@ with st.sidebar:
     run_btn = st.button("Generuoti", type="primary", use_container_width=True)
         
 if run_btn:
-    try:
-        st.session_state["excel_written_msg"] = ""
-        _clear_excel_download_artifacts()
-        st.session_state["outliers_tbl"] = pd.DataFrame()
-        st.session_state["debug_step"] = "start"
-        st.session_state["debug_detail"] = ""
-        st.session_state["generation_ok"] = False
+    st.session_state["excel_written_msg"] = ""
+    _clear_excel_download_artifacts()
+    st.session_state["outliers_tbl"] = pd.DataFrame()
 
-        if float(fuel_price) <= 0.0 or float(tc_op) <= 0.0:
-            st.error("Prašome įvesti teigiamas reikšmes: 'Degalų kaina' ir 'Laiko sąnaudos'.")
-            st.stop()
+    if float(fuel_price) <= 0.0 or float(tc_op) <= 0.0:
+        st.error("Prašome įvesti teigiamas reikšmes: 'Degalų kaina' ir 'Laiko sąnaudos'.")
+        st.stop()
 
-        if float(epsilon_pct) < 0.0:
-            st.error("ECSR epsilon negali būti neigiamas.")
-            st.stop()
+    if float(epsilon_pct) < 0.0:
+        st.error("ECSR epsilon negali būti neigiamas.")
+        st.stop()
 
-        saving_mode_value = "per_nm" if saving_mode_nm else "default"
+    if saving_mode_nm:
+        saving_mode_value = "per_nm"
+    else:
+        saving_mode_value = "default"
 
-        cfg = replace(
-            cfg0,
-            fuel_price_eur_per_kg=float(fuel_price),
-            time_cost_operational=float(tc_op),
-            epsilon_break_even=float(float(epsilon_pct) / 100.0),
-            breakpoint_saving_mode=saving_mode_value,
-            breakpoint_saving_eur_per_nm=float(saving_custom_nm or 0.0),
-        )
+    cfg = replace(
+        cfg0,
+        fuel_price_eur_per_kg=float(fuel_price),
+        time_cost_operational=float(tc_op),
+        epsilon_break_even=float(float(epsilon_pct) / 100.0),
+        breakpoint_saving_mode=saving_mode_value,
+        breakpoint_saving_eur_per_nm=float(saving_custom_nm or 0.0),
+    )
 
-        with st.spinner("Skaičiuojama..."):
-            st.session_state["debug_step"] = "before_run_pipeline"
+    with st.spinner("Skaičiuojama..."):
+        # -------------------------
+        # Load scenarios
+        # -------------------------
+        if data_source == "Scenarijai, jau esantys sistemoje":
+            root_dir = BUILTIN_SCENARIOS_DIR
+            if not root_dir.exists() or not root_dir.is_dir():
+                st.error(
+                    "Rinkmenoje scenarijų nerasta. "
+                    "Įsitikinkite, kad sistemoje yra įkeltų scenarijų."
+                )
+                st.stop()
 
-            if data_source == "Scenarijai, jau esantys sistemoje":
-                root_dir = BUILTIN_SCENARIOS_DIR
-                if not root_dir.exists() or not root_dir.is_dir():
-                    raise ValueError(
-                        "Rinkmenoje scenarijų nerasta. Įsitikinkite, kad sistemoje yra įkeltų scenarijų."
-                    )
+            out_dir, _xlsx_path_unused, summary_tbl, longform_tbl, outliers_tbl, logs, scenarios = run_pipeline(
+                root_dir=root_dir,
+                cfg=cfg,
+                return_scenarios=True,
+            )
+            st.session_state["uploaded_names"] = []
+            st.session_state["input_root_label"] = str(root_dir)
+
+        else:
+            if not uploads:
+                st.error("Prašome įkelti bent vieną scenarijaus failą (*.csv / *.txt).")
+                st.stop()
+
+            tmp, tmp_path, saved_names = _save_uploads_to_tempdir(list(uploads))
+            try:
+                if not saved_names:
+                    st.error("Nepavyko įrašyti įkeltų failų. Bandykite dar kartą.")
+                    st.stop()
 
                 out_dir, _xlsx_path_unused, summary_tbl, longform_tbl, outliers_tbl, logs, scenarios = run_pipeline(
-                    root_dir=root_dir,
+                    root_dir=tmp_path,
                     cfg=cfg,
                     return_scenarios=True,
                 )
-                st.session_state["uploaded_names"] = []
-                st.session_state["input_root_label"] = str(root_dir)
+            finally:
+                tmp.cleanup()
 
-            else:
-                if not uploads:
-                    raise ValueError("Prašome įkelti bent vieną scenarijaus failą (*.csv / *.txt).")
+            st.session_state["uploaded_names"] = saved_names
+            st.session_state["input_root_label"] = "uploaded_files"
 
-                tmp, tmp_path, saved_names = _save_uploads_to_tempdir(list(uploads))
-                try:
-                    if not saved_names:
-                        raise ValueError("Nepavyko įrašyti įkeltų failų. Bandykite dar kartą.")
+        # -------------------------
+        # Post-processing (common)
+        # -------------------------
+        fuel_longform_tbl = build_longform_fuel_table(scenarios)
 
-                    out_dir, _xlsx_path_unused, summary_tbl, longform_tbl, outliers_tbl, logs, scenarios = run_pipeline(
-                        root_dir=tmp_path,
-                        cfg=cfg,
-                        return_scenarios=True,
-                    )
-                finally:
-                    tmp.cleanup()
+        # Precompute per-scenario DOC(IAS) vectors for Graph 1 (Įvestis) kNN
+        for sc in scenarios:
+            try:
+                cur = compute_doc_curve_pchip(sc, float(cfg.time_cost_operational), cfg, ngrid=400)
+                sc["docIASVec"] = np.asarray(cur["IAS_grid"], float)
+                sc["docVec"] = np.asarray(cur["DOC_grid_per_nm"], float)
+            except Exception:
+                sc.pop("docIASVec", None)
+                sc.pop("docVec", None)
 
-                st.session_state["uploaded_names"] = saved_names
-                st.session_state["input_root_label"] = "uploaded_files"
+    # -------------------------
+    # Save state (outside spinner)
+    # -------------------------
+    st.session_state["last_cfg"] = cfg
+    st.session_state["summary_tbl"] = summary_tbl
+    st.session_state["longform_tbl"] = longform_tbl
+    st.session_state["fuel_longform_tbl"] = fuel_longform_tbl
+    st.session_state["scenarios"] = scenarios
+    st.session_state["generated_out_dir"] = str(out_dir)
+    st.session_state["excel_written_msg"] = ""
+    st.session_state["outliers_tbl"] = outliers_tbl if isinstance(outliers_tbl, pd.DataFrame) else pd.DataFrame()
 
-            st.session_state["debug_step"] = "after_run_pipeline"
+    for k in ["fig_g1", "fig_g2", "fig_g3"]:
+        st.session_state[k] = None
+    for k in ["cap_g1", "cap_g2", "cap_g3"]:
+        st.session_state[k] = ""
+    for k in ["open_g1", "open_g2", "open_g3"]:
+        st.session_state[k] = False
+    for k in ["err_g1", "err_g2", "err_g3"]:
+        st.session_state[k] = ""
 
-            if not isinstance(summary_tbl, pd.DataFrame) or summary_tbl.empty:
-                raise ValueError("Nepavyko sugeneruoti Summary lentelės.")
+    for gid in _BP_GRAPHS.keys():
+        st.session_state[f"open_{gid}"] = False
+        st.session_state[f"fig_{gid}_time"] = None
+        st.session_state[f"fig_{gid}_fuel"] = None
+        st.session_state[f"cap_{gid}"] = ""
+        st.session_state[f"err_{gid}"] = ""
 
-            if not isinstance(longform_tbl, pd.DataFrame):
-                longform_tbl = pd.DataFrame()
+    for gid in _DOC_GRAPHS.keys():
+        st.session_state[f"open_{gid}"] = False
+        st.session_state[f"fig_{gid}"] = None
+        st.session_state[f"cap_{gid}"] = ""
+        st.session_state[f"err_{gid}"] = ""
 
-            if not isinstance(scenarios, list) or len(scenarios) == 0:
-                raise ValueError("Nepavyko nuskaityti scenarijų.")
+    st.session_state["ecsr_calc_last"] = None
+    st.session_state["ecsr_calc_err"] = ""
+    st.session_state["in_last_res"] = None
+    st.session_state["in_err"] = ""
 
-            st.session_state["debug_step"] = "store_basic_results"
+# ========================= MAIN VIEW =========================
 
-            st.session_state["last_cfg"] = cfg
-            st.session_state["summary_tbl"] = summary_tbl
-            st.session_state["longform_tbl"] = longform_tbl
-
-            # Lazy-load later only when needed
-            st.session_state["fuel_longform_tbl"] = pd.DataFrame()
-            st.session_state["global_cloud"] = pd.DataFrame()
-            st.session_state["summary_prebuilt_4d"] = None
-
-            st.session_state["scenarios"] = scenarios
-            st.session_state["generated_out_dir"] = str(out_dir)
-            st.session_state["outliers_tbl"] = outliers_tbl if isinstance(outliers_tbl, pd.DataFrame) else pd.DataFrame()
-            st.session_state["excel_written_msg"] = ""
-            st.session_state["generation_ok"] = True
-            st.session_state["debug_step"] = "done"
-
-        for k in ["fig_g1", "fig_g2", "fig_g3"]:
-            st.session_state[k] = None
-        for k in ["cap_g1", "cap_g2", "cap_g3"]:
-            st.session_state[k] = ""
-        for k in ["open_g1", "open_g2", "open_g3"]:
-            st.session_state[k] = False
-        for k in ["err_g1", "err_g2", "err_g3"]:
-            st.session_state[k] = ""
-
-        for gid in _BP_GRAPHS.keys():
-            st.session_state[f"open_{gid}"] = False
-            st.session_state[f"fig_{gid}_time"] = None
-            st.session_state[f"fig_{gid}_fuel"] = None
-            st.session_state[f"cap_{gid}"] = ""
-            st.session_state[f"err_{gid}"] = ""
-
-        for gid in _DOC_GRAPHS.keys():
-            st.session_state[f"open_{gid}"] = False
-            st.session_state[f"fig_{gid}"] = None
-            st.session_state[f"cap_{gid}"] = ""
-            st.session_state[f"err_{gid}"] = ""
-
-        st.session_state["ecsr_calc_last"] = None
-        st.session_state["ecsr_calc_err"] = ""
-        st.session_state["in_last_res"] = None
-        st.session_state["in_err"] = ""
-
-    except Exception as e:
-        st.session_state["debug_detail"] = _normalize_ui_error(e)
-        st.error(_normalize_ui_error(e))
-        st.stop()
-
-summary_tbl_obj = st.session_state.get("summary_tbl", None)
-if not isinstance(summary_tbl_obj, pd.DataFrame) or summary_tbl_obj.empty:
-    dbg = str(st.session_state.get("debug_step", "")).strip()
-    det = str(st.session_state.get("debug_detail", "")).strip()
-
-    if dbg:
-        st.warning(f"Debug: paskutinis žingsnis = {dbg}")
-    if det:
-        st.error(det)
-
+if "summary_tbl" not in st.session_state:
     st.info("Pasirinkite duomenų šaltinį ir spauskite „Generuoti“.")
     st.stop()
 
-longform_tbl_obj = st.session_state.get("longform_tbl", None)
-if not isinstance(longform_tbl_obj, pd.DataFrame):
-    longform_tbl_obj = pd.DataFrame()
-
-fuel_longform_tbl_obj = st.session_state.get("fuel_longform_tbl", None)
-if not isinstance(fuel_longform_tbl_obj, pd.DataFrame):
-    fuel_longform_tbl_obj = pd.DataFrame()
-
-global_cloud_obj = st.session_state.get("global_cloud", None)
-if not isinstance(global_cloud_obj, pd.DataFrame):
-    global_cloud_obj = pd.DataFrame()
-
-scenarios_obj = st.session_state.get("scenarios", [])
-if not isinstance(scenarios_obj, list):
-    scenarios_obj = []
-
-summary_tbl: pd.DataFrame = summary_tbl_obj
-longform_tbl: pd.DataFrame = longform_tbl_obj
-fuel_longform_tbl: pd.DataFrame = fuel_longform_tbl_obj
-global_cloud: pd.DataFrame = global_cloud_obj
-scenarios: List[Dict[str, Any]] = scenarios_obj
+summary_tbl: pd.DataFrame = st.session_state["summary_tbl"]
+longform_tbl: pd.DataFrame = st.session_state["longform_tbl"]
+scenarios: List[Dict[str, Any]] = st.session_state.get("scenarios", [])
 cfg: Config = st.session_state.get("last_cfg", cfg0)
 fuel_ceiling = float(getattr(getattr(cfg, "break_search", None), "fuel_ceiling_eur_per_kg", float("inf")))
 
-scenario_names = sorted(
-    [str(sc.get("scenarioName", "")) for sc in scenarios if isinstance(sc, dict) and sc.get("scenarioName")],
-    key=_scenario_sort_key,
-)
+scenario_names = sorted([sc.get("scenarioName", "") for sc in scenarios if sc.get("scenarioName")], key=_scenario_sort_key)
 if not scenario_names:
     st.warning("Nerasta scenarijų šiame įkeltų failų rinkinyje.")
     st.stop()
@@ -2590,11 +2572,22 @@ if mode == "Scenarijus":
 
     res = st.session_state.get("ecsr_calc_last", None)
     if isinstance(res, EcsrInterpResult):
+        v_econ_docmin = _input_docmin_econ_kt(
+            scenarios,
+            summary_tbl,
+            fl_ft=float(fl_ft),
+            wt_kg=float(wt_kg),
+            isa_c=float(isa_c),
+            wind_kt=float(wind_kt),
+            fallback_v_econ=float(getattr(res, "v_ecsr_kt", np.nan)),
+            fallback_v_notch=float(getattr(res, "v_notch_kt", np.nan)),
+        )
+
         rng_txt = _ecsr_range_str(
             res.ecsr_low_kt,
             res.ecsr_high_kt,
-            None,
-            res.v_ecsr_kt,
+            getattr(res, "v_notch_kt", np.nan),
+            v_econ_docmin,
         )
         _, mid, _ = st.columns([2.2, 1.2, 2.2], gap="large")
         with mid:
@@ -2670,11 +2663,16 @@ if mode == "Scenarijus":
             quick_caption = _conditions_sentence_from_row_with_costs(row, cfg)
 
             if col_key == "__ECSR_RANGE__":
+                sc = _scenario_lookup(scenarios, pick_scn)
+                v_econ_docmin = float("nan")
+                if sc is not None:
+                    v_econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
+
                 shown_value = _ecsr_range_str(
                     float(pd.to_numeric(row.get("ECSR_low_kt", np.nan), errors="coerce")),
                     float(pd.to_numeric(row.get("ECSR_high_kt", np.nan), errors="coerce")),
                     float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce")),
-                    float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce")),
+                    v_econ_docmin,
                 )
                 shown_unit = "kt" if shown_value else ""
 
@@ -2693,40 +2691,33 @@ if mode == "Scenarijus":
                 shown_unit = "€/kg" if (shown_value and shown_value != "Nėra lūžio taško") else ""
 
             elif col_key == "__SAVING_PER_X__":
-                dist = float(distance_nm)
                 v_min_per_nm = float(pd.to_numeric(row.get("DOCmin_EurPerNM", np.nan), errors="coerce"))
                 v_notch_per_nm = float(pd.to_numeric(row.get("DOCnotch_EurPerNM", np.nan), errors="coerce"))
                 v_notch_raw = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
-                v_econ_raw = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
+                dist = float(distance_nm)
 
-                sc_obj = _scenario_lookup(scenarios, str(pick_scn))
-                if sc_obj is not None:
-                    try:
-                        cur_sc = current_operating_point_result(
-                            sc_obj,
-                            fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
-                            time_cost_eur_per_hr=float(cfg.time_cost_operational),
-                            cfg=cfg,
-                        )
-                        v_min_per_nm = float(cur_sc["doc_econ_per_nm"])
-                        v_notch_per_nm = float(cur_sc["doc_notch_per_nm"])
-                        v_notch_raw = float(cur_sc["v_notch"])
-                        v_econ_raw = float(cur_sc["v_econ"])
-                    except Exception:
-                        pass
+                sc = _scenario_lookup(scenarios, pick_scn)
+                v_econ_docmin = float("nan")
+                if sc is not None:
+                    v_econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
 
-                if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
-                    diff_total = max(0.0, float((v_notch_per_nm - v_min_per_nm) * dist))
+                if _disp_speeds_differ(v_notch_raw, v_econ_docmin, min_gap_kt=1):
+                    if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
+                        diff_total = round(float((v_notch_per_nm - v_min_per_nm) * dist), 1)
+                    else:
+                        diff_total = float("nan")
                 else:
-                    diff_total = float("nan")
+                    diff_total = 0.0
             else:
                 val = float(pd.to_numeric(row.get(col_key, np.nan), errors="coerce"))
                 if np.isfinite(val):
                     if col_key == "V_ECSR_kt":
-                        v_econ = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
-                        v_notch = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
-                        shown_value = _fmt_speed_econ_safe(v_econ, v_notch)
-                        shown_unit = "kt" if shown_value else ""
+                        sc = _scenario_lookup(scenarios, pick_scn)
+                        if sc is not None:
+                            v_econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
+                            v_notch_ui = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
+                            shown_value = _fmt_speed_econ_safe(v_econ_docmin, v_notch_ui)
+                            shown_unit = "kt" if shown_value else ""
                     elif col_key == "V_notch_kt":
                         shown_value = _fmt_speed_notch(val)
                         shown_unit = "kt" if shown_value else ""
@@ -2754,7 +2745,7 @@ if mode == "Scenarijus":
         _show_result_card("", "")
     else:
         if is_saving_per_x:
-            v = _fmt_saving_eur(diff_total) if np.isfinite(diff_total) else "0,0"
+            v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else "0,0"
             _show_result_card(v, "EUR")
         else:
             _show_result_card(shown_value, shown_unit)
@@ -2821,11 +2812,21 @@ else:
         res_in = st.session_state.get("in_last_res", None)
         if isinstance(res_in, InterpQuickResult):
             if col_key == "__ECSR_RANGE__":
+                v_econ_docmin = _input_docmin_econ_kt(
+                    scenarios,
+                    summary_tbl,
+                    fl_ft=float(in_fl),
+                    wt_kg=float(in_wt),
+                    isa_c=float(in_isa),
+                    wind_kt=float(in_wind),
+                    fallback_v_econ=float(res_in.v_ecsr_kt),
+                    fallback_v_notch=float(res_in.v_notch_kt),
+                )
                 shown_value = _ecsr_range_str(
                     res_in.ecsr_low_kt,
                     res_in.ecsr_high_kt,
                     res_in.v_notch_kt,
-                    res_in.v_ecsr_kt,
+                    v_econ_docmin,
                 )
                 shown_unit = "kt" if shown_value else ""
             elif col_key == "__BREAK_TIME__":
@@ -2843,20 +2844,42 @@ else:
                     shown_unit = "€/kg"
                 else:
                     shown_value = "Nėra lūžio taško"
-                    shown_unit = ""
             elif col_key == "__SAVING_PER_X__":
                 dist = float(distance_nm)
-                docmin_nm = float(res_in.docmin_eur_per_nm)
-                docnotch_nm = float(res_in.docnotch_eur_per_nm)
+                v_notch_ui = float(res_in.v_notch_kt)
 
-                if np.isfinite(docmin_nm) and np.isfinite(docnotch_nm) and np.isfinite(dist):
-                    diff_total = max(0.0, float((docnotch_nm - docmin_nm) * dist))
+                econ_for_ui = _input_docmin_econ_kt(
+                    scenarios,
+                    summary_tbl,
+                    fl_ft=float(in_fl),
+                    wt_kg=float(in_wt),
+                    isa_c=float(in_isa),
+                    wind_kt=float(in_wind),
+                    fallback_v_econ=float(res_in.v_ecsr_kt),
+                    fallback_v_notch=float(v_notch_ui),
+                )
+
+                if _disp_speeds_differ(v_notch_ui, econ_for_ui, min_gap_kt=1):
+                    if np.isfinite(res_in.docmin_eur_per_nm) and np.isfinite(res_in.docnotch_eur_per_nm):
+                        diff_total = round(float((res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm) * dist), 1)
+                    else:
+                        diff_total = float("nan")
                 else:
-                    diff_total = float("nan")
+                    diff_total = 0.0
             else:
                 if col_key == "V_ECSR_kt":
-                    if np.isfinite(res_in.v_ecsr_kt) and np.isfinite(res_in.v_notch_kt):
-                        shown_value = _fmt_speed_econ_safe(float(res_in.v_ecsr_kt), float(res_in.v_notch_kt))
+                    econ_val = _input_docmin_econ_kt(
+                        scenarios,
+                        summary_tbl,
+                        fl_ft=float(in_fl),
+                        wt_kg=float(in_wt),
+                        isa_c=float(in_isa),
+                        wind_kt=float(in_wind),
+                        fallback_v_econ=float(res_in.v_ecsr_kt),
+                        fallback_v_notch=float(res_in.v_notch_kt),
+                    )
+                    if np.isfinite(econ_val):
+                        shown_value = _fmt_speed_econ_safe(econ_val, float(res_in.v_notch_kt))
                         shown_unit = "kt" if shown_value else ""
 
                 else:
@@ -2885,7 +2908,7 @@ else:
         _show_result_card("", "")
     else:
         if col_key == "__SAVING_PER_X__":
-            v = _fmt_saving_eur(diff_total) if np.isfinite(diff_total) else "0,0"
+            v = _fmt_eur(diff_total, decimals=1) if np.isfinite(diff_total) else "0,0"
             _show_result_card(v, "EUR")
         else:
             _show_result_card(shown_value, shown_unit)
@@ -3062,8 +3085,6 @@ if mode == "Scenarijus":
                         group_col=group_col,
                         show_point_labels=True,
                         distance_nm=float(saving_distance_nm),
-                        scenarios=scenarios,
-                        cfg=cfg,
                     )
                     st.session_state[cap_key] = _conditions_sentence_from_filters(fixed, x_col=x_col, grouped_by=group_col)
                     st.session_state[err_key] = ""
@@ -3143,9 +3164,8 @@ else:
             if st.button("Generuoti grafiką", key="btn_g1i", use_container_width=True):
                 st.session_state["open_g1"] = True
                 try:
-                    cloud_ready = _ensure_global_cloud(scenarios)
-                    st.session_state["fig_g1"] = _plot_doc_vs_ias_input_5d(
-                        cloud_ready,
+                    st.session_state["fig_g1"] = _plot_doc_vs_ias_input_knn(
+                        scenarios,
                         summary_tbl,
                         fl_ft=fl,
                         wt_kg=wt,
@@ -3250,8 +3270,6 @@ else:
                         group_col=group_col,
                         show_point_labels=True,
                         distance_nm=float(saving_distance_nm),
-                        scenarios=scenarios,
-                        cfg=cfg,
                     )
                     st.session_state[cap_key] = _conditions_sentence_from_filters(
                         fixed_in,
@@ -3286,16 +3304,15 @@ else:
             if st.button("Generuoti grafiką", key="btn_g2i", use_container_width=True):
                 st.session_state["open_g2"] = True
                 try:
-                    _ensure_summary_prebuilt_4d(summary_tbl)
-                    st.session_state["fig_g2"] = _plot_econ_vs_time_cost_input_4d(
-                                                    longform_tbl,
-                                                    summary_tbl,
-                                                    fl_ft=fl,
-                                                    wt_kg=wt,
-                                                    isa_c=isa,
-                                                    wind_kt=wind,
-                                                    cfg=cfg,
-                                                )
+                    st.session_state["fig_g2"] = _plot_econ_vs_time_cost_input_knn(
+                        scenarios,
+                        summary_tbl,
+                        fl_ft=fl,
+                        wt_kg=wt,
+                        isa_c=isa,
+                        wind_kt=wind,
+                        cfg=cfg,
+                    )
                     st.session_state["err_g2"] = ""
                 except Exception as e:
                     st.session_state["fig_g2"] = None
@@ -3321,10 +3338,8 @@ else:
             if st.button("Generuoti grafiką", key="btn_g3i", use_container_width=True):
                 st.session_state["open_g3"] = True
                 try:
-                    fuel_longform_tbl_ready = _ensure_fuel_longform_tbl(scenarios)
-                    _ensure_summary_prebuilt_4d(summary_tbl)
-                    st.session_state["fig_g3"] = _plot_econ_vs_fuel_price_input_4d(
-                        fuel_longform_tbl_ready,
+                    st.session_state["fig_g3"] = _plot_econ_vs_fuel_price_input_knn(
+                        scenarios,
                         summary_tbl,
                         fl_ft=fl,
                         wt_kg=wt,
@@ -3564,13 +3579,26 @@ def _fmt_interval(
 v_notch_tbl = pd.to_numeric(display_tbl.get("V_notch_kt", np.nan), errors="coerce")
 v_econ_tbl = pd.to_numeric(display_tbl.get("V_ECSR_kt", np.nan), errors="coerce")
 
+econ_docmin_tbl: List[float] = []
+for _, row in display_tbl.iterrows():
+    sc_name = str(row.get("_ScenarioName_raw", ""))
+    sc = _scenario_lookup(scenarios, sc_name) if sc_name else None
+
+    if sc is not None:
+        try:
+            econ_docmin_tbl.append(_scenario_docmin_econ_kt(sc, cfg))
+        except Exception:
+            econ_docmin_tbl.append(float("nan"))
+    else:
+        econ_docmin_tbl.append(float("nan"))
+
 display_tbl["ECSR, kt"] = [
-    _ecsr_range_str(lo, hi, vn, ve)
+    _fmt_interval(lo, hi, vn, ve)
     for lo, hi, vn, ve in zip(
         e_lo.tolist(),
         e_hi.tolist(),
         v_notch_tbl.tolist(),
-        v_econ_tbl.tolist(),
+        econ_docmin_tbl,
     )
 ]
 
@@ -3627,12 +3655,26 @@ if "IASnotch, kt" in display_tbl.columns:
     display_tbl["IASnotch, kt"] = vals.map(lambda v: _fmt_speed_notch(v))
 
 if "ECON, kt" in display_tbl.columns and "IASnotch, kt" in display_tbl.columns:
-    vals_e = pd.to_numeric(summary_tbl.get("V_ECSR_kt", np.nan), errors="coerce")
-    vals_n = pd.to_numeric(summary_tbl.get("V_notch_kt", np.nan), errors="coerce")
-    display_tbl["ECON, kt"] = [
-        _fmt_speed_econ_safe(ve, vn) if np.isfinite(ve) and np.isfinite(vn) else ""
-        for ve, vn in zip(vals_e.tolist(), vals_n.tolist())
-    ]
+    econ_display_vals: List[str] = []
+
+    for _, row in display_tbl.iterrows():
+        bandymas = str(row.get("Bandymas", ""))
+        m = re.search(r"(\d+)", bandymas)
+        sc_name = f"scenario{int(m.group(1))}" if m else None
+
+        sc = _scenario_lookup(scenarios, sc_name) if sc_name else None
+        notch_val = float(pd.to_numeric(row.get("IASnotch, kt", np.nan), errors="coerce"))
+
+        if sc is not None:
+            try:
+                econ_docmin = _scenario_docmin_econ_kt(sc, cfg)
+                econ_display_vals.append(_fmt_speed_econ_safe(econ_docmin, notch_val))
+            except Exception:
+                econ_display_vals.append("")
+        else:
+            econ_display_vals.append("")
+
+    display_tbl["ECON, kt"] = econ_display_vals
 
 if "IASlow, kt" in display_tbl.columns:
     vals = pd.to_numeric(display_tbl["IASlow, kt"], errors="coerce")

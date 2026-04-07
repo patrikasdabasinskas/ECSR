@@ -694,13 +694,7 @@ def _build_economical_scenarios_table(
         doc_notch_per_nm = float(cur_now["doc_notch_per_nm"])
         saving_nm = doc_notch_per_nm - doc_econ_raw_per_nm
 
-        if not _scenario_is_economical(
-            v_econ_raw=v_econ_raw,
-            v_notch=v_notch,
-            doc_econ_raw_per_nm=doc_econ_raw_per_nm,
-            doc_notch_per_nm=doc_notch_per_nm,
-            cfg=cfg,
-        ):
+        if not bool(cur_now.get("econ_exists", 0.0)):
             continue
 
         econ_txt, notch_txt = _fmt_speed_pair_from_raw(
@@ -2973,6 +2967,15 @@ def _clear_excel_download_artifacts() -> None:
     st.session_state.pop("excel_bytes", None)
     st.session_state.pop("excel_name", None)
 
+def _close_all_graph_expanders() -> None:
+    for k in ["open_g1", "open_g2", "open_g3"]:
+        st.session_state[k] = False
+
+    for gid in _BP_GRAPHS.keys():
+        st.session_state[f"open_{gid}"] = False
+
+    for gid in _DOC_GRAPHS.keys():
+        st.session_state[f"open_{gid}"] = False
 
 def _init_state() -> None:
     for k in ["fig_g1", "fig_g2", "fig_g3"]:
@@ -3123,6 +3126,7 @@ with st.sidebar:
     run_btn = st.button("Generuoti", type="primary", use_container_width=True)
         
 if run_btn:
+    _close_all_graph_expanders()    
     try:
         st.session_state["excel_written_msg"] = ""
         _clear_excel_download_artifacts()
@@ -3650,10 +3654,37 @@ with quick_view_container:
                     cfg=cfg,
                 )
 
+                saving_per_nm = float(res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm)
+
+                fuel_break_active = (
+                    np.isfinite(be_fuel_input)
+                    and np.isfinite(float(cfg.fuel_price_eur_per_kg))
+                    and float(cfg.fuel_price_eur_per_kg) < float(be_fuel_input)
+                )
+
+                if fuel_break_active:
+                    saving_per_nm = 0.0
+                    res_in = InterpQuickResult(
+                        fl_ft=float(res_in.fl_ft),
+                        weight_kg=float(res_in.weight_kg),
+                        isa_c=float(res_in.isa_c),
+                        wind_kt=float(res_in.wind_kt),
+                        v_ecsr_kt=float(res_in.v_notch_kt),
+                        v_notch_kt=float(res_in.v_notch_kt),
+                        ecsr_low_kt=float(res_in.v_notch_kt),
+                        ecsr_high_kt=float(res_in.v_notch_kt),
+                        docmin_eur_per_nm=float(res_in.docnotch_eur_per_nm),
+                        docnotch_eur_per_nm=float(res_in.docnotch_eur_per_nm),
+                        docmin_eur_per_h=float(res_in.docnotch_eur_per_h),
+                        docnotch_eur_per_h=float(res_in.docnotch_eur_per_h),
+                        be_time_cost_eur_per_hr=float(be_time_input),
+                        be_fuel_price_eur_per_kg=float(be_fuel_input),
+                    )
+
                 st.session_state["in_last_res"] = res_in
                 st.session_state["in_last_be_time"] = float(be_time_input)
                 st.session_state["in_last_be_fuel"] = float(be_fuel_input)
-                st.session_state["in_last_saving_per_nm"] = float(res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm)
+                st.session_state["in_last_saving_per_nm"] = float(saving_per_nm)
                 st.session_state["in_err"] = ""
 
             except Exception as e:
@@ -3842,6 +3873,8 @@ if mode == "Scenarijus":
         with col2:
             st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
             if st.button("Generuoti grafiką", key="btn_g1s", use_container_width=True):
+                _close_all_graph_expanders()
+                st.session_state["open_g1"] = True
                 st.session_state["open_g1"] = True
                 try:
                     sc = _scenario_lookup(scenarios, g1_scn)
@@ -3953,6 +3986,7 @@ if mode == "Scenarijus":
         with col2:
             st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
             if st.button("Generuoti grafiką", key="btn_g2s", use_container_width=True):
+                _close_all_graph_expanders()
                 st.session_state["open_g2"] = True
                 try:
                     st.session_state["fig_g2"] = _plot_econ_vs_time_cost(longform_tbl, summary_tbl, g2_scn, tc_operational=float(cfg.time_cost_operational))
@@ -3976,6 +4010,7 @@ if mode == "Scenarijus":
         with col2:
             st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
             if st.button("Generuoti grafiką", key="btn_g3s", use_container_width=True):
+                _close_all_graph_expanders()
                 st.session_state["open_g3"] = True
                 try:
                     st.session_state["fig_g3"] = _plot_econ_vs_fuel_price(scenarios, summary_tbl, g3_scn, fuel_price_operational=float(cfg.fuel_price_eur_per_kg))
@@ -4006,6 +4041,7 @@ else:
         with c5:
             st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
             if st.button("Generuoti grafiką", key="btn_g1i", use_container_width=True):
+                _close_all_graph_expanders()
                 st.session_state["open_g1"] = True
                 try:
                     cloud_ready = _ensure_global_cloud(scenarios)
@@ -4069,6 +4105,7 @@ else:
                 )
 
             if run_graph:
+                _close_all_graph_expanders()
                 st.session_state[open_key] = True
                 try:
                     current_x_value = {
@@ -4129,6 +4166,7 @@ else:
         with c5:
             st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
             if st.button("Generuoti grafiką", key="btn_g2i", use_container_width=True):
+                _close_all_graph_expanders()
                 st.session_state["open_g2"] = True
                 try:
                     _ensure_summary_prebuilt_4d(summary_tbl)
@@ -4163,6 +4201,7 @@ else:
         with c5:
             st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
             if st.button("Generuoti grafiką", key="btn_g3i", use_container_width=True):
+                _close_all_graph_expanders()
                 st.session_state["open_g3"] = True
                 try:
                     fuel_longform_tbl_ready = _ensure_fuel_longform_tbl(scenarios)
@@ -4220,6 +4259,7 @@ for gid, meta in _BP_GRAPHS.items():
                 st.error(msg)
 
             if st.button("Generuoti grafikus", key=f"btn_{gid}", disabled=not ok):
+                _close_all_graph_expanders()
                 st.session_state[open_key] = True
                 try:
                     st.session_state[fig_key_time] = _plot_breakpoint_vs_grouped(
@@ -4273,6 +4313,7 @@ for gid, meta in _BP_GRAPHS.items():
             fixed_in = _bp_filter_ui_input(gid)
 
             if st.button("Generuoti grafikus", key=f"btn_{gid}_input", use_container_width=True):
+                _close_all_graph_expanders()
                 st.session_state[open_key] = True
                 try:
                     include_x_value = None

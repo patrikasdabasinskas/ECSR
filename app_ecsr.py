@@ -2569,7 +2569,13 @@ def _build_interpolated_sweep_table(
                 isa_c=isa_c,
                 wind_kt=wind_kt,
             )
+        except Exception:
+            continue
 
+        be_time = float("nan")
+        be_fuel = float("nan")
+
+        try:
             be_time = _input_time_breakpoint_interpolated(
                 longform_tbl,
                 summary_tbl,
@@ -2579,7 +2585,10 @@ def _build_interpolated_sweep_table(
                 wind_kt=wind_kt,
                 cfg=cfg,
             )
+        except Exception:
+            pass
 
+        try:
             be_fuel = _input_fuel_breakpoint_interpolated(
                 fuel_longform_tbl_ready,
                 summary_tbl,
@@ -2589,23 +2598,23 @@ def _build_interpolated_sweep_table(
                 wind_kt=wind_kt,
                 cfg=cfg,
             )
-
-            rows.append(
-                {
-                    "ZP_ft": zp_ft,
-                    "WEIGHT_kg": weight_kg,
-                    "ISA_C": isa_c,
-                    "WIND_kt": wind_kt,
-                    "V_ECSR_kt": float(qres.v_ecsr_kt),
-                    "V_notch_kt": float(qres.v_notch_kt),
-                    "DOCmin_EurPerNM": float(qres.docmin_eur_per_nm),
-                    "DOCnotch_EurPerNM": float(qres.docnotch_eur_per_nm),
-                    "BreakEven_TIME_COST_EurPerHr": float(be_time),
-                    "BreakEven_FUEL_PRICE_EurPerKg": float(be_fuel),
-                }
-            )
         except Exception:
-            continue
+            pass
+
+        rows.append(
+            {
+                "ZP_ft": zp_ft,
+                "WEIGHT_kg": weight_kg,
+                "ISA_C": isa_c,
+                "WIND_kt": wind_kt,
+                "V_ECSR_kt": float(qres.v_ecsr_kt),
+                "V_notch_kt": float(qres.v_notch_kt),
+                "DOCmin_EurPerNM": float(qres.docmin_eur_per_nm),
+                "DOCnotch_EurPerNM": float(qres.docnotch_eur_per_nm),
+                "BreakEven_TIME_COST_EurPerHr": float(be_time),
+                "BreakEven_FUEL_PRICE_EurPerKg": float(be_fuel),
+            }
+        )
 
     return pd.DataFrame(rows)
 

@@ -255,6 +255,37 @@ def _raw_speed_advantage_exists(v_notch: float, v_econ: float, *, atol_kt: float
         return False
     return float(v_notch) > float(v_econ) + float(atol_kt)
 
+def _scenario_is_economical(
+    *,
+    v_econ_raw: float,
+    v_notch: float,
+    doc_econ_raw_per_nm: float,
+    doc_notch_per_nm: float,
+    cfg: Config,
+) -> bool:
+    if not (
+        np.isfinite(v_econ_raw)
+        and np.isfinite(v_notch)
+        and np.isfinite(doc_econ_raw_per_nm)
+        and np.isfinite(doc_notch_per_nm)
+    ):
+        return False
+
+    saving_nm = float(doc_notch_per_nm) - float(doc_econ_raw_per_nm)
+    if saving_nm <= 0.0:
+        return False
+
+    speed_ok = _raw_speed_advantage_exists(float(v_notch), float(v_econ_raw))
+
+    mode = str(getattr(cfg, "breakpoint_saving_mode", "default")).strip().lower()
+    if mode == "per_nm":
+        threshold = float(getattr(cfg, "breakpoint_saving_eur_per_nm", 0.0))
+        money_ok = saving_nm >= threshold
+    else:
+        money_ok = True
+
+    return bool(speed_ok and money_ok)  
+
 
 def _fmt_speed_econ(v: float) -> str:
     x = _disp_econ_kt(v)
@@ -631,7 +662,7 @@ def _build_economical_scenarios_table(
     econ_txt_list: List[str] = []
     ecsr_txt_list: List[str] = []
     notch_txt_list: List[str] = []
-    delta_v_list: List[int] = []
+    delta_v_list: List[str] = []
     doc_econ_nm_list: List[str] = []
     doc_notch_nm_list: List[str] = []
     doc_diff_nm_list: List[str] = []
@@ -656,51 +687,56 @@ def _build_economical_scenarios_table(
         except Exception:
             continue
 
-        saving_nm = float(cur_now["doc_notch_per_nm"] - cur_now["doc_econ_raw_per_nm"])
+        v_econ_disp = float(cur_now["v_econ"])
+        v_econ_raw = float(cur_now["v_econ_raw"])
+        v_notch = float(cur_now["v_notch"])
+        doc_econ_raw_per_nm = float(cur_now["doc_econ_raw_per_nm"])
+        doc_notch_per_nm = float(cur_now["doc_notch_per_nm"])
+        saving_nm = doc_notch_per_nm - doc_econ_raw_per_nm
+
+        if not _scenario_is_economical(
+            v_econ_raw=v_econ_raw,
+            v_notch=v_notch,
+            doc_econ_raw_per_nm=doc_econ_raw_per_nm,
+            doc_notch_per_nm=doc_notch_per_nm,
+            cfg=cfg,
+        ):
+            continue
+
         econ_txt, notch_txt = _fmt_speed_pair_from_raw(
-            v_econ_disp=float(cur_now["v_econ"]),
-            v_econ_raw=float(cur_now["v_econ_raw"]),
-            v_notch=float(cur_now["v_notch"]),
+            v_econ_disp=v_econ_disp,
+            v_econ_raw=v_econ_raw,
+            v_notch=v_notch,
             saving_eur_per_nm=saving_nm,
         )
 
         if not econ_txt or not notch_txt:
             continue
 
-        try:
-            econ_num = float(econ_txt)
-            notch_num = float(notch_txt)
-        except Exception:
-            continue
-
-        delta_v = notch_num - econ_num
-        if not (saving_nm > 0.0 and delta_v >= 1.0):
-            continue
-
         ecsr_txt = _fmt_ecsr_from_raw(
             lo=float(pd.to_numeric(row.get("ECSR_low_kt", np.nan), errors="coerce")),
             hi=float(pd.to_numeric(row.get("ECSR_high_kt", np.nan), errors="coerce")),
-            v_econ_disp=float(cur_now["v_econ"]),
-            v_econ_raw=float(cur_now["v_econ_raw"]),
-            v_notch=float(cur_now["v_notch"]),
+            v_econ_disp=v_econ_disp,
+            v_econ_raw=v_econ_raw,
+            v_notch=v_notch,
             saving_eur_per_nm=saving_nm,
         )
+
+        raw_delta = float(v_notch) - float(v_econ_raw)
+        delta_v_txt = f"{raw_delta:.3f}" if raw_delta < 1.0 else f"{raw_delta:.1f}"
 
         bandymas_list.append(_scenario_trial_label(sc_name))
         econ_txt_list.append(econ_txt)
         ecsr_txt_list.append(ecsr_txt)
         notch_txt_list.append(notch_txt)
-        delta_v_list.append(int(round(delta_v)))
-        doc_econ_nm_list.append(f"{float(cur_now['doc_econ_raw_per_nm']):.3f}")
-        doc_notch_nm_list.append(f"{float(cur_now['doc_notch_per_nm']):.3f}")
+        delta_v_list.append(delta_v_txt)
+        doc_econ_nm_list.append(f"{doc_econ_raw_per_nm:.3f}")
+        doc_notch_nm_list.append(f"{doc_notch_per_nm:.3f}")
         doc_diff_nm_list.append(f"{saving_nm:.3f}")
 
         for d in dist_cols:
-            min_col = f"DOCmin_{d}NM_EUR"
-            notch_col = f"DOCnotch_{d}NM_EUR"
-
-            econ_total = float(cur_now["doc_econ_raw_per_nm"]) * float(d)
-            notch_total = float(cur_now["doc_notch_per_nm"]) * float(d)
+            econ_total = doc_econ_raw_per_nm * float(d)
+            notch_total = doc_notch_per_nm * float(d)
             diff_total = notch_total - econ_total
 
             dist_doc_econ[d].append(f"{econ_total:.1f}")
@@ -727,6 +763,217 @@ def _build_economical_scenarios_table(
         out_data[f"DOC skirtumas {d}NM (EUR)"] = dist_doc_diff[d]
 
     return pd.DataFrame(out_data)
+
+def _invalidate_rendered_tables_cache() -> None:
+    st.session_state.pop("econ_tbl_cached", None)
+    st.session_state.pop("display_tbl_cached", None)
+
+def _get_cached_economic_table(
+    summary_tbl: pd.DataFrame,
+    cfg: Config,
+    scenarios: List[Dict[str, Any]],
+) -> pd.DataFrame:
+    cached = st.session_state.get("econ_tbl_cached", None)
+    if isinstance(cached, pd.DataFrame):
+        return cached
+
+    tbl = _build_economical_scenarios_table(summary_tbl, cfg, scenarios)
+    st.session_state["econ_tbl_cached"] = tbl
+    return tbl
+
+def _build_display_table(
+    summary_tbl: pd.DataFrame,
+    cfg: Config,
+    scenarios: List[Dict[str, Any]],
+    fuel_ceiling: float,
+) -> pd.DataFrame:
+    display_tbl = summary_tbl.copy()
+
+    display_tbl = display_tbl.sort_values(by="ScenarioName", key=lambda s: s.map(_scenario_sort_key)).reset_index(drop=True)
+    display_tbl["_ScenarioName_raw"] = display_tbl["ScenarioName"]
+    display_tbl["ScenarioName"] = display_tbl["ScenarioName"].map(_scenario_trial_label)
+
+    ecsr_vals: List[str] = []
+    for _, row in display_tbl.iterrows():
+        sc_obj = _scenario_lookup(scenarios, str(row.get("_ScenarioName_raw", "")))
+        if sc_obj is None:
+            ecsr_vals.append("")
+            continue
+
+        try:
+            cur_now = _cached_current_operating_point_result(
+                sc_obj,
+                float(cfg.fuel_price_eur_per_kg),
+                float(cfg.time_cost_operational),
+                cfg,
+            )
+            saving_nm = float(cur_now["doc_notch_per_nm"] - cur_now["doc_econ_raw_per_nm"])
+            ecsr_txt = _fmt_ecsr_from_raw(
+                lo=float(pd.to_numeric(row.get("ECSR_low_kt", np.nan), errors="coerce")),
+                hi=float(pd.to_numeric(row.get("ECSR_high_kt", np.nan), errors="coerce")),
+                v_econ_disp=float(cur_now["v_econ"]),
+                v_econ_raw=float(cur_now["v_econ_raw"]),
+                v_notch=float(cur_now["v_notch"]),
+                saving_eur_per_nm=saving_nm,
+            )
+            ecsr_vals.append(ecsr_txt)
+        except Exception:
+            ecsr_vals.append("")
+
+    display_tbl["ECSR, kt"] = ecsr_vals
+
+    display_tbl["Laiko sąnaudų lūžio taškas, eur/h"] = _format_break_even_for_app_time(
+        summary_tbl=display_tbl,
+        sweep_min=float(cfg.time_cost_min),
+        sweep_max=float(cfg.time_cost_max),
+    ).to_list()
+
+    display_tbl["Degalų sąnaudų lūžio taškas, eur/kg"] = _format_break_even_for_app_fuel(
+        summary_tbl=display_tbl,
+        ceiling=fuel_ceiling,
+    ).to_list()
+
+    rename_map = {
+        "ScenarioName": "Bandymas",
+        "ZP_ft": "Aukštis, ft",
+        "WEIGHT_kg": "Masė, kg",
+        "ISA_C": "ISA, °C",
+        "WIND_kt": "Vėjo komponentė, kt",
+        "FuelPrice_EurPerKg": "Degalų kaina, eur/kg",
+        "TIME_COST_Operational_EurPerHr": "Laiko sąnaudos, eur/h",
+        "V_notch_kt": "IASnotch, kt",
+        "V_ECSR_kt": "ECON, kt",
+        "ECSR_low_kt": "IASlow, kt",
+        "ECSR_high_kt": "IAShigh, kt",
+        "DOCmin_EurPerNM": "DOCmin, eur/nm",
+        "DOCnotch_EurPerNM": "DOCnotch, eur/nm",
+    }
+
+    for d in cfg.distances_nm:
+        rename_map[f"DOCmin_{d}NM_EUR"] = f"DOCmin_{d}nm, eur"
+        rename_map[f"DOCnotch_{d}NM_EUR"] = f"DOCnotch_{d}nm, eur"
+
+    display_tbl = display_tbl.rename(columns=rename_map)
+
+    for col in ["Aukštis, ft", "Masė, kg"]:
+        if col in display_tbl.columns:
+            vals = pd.to_numeric(display_tbl[col], errors="coerce")
+            display_tbl[col] = vals.map(lambda v: f"{int(round(v))}" if np.isfinite(v) else "")
+
+    if "IASnotch, kt" in display_tbl.columns:
+        notch_vals: List[str] = []
+        for _, row in display_tbl.iterrows():
+            sc_obj = _scenario_lookup(scenarios, str(row.get("_ScenarioName_raw", "")))
+            if sc_obj is None:
+                notch_vals.append("")
+                continue
+            try:
+                cur_now = _cached_current_operating_point_result(
+                    sc_obj,
+                    float(cfg.fuel_price_eur_per_kg),
+                    float(cfg.time_cost_operational),
+                    cfg,
+                )
+                saving_nm = float(cur_now["doc_notch_per_nm"] - cur_now["doc_econ_raw_per_nm"])
+                _, notch_txt = _fmt_speed_pair_from_raw(
+                    v_econ_disp=float(cur_now["v_econ"]),
+                    v_econ_raw=float(cur_now["v_econ_raw"]),
+                    v_notch=float(cur_now["v_notch"]),
+                    saving_eur_per_nm=saving_nm,
+                )
+                notch_vals.append(notch_txt)
+            except Exception:
+                notch_vals.append("")
+        display_tbl["IASnotch, kt"] = notch_vals
+
+    if "ECON, kt" in display_tbl.columns and "IASnotch, kt" in display_tbl.columns:
+        econ_vals: List[str] = []
+        for _, row in display_tbl.iterrows():
+            sc_obj = _scenario_lookup(scenarios, str(row.get("_ScenarioName_raw", "")))
+            if sc_obj is None:
+                econ_vals.append("")
+                continue
+            try:
+                cur_now = _cached_current_operating_point_result(
+                    sc_obj,
+                    float(cfg.fuel_price_eur_per_kg),
+                    float(cfg.time_cost_operational),
+                    cfg,
+                )
+                saving_nm = float(cur_now["doc_notch_per_nm"] - cur_now["doc_econ_raw_per_nm"])
+                econ_txt, _ = _fmt_speed_pair_from_raw(
+                    v_econ_disp=float(cur_now["v_econ"]),
+                    v_econ_raw=float(cur_now["v_econ_raw"]),
+                    v_notch=float(cur_now["v_notch"]),
+                    saving_eur_per_nm=saving_nm,
+                )
+                econ_vals.append(econ_txt)
+            except Exception:
+                econ_vals.append("")
+        display_tbl["ECON, kt"] = econ_vals
+
+    if "IASlow, kt" in display_tbl.columns:
+        vals = pd.to_numeric(display_tbl["IASlow, kt"], errors="coerce")
+        display_tbl["IASlow, kt"] = vals.map(lambda v: _fmt_speed_econ(v))
+
+    if "IAShigh, kt" in display_tbl.columns:
+        vals = pd.to_numeric(display_tbl["IAShigh, kt"], errors="coerce")
+        display_tbl["IAShigh, kt"] = vals.map(lambda v: _fmt_speed_notch(v))
+
+    display_tbl = display_tbl.drop(
+        columns=["BreakEven_TIME_COST_EurPerHr", "BreakEven_FUEL_PRICE_EurPerKg"],
+        errors="ignore",
+    )
+
+    ordered_cols = [
+        "Bandymas",
+        "Aukštis, ft",
+        "Masė, kg",
+        "ISA, °C",
+        "Vėjo komponentė, kt",
+        "Degalų kaina, eur/kg",
+        "Laiko sąnaudos, eur/h",
+        "IASnotch, kt",
+        "ECON, kt",
+        "IASlow, kt",
+        "IAShigh, kt",
+        "ECSR, kt",
+        "Laiko sąnaudų lūžio taškas, eur/h",
+        "Degalų sąnaudų lūžio taškas, eur/kg",
+        "DOCmin, eur/nm",
+        "DOCnotch, eur/nm",
+    ]
+
+    for d in cfg.distances_nm:
+        if int(d) == 100:
+            ordered_cols.append(f"DOCmin_{d}nm, eur")
+            ordered_cols.append(f"DOCnotch_{d}nm, eur")
+
+    display_tbl = display_tbl.drop(
+        columns=["DOCmin_EurPerHr", "DOCnotch_EurPerHr", "DOCmin, eur/h", "DOCnotch, eur/h"],
+        errors="ignore",
+    )
+
+    ordered_cols = [c for c in ordered_cols if c in display_tbl.columns]
+    remaining = [c for c in display_tbl.columns if c not in ordered_cols]
+    display_tbl = display_tbl[ordered_cols + remaining]
+    display_tbl = display_tbl.drop(columns=["_ScenarioName_raw"], errors="ignore")
+
+    return display_tbl
+
+def _get_cached_display_table(
+    summary_tbl: pd.DataFrame,
+    cfg: Config,
+    scenarios: List[Dict[str, Any]],
+    fuel_ceiling: float,
+) -> pd.DataFrame:
+    cached = st.session_state.get("display_tbl_cached", None)
+    if isinstance(cached, pd.DataFrame):
+        return cached
+
+    tbl = _build_display_table(summary_tbl, cfg, scenarios, fuel_ceiling)
+    st.session_state["display_tbl_cached"] = tbl
+    return tbl
 
 
 # ------------------------- Result card -------------------------
@@ -2790,6 +3037,8 @@ def _init_state() -> None:
     st.session_state.setdefault("debug_detail", "")
     st.session_state.setdefault("generation_ok", False)
     st.session_state.setdefault("in_last_saving_per_nm", float("nan"))
+    st.session_state.setdefault("econ_tbl_cached", None)
+    st.session_state.setdefault("display_tbl_cached", None)
 # ========================= UI =========================
 st.set_page_config(layout="wide")
 
@@ -2877,6 +3126,7 @@ if run_btn:
     try:
         st.session_state["excel_written_msg"] = ""
         _clear_excel_download_artifacts()
+        _invalidate_rendered_tables_cache()
         st.session_state["outliers_tbl"] = pd.DataFrame()
         st.session_state["debug_step"] = "start"
         st.session_state["debug_detail"] = ""
@@ -3127,381 +3377,383 @@ def _show_result_card(value: str, unit: str) -> None:
     with mid:
         _render_result_card(value, unit, "Rezultatas")
 
+quick_view_container = st.container()
 
-if mode == "Scenarijus":
-    top_l, top_r = st.columns(2, gap="large")
-    with top_l:
-        pick_scn = st.selectbox(
-            "Pasirinkite scenarijų",
-            ["Pasirinkite..."] + scenario_names,
-            index=0,
-            key="quick_scn",
-        )
-    with top_r:
-        pick_metric_label = st.selectbox(
-            "Pasirinkite rodiklį",
-            list(metric_map.keys()),
-            index=0,
-            key="quick_metric",
-        )
-
-    show_placeholder = (pick_scn == "Pasirinkite..." or metric_map[pick_metric_label] == "__NONE__")
-
-    distance_nm = 0.0
-    is_saving_per_x = (not show_placeholder) and (metric_map[pick_metric_label] == "__SAVING_PER_X__")
-
-    if is_saving_per_x:
-        st.markdown("<div style='height: 6px'></div>", unsafe_allow_html=True)
-        _, mid, _ = st.columns([2.2, 1.2, 2.2], gap="large")
-        with mid:
-            distance_nm = st.number_input(
-                "Atstumas (NM)",
-                min_value=0.0,
-                step=10.0,
-                key="quick_doc_dist_nm",
+with quick_view_container:
+    if mode == "Scenarijus":
+        top_l, top_r = st.columns(2, gap="large")
+        with top_l:
+            pick_scn = st.selectbox(
+                "Pasirinkite scenarijų",
+                ["Pasirinkite..."] + scenario_names,
+                index=0,
+                key="quick_scn",
+            )
+        with top_r:
+            pick_metric_label = st.selectbox(
+                "Pasirinkite rodiklį",
+                list(metric_map.keys()),
+                index=0,
+                key="quick_metric",
             )
 
-    shown_value = ""
-    shown_unit = ""
-    diff_total = float("nan")
-    quick_caption = ""
+        show_placeholder = (pick_scn == "Pasirinkite..." or metric_map[pick_metric_label] == "__NONE__")
 
-    if not show_placeholder:
-        col_key = metric_map[pick_metric_label]
-        row_df = summary_tbl.loc[summary_tbl["ScenarioName"] == pick_scn]
-        if not row_df.empty:
-            row = row_df.iloc[0]
-            quick_caption = _conditions_sentence_from_row_with_costs(row, cfg)
+        distance_nm = 0.0
+        is_saving_per_x = (not show_placeholder) and (metric_map[pick_metric_label] == "__SAVING_PER_X__")
 
-            if col_key == "__ECSR_RANGE__":
-                sc_obj = _scenario_lookup(scenarios, str(pick_scn))
-                if sc_obj is not None:
-                    try:
-                        cur_sc = _cached_current_operating_point_result(
-                            sc_obj,
-                            float(cfg.fuel_price_eur_per_kg),
-                            float(cfg.time_cost_operational),
-                            cfg,
-                        )
-                        saving_nm = float(cur_sc["doc_notch_per_nm"] - cur_sc["doc_econ_raw_per_nm"])
-                        shown_value = _fmt_ecsr_from_raw(
-                            lo=float(pd.to_numeric(row.get("ECSR_low_kt", np.nan), errors="coerce")),
-                            hi=float(pd.to_numeric(row.get("ECSR_high_kt", np.nan), errors="coerce")),
-                            v_econ_disp=float(cur_sc["v_econ"]),
-                            v_econ_raw=float(cur_sc["v_econ_raw"]),
-                            v_notch=float(cur_sc["v_notch"]),
-                            saving_eur_per_nm=saving_nm,
-                        )
-                    except Exception:
+        if is_saving_per_x:
+            st.markdown("<div style='height: 6px'></div>", unsafe_allow_html=True)
+            _, mid, _ = st.columns([2.2, 1.2, 2.2], gap="large")
+            with mid:
+                distance_nm = st.number_input(
+                    "Atstumas (NM)",
+                    min_value=0.0,
+                    step=10.0,
+                    key="quick_doc_dist_nm",
+                )
+
+        shown_value = ""
+        shown_unit = ""
+        diff_total = float("nan")
+        quick_caption = ""
+
+        if not show_placeholder:
+            col_key = metric_map[pick_metric_label]
+            row_df = summary_tbl.loc[summary_tbl["ScenarioName"] == pick_scn]
+            if not row_df.empty:
+                row = row_df.iloc[0]
+                quick_caption = _conditions_sentence_from_row_with_costs(row, cfg)
+
+                if col_key == "__ECSR_RANGE__":
+                    sc_obj = _scenario_lookup(scenarios, str(pick_scn))
+                    if sc_obj is not None:
+                        try:
+                            cur_sc = _cached_current_operating_point_result(
+                                sc_obj,
+                                float(cfg.fuel_price_eur_per_kg),
+                                float(cfg.time_cost_operational),
+                                cfg,
+                            )
+                            saving_nm = float(cur_sc["doc_notch_per_nm"] - cur_sc["doc_econ_raw_per_nm"])
+                            shown_value = _fmt_ecsr_from_raw(
+                                lo=float(pd.to_numeric(row.get("ECSR_low_kt", np.nan), errors="coerce")),
+                                hi=float(pd.to_numeric(row.get("ECSR_high_kt", np.nan), errors="coerce")),
+                                v_econ_disp=float(cur_sc["v_econ"]),
+                                v_econ_raw=float(cur_sc["v_econ_raw"]),
+                                v_notch=float(cur_sc["v_notch"]),
+                                saving_eur_per_nm=saving_nm,
+                            )
+                        except Exception:
+                            shown_value = _ecsr_range_str(
+                                float(pd.to_numeric(row.get("ECSR_low_kt", np.nan), errors="coerce")),
+                                float(pd.to_numeric(row.get("ECSR_high_kt", np.nan), errors="coerce")),
+                                float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce")),
+                                float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce")),
+                            )
+                    else:
                         shown_value = _ecsr_range_str(
                             float(pd.to_numeric(row.get("ECSR_low_kt", np.nan), errors="coerce")),
                             float(pd.to_numeric(row.get("ECSR_high_kt", np.nan), errors="coerce")),
                             float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce")),
                             float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce")),
                         )
-                else:
-                    shown_value = _ecsr_range_str(
-                        float(pd.to_numeric(row.get("ECSR_low_kt", np.nan), errors="coerce")),
-                        float(pd.to_numeric(row.get("ECSR_high_kt", np.nan), errors="coerce")),
-                        float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce")),
-                        float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce")),
+
+                    shown_unit = "kt" if shown_value else ""
+
+                elif col_key == "__BREAK_TIME__":
+                    be_str = _format_break_even_for_app_time(
+                        summary_tbl=row_df,
+                        sweep_min=float(cfg.time_cost_min),
+                        sweep_max=float(cfg.time_cost_max),
                     )
+                    shown_value = str(be_str.iloc[0]) if len(be_str) else ""
+                    shown_unit = "€/h" if (shown_value and shown_value != "Nėra lūžio taško") else ""
 
-                shown_unit = "kt" if shown_value else ""
+                elif col_key == "__BREAK_FUEL__":
+                    be_str = _format_break_even_for_app_fuel(summary_tbl=row_df, ceiling=fuel_ceiling)
+                    shown_value = str(be_str.iloc[0]) if len(be_str) else ""
+                    shown_unit = "€/kg" if (shown_value and shown_value != "Nėra lūžio taško") else ""
 
-            elif col_key == "__BREAK_TIME__":
-                be_str = _format_break_even_for_app_time(
-                    summary_tbl=row_df,
-                    sweep_min=float(cfg.time_cost_min),
-                    sweep_max=float(cfg.time_cost_max),
-                )
-                shown_value = str(be_str.iloc[0]) if len(be_str) else ""
-                shown_unit = "€/h" if (shown_value and shown_value != "Nėra lūžio taško") else ""
+                elif col_key == "__SAVING_PER_X__":
+                    dist = float(distance_nm)
+                    v_min_per_nm = float(pd.to_numeric(row.get("DOCmin_EurPerNM", np.nan), errors="coerce"))
+                    v_notch_per_nm = float(pd.to_numeric(row.get("DOCnotch_EurPerNM", np.nan), errors="coerce"))
+                    v_notch_raw = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
+                    v_econ_raw = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
 
-            elif col_key == "__BREAK_FUEL__":
-                be_str = _format_break_even_for_app_fuel(summary_tbl=row_df, ceiling=fuel_ceiling)
-                shown_value = str(be_str.iloc[0]) if len(be_str) else ""
-                shown_unit = "€/kg" if (shown_value and shown_value != "Nėra lūžio taško") else ""
+                    sc_obj = _scenario_lookup(scenarios, str(pick_scn))
+                    if sc_obj is not None:
+                        try:
+                            cur_sc = _cached_current_operating_point_result(
+                                sc_obj,
+                                float(cfg.fuel_price_eur_per_kg),
+                                float(cfg.time_cost_operational),
+                                cfg,
+                            )
+                            v_min_per_nm = float(cur_sc["doc_econ_per_nm"])
+                            v_notch_per_nm = float(cur_sc["doc_notch_per_nm"])
+                            v_notch_raw = float(cur_sc["v_notch"])
+                            v_econ_raw = float(cur_sc["v_econ"])
+                        except Exception:
+                            pass
 
-            elif col_key == "__SAVING_PER_X__":
-                dist = float(distance_nm)
-                v_min_per_nm = float(pd.to_numeric(row.get("DOCmin_EurPerNM", np.nan), errors="coerce"))
-                v_notch_per_nm = float(pd.to_numeric(row.get("DOCnotch_EurPerNM", np.nan), errors="coerce"))
-                v_notch_raw = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
-                v_econ_raw = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
-
-                sc_obj = _scenario_lookup(scenarios, str(pick_scn))
-                if sc_obj is not None:
-                    try:
-                        cur_sc = _cached_current_operating_point_result(
-                            sc_obj,
-                            float(cfg.fuel_price_eur_per_kg),
-                            float(cfg.time_cost_operational),
-                            cfg,
-                        )
-                        v_min_per_nm = float(cur_sc["doc_econ_per_nm"])
-                        v_notch_per_nm = float(cur_sc["doc_notch_per_nm"])
-                        v_notch_raw = float(cur_sc["v_notch"])
-                        v_econ_raw = float(cur_sc["v_econ"])
-                    except Exception:
-                        pass
-
-                if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
-                    diff_total = max(0.0, float((v_notch_per_nm - v_min_per_nm) * dist))
+                    if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
+                        diff_total = max(0.0, float((v_notch_per_nm - v_min_per_nm) * dist))
+                    else:
+                        diff_total = float("nan")
                 else:
-                    diff_total = float("nan")
-            else:
-                val = float(pd.to_numeric(row.get(col_key, np.nan), errors="coerce"))
-                if np.isfinite(val):
-                    if col_key == "V_ECSR_kt":
-                        sc_obj = _scenario_lookup(scenarios, str(pick_scn))
-                        if sc_obj is not None:
-                            try:
-                                cur_sc = _cached_current_operating_point_result(
-                                    sc_obj,
-                                    float(cfg.fuel_price_eur_per_kg),
-                                    float(cfg.time_cost_operational),
-                                    cfg,
-                                )
-                                saving_nm = float(cur_sc["doc_notch_per_nm"] - cur_sc["doc_econ_raw_per_nm"])
-                                shown_value, _ = _fmt_speed_pair_from_raw(
-                                    v_econ_disp=float(cur_sc["v_econ"]),
-                                    v_econ_raw=float(cur_sc["v_econ_raw"]),
-                                    v_notch=float(cur_sc["v_notch"]),
-                                    saving_eur_per_nm=saving_nm,
-                                )
-                            except Exception:
+                    val = float(pd.to_numeric(row.get(col_key, np.nan), errors="coerce"))
+                    if np.isfinite(val):
+                        if col_key == "V_ECSR_kt":
+                            sc_obj = _scenario_lookup(scenarios, str(pick_scn))
+                            if sc_obj is not None:
+                                try:
+                                    cur_sc = _cached_current_operating_point_result(
+                                        sc_obj,
+                                        float(cfg.fuel_price_eur_per_kg),
+                                        float(cfg.time_cost_operational),
+                                        cfg,
+                                    )
+                                    saving_nm = float(cur_sc["doc_notch_per_nm"] - cur_sc["doc_econ_raw_per_nm"])
+                                    shown_value, _ = _fmt_speed_pair_from_raw(
+                                        v_econ_disp=float(cur_sc["v_econ"]),
+                                        v_econ_raw=float(cur_sc["v_econ_raw"]),
+                                        v_notch=float(cur_sc["v_notch"]),
+                                        saving_eur_per_nm=saving_nm,
+                                    )
+                                except Exception:
+                                    v_econ = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
+                                    v_notch = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
+                                    shown_value = _fmt_speed_econ_safe(v_econ, v_notch)
+                            else:
                                 v_econ = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
                                 v_notch = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
                                 shown_value = _fmt_speed_econ_safe(v_econ, v_notch)
-                        else:
-                            v_econ = float(pd.to_numeric(row.get("V_ECSR_kt", np.nan), errors="coerce"))
-                            v_notch = float(pd.to_numeric(row.get("V_notch_kt", np.nan), errors="coerce"))
-                            shown_value = _fmt_speed_econ_safe(v_econ, v_notch)
 
-                        shown_unit = "kt" if shown_value else ""
-                    elif col_key == "V_notch_kt":
-                        sc_obj = _scenario_lookup(scenarios, str(pick_scn))
-                        if sc_obj is not None:
-                            try:
-                                cur_sc = _cached_current_operating_point_result(
-                                    sc_obj,
-                                    float(cfg.fuel_price_eur_per_kg),
-                                    float(cfg.time_cost_operational),
-                                    cfg,
-                                )
-                                saving_nm = float(cur_sc["doc_notch_per_nm"] - cur_sc["doc_econ_raw_per_nm"])
-                                _, shown_value = _fmt_speed_pair_from_raw(
-                                    v_econ_disp=float(cur_sc["v_econ"]),
-                                    v_econ_raw=float(cur_sc["v_econ_raw"]),
-                                    v_notch=float(cur_sc["v_notch"]),
-                                    saving_eur_per_nm=saving_nm,
-                                )
-                            except Exception:
-                                shown_value = _fmt_speed_notch(val)
-                        else:
-                            shown_value = _fmt_speed_notch(val)
-
-                        shown_unit = "kt" if shown_value else ""
-                    elif "EUR/h" in pick_metric_label:
-                        shown_value = f"{val:.1f}"
-                        shown_unit = "EUR/h"
-                    elif "€/h" in pick_metric_label:
-                        shown_value = f"{int(round(val))}"
-                        shown_unit = "€/h"
-                    elif "€/kg" in pick_metric_label:
-                        shown_value = f"{val:.2f}"
-                        shown_unit = "€/kg"
-                    elif "EUR/NM" in pick_metric_label:
-                        shown_value = f"{val:.3f}"
-                        shown_unit = "EUR/NM"
-                    elif "EUR" in pick_metric_label:
-                        shown_value = f"{val:.0f}"
-                        shown_unit = "EUR"
-                    else:
-                        shown_value = f"{val:.3f}"
-
-    st.markdown("<div style='height: 26px'></div>", unsafe_allow_html=True)
-
-    if show_placeholder:
-        _show_result_card("", "")
-    else:
-        if is_saving_per_x:
-            v = _fmt_saving_eur(diff_total) if np.isfinite(diff_total) else "0,0"
-            _show_result_card(v, "EUR")
-        else:
-            _show_result_card(shown_value, shown_unit)
-
-    st.markdown("<div style='height: 30px'></div>", unsafe_allow_html=True)
-    _black_note(quick_caption)
-
-else:
-    c1, c2, c3, c4 = st.columns(4, gap="medium")
-    with c1:
-        in_fl = st.number_input("Aukštis (ft)", step=500.0, key="in_fl")
-    with c2:
-        in_wt = st.number_input("Masė (kg)", step=500.0, key="in_wt")
-    with c3:
-        in_isa = st.number_input("ISA nuokrypis (°C)", step=1.0, key="in_isa")
-    with c4:
-        in_wind = st.number_input("Vėjo dedamoji skrydžio kryptimi (kt)", step=1.0, key="in_wind")
-
-    pick_metric_label = st.selectbox("Pasirinkite rodiklį", list(metric_map.keys()), index=0, key="in_metric")
-    col_key = metric_map[pick_metric_label]
-    show_placeholder = (col_key == "__NONE__")
-
-    distance_nm = float(st.session_state.get("in_dist_nm", 0.0))
-
-    if not show_placeholder and col_key == "__SAVING_PER_X__":
-        distance_nm = st.number_input(
-            "Atstumas (NM)",
-            min_value=0.0,
-            step=10.0,
-            key="in_dist_nm",
-        )
-
-    st.markdown("<div style='height: 6px'></div>", unsafe_allow_html=True)
-    btn = st.button("Skaičiuoti", type="primary")
-
-    if btn and not show_placeholder:
-        try:
-            msg = _validate_interp_inputs(summary_tbl, fl_ft=float(in_fl), weight_kg=float(in_wt), isa_c=float(in_isa), wind_kt=float(in_wind))
-            if msg:
-                raise ValueError(msg)
-
-            res_in: InterpQuickResult = compute_quick_metrics_interpolated(
-                summary_tbl,
-                fl_ft=float(in_fl),
-                weight_kg=float(in_wt),
-                isa_c=float(in_isa),
-                wind_kt=float(in_wind),
-            )
-
-            fuel_longform_tbl_ready = _ensure_fuel_longform_tbl(scenarios)
-
-            be_time_input = _input_time_breakpoint_interpolated(
-                longform_tbl,
-                summary_tbl,
-                fl_ft=float(in_fl),
-                wt_kg=float(in_wt),
-                isa_c=float(in_isa),
-                wind_kt=float(in_wind),
-                cfg=cfg,
-            )
-            be_fuel_input = _input_fuel_breakpoint_interpolated(
-                fuel_longform_tbl_ready,
-                summary_tbl,
-                fl_ft=float(in_fl),
-                wt_kg=float(in_wt),
-                isa_c=float(in_isa),
-                wind_kt=float(in_wind),
-                cfg=cfg,
-            )
-
-            st.session_state["in_last_res"] = res_in
-            st.session_state["in_last_be_time"] = float(be_time_input)
-            st.session_state["in_last_be_fuel"] = float(be_fuel_input)
-            st.session_state["in_last_saving_per_nm"] = float(res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm)
-            st.session_state["in_err"] = ""
-
-        except Exception as e:
-            st.session_state["in_last_res"] = None
-            st.session_state["in_last_be_time"] = float("nan")
-            st.session_state["in_last_be_fuel"] = float("nan")
-            st.session_state["in_err"] = _normalize_ui_error(e)
-            st.session_state["in_last_saving_per_nm"] = float("nan")
-
-    err = str(st.session_state.get("in_err", "")).strip()
-    if err:
-        st.error(err)
-
-    shown_value = ""
-    shown_unit = ""
-    diff_total = float("nan")
-
-    if not show_placeholder:
-        res_in = st.session_state.get("in_last_res", None)
-        if isinstance(res_in, InterpQuickResult):
-            saving_per_nm = float(st.session_state.get("in_last_saving_per_nm", np.nan))
-
-            if col_key == "__ECSR_RANGE__":
-                shown_value = _fmt_ecsr_adaptive(
-                    res_in.ecsr_low_kt,
-                    res_in.ecsr_high_kt,
-                    res_in.v_notch_kt,
-                    res_in.v_ecsr_kt,
-                    saving_per_nm,
-                )
-                shown_unit = "kt" if shown_value else ""
-            elif col_key == "__BREAK_TIME__":
-                v = float(st.session_state.get("in_last_be_time", np.nan))
-                if np.isfinite(v) and (float(cfg.time_cost_min) - 1e-9 <= v <= float(cfg.time_cost_max) + 1e-9):
-                    shown_value = f"{int(round(v))}"
-                    shown_unit = "€/h"
-                else:
-                    shown_value = "Nėra lūžio taško"
-                    shown_unit = ""
-            elif col_key == "__BREAK_FUEL__":
-                v = float(st.session_state.get("in_last_be_fuel", np.nan))
-                if np.isfinite(v) and v <= float(fuel_ceiling) + 1e-12:
-                    shown_value = f"{v:.2f}"
-                    shown_unit = "€/kg"
-                else:
-                    shown_value = "Nėra lūžio taško"
-                    shown_unit = ""
-            elif col_key == "__SAVING_PER_X__":
-                dist = float(distance_nm)
-                docmin_nm = float(res_in.docmin_eur_per_nm)
-                docnotch_nm = float(res_in.docnotch_eur_per_nm)
-
-                if np.isfinite(docmin_nm) and np.isfinite(docnotch_nm) and np.isfinite(dist):
-                    diff_total = max(0.0, float((docnotch_nm - docmin_nm) * dist))
-                else:
-                    diff_total = float("nan")
-            else:
-                if col_key == "V_ECSR_kt":
-                    if np.isfinite(res_in.v_ecsr_kt) and np.isfinite(res_in.v_notch_kt):
-                        shown_value, _shown_notch = _fmt_speed_pair_adaptive(
-                            float(res_in.v_ecsr_kt),
-                            float(res_in.v_notch_kt),
-                            saving_per_nm,
-                        )
-                        shown_unit = "kt" if shown_value else ""
-
-                else:
-                    mapping = {
-                        "V_notch_kt": (res_in.v_notch_kt, "kt"),
-                        "DOCmin_EurPerNM": (res_in.docmin_eur_per_nm, "EUR/NM"),
-                        "DOCnotch_EurPerNM": (res_in.docnotch_eur_per_nm, "EUR/NM"),
-                    }
-                    if col_key in mapping:
-                        val, unit = mapping[col_key]
-                        if np.isfinite(val):
-                            if col_key == "V_notch_kt":
-                                _shown_econ, shown_value = _fmt_speed_pair_adaptive(
-                                    float(res_in.v_ecsr_kt),
-                                    float(res_in.v_notch_kt),
-                                    saving_per_nm,
-                                )
-                            elif unit == "kt":
-                                shown_value = _fmt_speed_econ(float(val))
-                            elif unit == "EUR/NM":
-                                shown_value = f"{float(val):.3f}"
-                            elif unit == "EUR/h":
-                                shown_value = f"{float(val):.1f}"
+                            shown_unit = "kt" if shown_value else ""
+                        elif col_key == "V_notch_kt":
+                            sc_obj = _scenario_lookup(scenarios, str(pick_scn))
+                            if sc_obj is not None:
+                                try:
+                                    cur_sc = _cached_current_operating_point_result(
+                                        sc_obj,
+                                        float(cfg.fuel_price_eur_per_kg),
+                                        float(cfg.time_cost_operational),
+                                        cfg,
+                                    )
+                                    saving_nm = float(cur_sc["doc_notch_per_nm"] - cur_sc["doc_econ_raw_per_nm"])
+                                    _, shown_value = _fmt_speed_pair_from_raw(
+                                        v_econ_disp=float(cur_sc["v_econ"]),
+                                        v_econ_raw=float(cur_sc["v_econ_raw"]),
+                                        v_notch=float(cur_sc["v_notch"]),
+                                        saving_eur_per_nm=saving_nm,
+                                    )
+                                except Exception:
+                                    shown_value = _fmt_speed_notch(val)
                             else:
-                                shown_value = f"{float(val):g}"
-                            shown_unit = unit
-    st.markdown("<div style='height: 26px'></div>", unsafe_allow_html=True)
+                                shown_value = _fmt_speed_notch(val)
 
-    if show_placeholder:
-        _show_result_card("", "")
-    else:
-        if col_key == "__SAVING_PER_X__":
-            v = _fmt_saving_eur(diff_total) if np.isfinite(diff_total) else "0,0"
-            _show_result_card(v, "EUR")
+                            shown_unit = "kt" if shown_value else ""
+                        elif "EUR/h" in pick_metric_label:
+                            shown_value = f"{val:.1f}"
+                            shown_unit = "EUR/h"
+                        elif "€/h" in pick_metric_label:
+                            shown_value = f"{int(round(val))}"
+                            shown_unit = "€/h"
+                        elif "€/kg" in pick_metric_label:
+                            shown_value = f"{val:.2f}"
+                            shown_unit = "€/kg"
+                        elif "EUR/NM" in pick_metric_label:
+                            shown_value = f"{val:.3f}"
+                            shown_unit = "EUR/NM"
+                        elif "EUR" in pick_metric_label:
+                            shown_value = f"{val:.0f}"
+                            shown_unit = "EUR"
+                        else:
+                            shown_value = f"{val:.3f}"
+
+        st.markdown("<div style='height: 26px'></div>", unsafe_allow_html=True)
+
+        if show_placeholder:
+            _show_result_card("", "")
         else:
-            _show_result_card(shown_value, shown_unit)
+            if is_saving_per_x:
+                v = _fmt_saving_eur(diff_total) if np.isfinite(diff_total) else "0,0"
+                _show_result_card(v, "EUR")
+            else:
+                _show_result_card(shown_value, shown_unit)
+
+        st.markdown("<div style='height: 30px'></div>", unsafe_allow_html=True)
+        _black_note(quick_caption)
+
+    else:
+        c1, c2, c3, c4 = st.columns(4, gap="medium")
+        with c1:
+            in_fl = st.number_input("Aukštis (ft)", step=500.0, key="in_fl")
+        with c2:
+            in_wt = st.number_input("Masė (kg)", step=500.0, key="in_wt")
+        with c3:
+            in_isa = st.number_input("ISA nuokrypis (°C)", step=1.0, key="in_isa")
+        with c4:
+            in_wind = st.number_input("Vėjo dedamoji skrydžio kryptimi (kt)", step=1.0, key="in_wind")
+
+        pick_metric_label = st.selectbox("Pasirinkite rodiklį", list(metric_map.keys()), index=0, key="in_metric")
+        col_key = metric_map[pick_metric_label]
+        show_placeholder = (col_key == "__NONE__")
+
+        distance_nm = float(st.session_state.get("in_dist_nm", 0.0))
+
+        if not show_placeholder and col_key == "__SAVING_PER_X__":
+            distance_nm = st.number_input(
+                "Atstumas (NM)",
+                min_value=0.0,
+                step=10.0,
+                key="in_dist_nm",
+            )
+
+        st.markdown("<div style='height: 6px'></div>", unsafe_allow_html=True)
+        btn = st.button("Skaičiuoti", type="primary", key="quick_input_calc_btn")
+
+        if btn and not show_placeholder:
+            try:
+                msg = _validate_interp_inputs(summary_tbl, fl_ft=float(in_fl), weight_kg=float(in_wt), isa_c=float(in_isa), wind_kt=float(in_wind))
+                if msg:
+                    raise ValueError(msg)
+
+                res_in: InterpQuickResult = compute_quick_metrics_interpolated(
+                    summary_tbl,
+                    fl_ft=float(in_fl),
+                    weight_kg=float(in_wt),
+                    isa_c=float(in_isa),
+                    wind_kt=float(in_wind),
+                )
+
+                fuel_longform_tbl_ready = _ensure_fuel_longform_tbl(scenarios)
+
+                be_time_input = _input_time_breakpoint_interpolated(
+                    longform_tbl,
+                    summary_tbl,
+                    fl_ft=float(in_fl),
+                    wt_kg=float(in_wt),
+                    isa_c=float(in_isa),
+                    wind_kt=float(in_wind),
+                    cfg=cfg,
+                )
+                be_fuel_input = _input_fuel_breakpoint_interpolated(
+                    fuel_longform_tbl_ready,
+                    summary_tbl,
+                    fl_ft=float(in_fl),
+                    wt_kg=float(in_wt),
+                    isa_c=float(in_isa),
+                    wind_kt=float(in_wind),
+                    cfg=cfg,
+                )
+
+                st.session_state["in_last_res"] = res_in
+                st.session_state["in_last_be_time"] = float(be_time_input)
+                st.session_state["in_last_be_fuel"] = float(be_fuel_input)
+                st.session_state["in_last_saving_per_nm"] = float(res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm)
+                st.session_state["in_err"] = ""
+
+            except Exception as e:
+                st.session_state["in_last_res"] = None
+                st.session_state["in_last_be_time"] = float("nan")
+                st.session_state["in_last_be_fuel"] = float("nan")
+                st.session_state["in_err"] = _normalize_ui_error(e)
+                st.session_state["in_last_saving_per_nm"] = float("nan")
+
+        err = str(st.session_state.get("in_err", "")).strip()
+        if err:
+            st.error(err)
+
+        shown_value = ""
+        shown_unit = ""
+        diff_total = float("nan")
+
+        if not show_placeholder:
+            res_in = st.session_state.get("in_last_res", None)
+            if isinstance(res_in, InterpQuickResult):
+                saving_per_nm = float(st.session_state.get("in_last_saving_per_nm", np.nan))
+
+                if col_key == "__ECSR_RANGE__":
+                    shown_value = _fmt_ecsr_adaptive(
+                        res_in.ecsr_low_kt,
+                        res_in.ecsr_high_kt,
+                        res_in.v_notch_kt,
+                        res_in.v_ecsr_kt,
+                        saving_per_nm,
+                    )
+                    shown_unit = "kt" if shown_value else ""
+                elif col_key == "__BREAK_TIME__":
+                    v = float(st.session_state.get("in_last_be_time", np.nan))
+                    if np.isfinite(v) and (float(cfg.time_cost_min) - 1e-9 <= v <= float(cfg.time_cost_max) + 1e-9):
+                        shown_value = f"{int(round(v))}"
+                        shown_unit = "€/h"
+                    else:
+                        shown_value = "Nėra lūžio taško"
+                        shown_unit = ""
+                elif col_key == "__BREAK_FUEL__":
+                    v = float(st.session_state.get("in_last_be_fuel", np.nan))
+                    if np.isfinite(v) and v <= float(fuel_ceiling) + 1e-12:
+                        shown_value = f"{v:.2f}"
+                        shown_unit = "€/kg"
+                    else:
+                        shown_value = "Nėra lūžio taško"
+                        shown_unit = ""
+                elif col_key == "__SAVING_PER_X__":
+                    dist = float(distance_nm)
+                    docmin_nm = float(res_in.docmin_eur_per_nm)
+                    docnotch_nm = float(res_in.docnotch_eur_per_nm)
+
+                    if np.isfinite(docmin_nm) and np.isfinite(docnotch_nm) and np.isfinite(dist):
+                        diff_total = max(0.0, float((docnotch_nm - docmin_nm) * dist))
+                    else:
+                        diff_total = float("nan")
+                else:
+                    if col_key == "V_ECSR_kt":
+                        if np.isfinite(res_in.v_ecsr_kt) and np.isfinite(res_in.v_notch_kt):
+                            shown_value, _shown_notch = _fmt_speed_pair_adaptive(
+                                float(res_in.v_ecsr_kt),
+                                float(res_in.v_notch_kt),
+                                saving_per_nm,
+                            )
+                            shown_unit = "kt" if shown_value else ""
+
+                    else:
+                        mapping = {
+                            "V_notch_kt": (res_in.v_notch_kt, "kt"),
+                            "DOCmin_EurPerNM": (res_in.docmin_eur_per_nm, "EUR/NM"),
+                            "DOCnotch_EurPerNM": (res_in.docnotch_eur_per_nm, "EUR/NM"),
+                        }
+                        if col_key in mapping:
+                            val, unit = mapping[col_key]
+                            if np.isfinite(val):
+                                if col_key == "V_notch_kt":
+                                    _shown_econ, shown_value = _fmt_speed_pair_adaptive(
+                                        float(res_in.v_ecsr_kt),
+                                        float(res_in.v_notch_kt),
+                                        saving_per_nm,
+                                    )
+                                elif unit == "kt":
+                                    shown_value = _fmt_speed_econ(float(val))
+                                elif unit == "EUR/NM":
+                                    shown_value = f"{float(val):.3f}"
+                                elif unit == "EUR/h":
+                                    shown_value = f"{float(val):.1f}"
+                                else:
+                                    shown_value = f"{float(val):g}"
+                                shown_unit = unit
+        st.markdown("<div style='height: 26px'></div>", unsafe_allow_html=True)
+
+        if show_placeholder:
+            _show_result_card("", "")
+        else:
+            if col_key == "__SAVING_PER_X__":
+                v = _fmt_saving_eur(diff_total) if np.isfinite(diff_total) else "0,0"
+                _show_result_card(v, "EUR")
+            else:
+                _show_result_card(shown_value, shown_unit)
 
 
 def _bp_filter_ui_scenario(
@@ -4106,9 +4358,9 @@ for gid, meta in _BP_GRAPHS.items():
 st.divider()
 st.header("Ekonomiški scenarijai")
 
-econ_tbl = _build_economical_scenarios_table(summary_tbl, cfg, scenarios)
+econ_tbl = _get_cached_economic_table(summary_tbl, cfg, scenarios)
 if econ_tbl.empty:
-    st.info("Su pasirinktais parametrais, ekonomiškų scenarijų neegzistuoja (ECON ~= IASnotch).")
+    st.info("Su pasirinktais parametrais ekonomiškų scenarijų nerasta.")
 else:
     st.dataframe(econ_tbl, use_container_width=True)
 
@@ -4117,214 +4369,7 @@ st.header("Bendra rezultatų lentelė")
 
 # ------------------------- Bendra rezultatų lentelė (renamed + reordered) -------------------------
 
-display_tbl = summary_tbl.copy()
-
-# 1) Sort + scenario label
-display_tbl = display_tbl.sort_values(by="ScenarioName", key=lambda s: s.map(_scenario_sort_key)).reset_index(drop=True)
-display_tbl["_ScenarioName_raw"] = display_tbl["ScenarioName"]
-display_tbl["ScenarioName"] = display_tbl["ScenarioName"].map(_scenario_trial_label)
-
-# 2) Create ECSR interval column (IASlow–IAShigh)
-# 2) Create ECSR interval column (IASlow–IAShigh)
-
-ecsr_vals: List[str] = []
-
-for _, row in display_tbl.iterrows():
-    sc_obj = _scenario_lookup(scenarios, str(row.get("_ScenarioName_raw", "")))
-    if sc_obj is None:
-        ecsr_vals.append("")
-        continue
-
-    try:
-        cur_now = _cached_current_operating_point_result(
-            sc_obj,
-            float(cfg.fuel_price_eur_per_kg),
-            float(cfg.time_cost_operational),
-            cfg,
-        )
-
-        saving_nm = float(cur_now["doc_notch_per_nm"] - cur_now["doc_econ_raw_per_nm"])
-
-        ecsr_txt = _fmt_ecsr_from_raw(
-            lo=float(pd.to_numeric(row.get("ECSR_low_kt", np.nan), errors="coerce")),
-            hi=float(pd.to_numeric(row.get("ECSR_high_kt", np.nan), errors="coerce")),
-            v_econ_disp=float(cur_now["v_econ"]),
-            v_econ_raw=float(cur_now["v_econ_raw"]),
-            v_notch=float(cur_now["v_notch"]),
-            saving_eur_per_nm=saving_nm,
-        )
-        ecsr_vals.append(ecsr_txt)
-    except Exception:
-        ecsr_vals.append("")
-
-display_tbl["ECSR, kt"] = ecsr_vals
-
-# 3) Add UI-friendly break-even strings
-display_tbl["Laiko sąnaudų lūžio taškas, eur/h"] = _format_break_even_for_app_time(
-    summary_tbl=display_tbl,
-    sweep_min=float(cfg.time_cost_min),
-    sweep_max=float(cfg.time_cost_max),
-).to_list()
-
-display_tbl["Degalų sąnaudų lūžio taškas, eur/kg"] = _format_break_even_for_app_fuel(
-    summary_tbl=display_tbl,
-    ceiling=fuel_ceiling,
-).to_list()
-
-# 4) Rename columns
-rename_map = {
-    "ScenarioName": "Bandymas",
-
-    "ZP_ft": "Aukštis, ft",
-    "WEIGHT_kg": "Masė, kg",
-    "ISA_C": "ISA, °C",
-    "WIND_kt": "Vėjo komponentė, kt",
-
-    "FuelPrice_EurPerKg": "Degalų kaina, eur/kg",
-    "TIME_COST_Operational_EurPerHr": "Laiko sąnaudos, eur/h",
-
-    "V_notch_kt": "IASnotch, kt",
-    "V_ECSR_kt": "ECON, kt",
-    "ECSR_low_kt": "IASlow, kt",
-    "ECSR_high_kt": "IAShigh, kt",
-
-    "DOCmin_EurPerNM": "DOCmin, eur/nm",
-    "DOCnotch_EurPerNM": "DOCnotch, eur/nm",
-}
-
-# Rename distance DOC columns (DOCmin_100NM_EUR -> DOCmin_100nm, eur)
-for d in cfg.distances_nm:
-    rename_map[f"DOCmin_{d}NM_EUR"] = f"DOCmin_{d}nm, eur"
-    rename_map[f"DOCnotch_{d}NM_EUR"] = f"DOCnotch_{d}nm, eur"
-
-display_tbl = display_tbl.rename(columns=rename_map)
-
-for col in [
-    "Aukštis, ft",
-    "Masė, kg",
-]:
-    if col in display_tbl.columns:
-        vals = pd.to_numeric(display_tbl[col], errors="coerce")
-        display_tbl[col] = vals.map(lambda v: f"{int(round(v))}" if np.isfinite(v) else "")
-
-if "IASnotch, kt" in display_tbl.columns:
-    notch_vals: List[str] = []
-
-    for _, row in display_tbl.iterrows():
-        sc_obj = _scenario_lookup(scenarios, str(row.get("_ScenarioName_raw", "")))
-        if sc_obj is None:
-            notch_vals.append("")
-            continue
-
-        try:
-            cur_now = _cached_current_operating_point_result(
-                sc_obj,
-                float(cfg.fuel_price_eur_per_kg),
-                float(cfg.time_cost_operational),
-                cfg,
-            )
-
-            saving_nm = float(cur_now["doc_notch_per_nm"] - cur_now["doc_econ_raw_per_nm"])
-            _, notch_txt = _fmt_speed_pair_from_raw(
-                v_econ_disp=float(cur_now["v_econ"]),
-                v_econ_raw=float(cur_now["v_econ_raw"]),
-                v_notch=float(cur_now["v_notch"]),
-                saving_eur_per_nm=saving_nm,
-            )
-            notch_vals.append(notch_txt)
-        except Exception:
-            notch_vals.append("")
-
-    display_tbl["IASnotch, kt"] = notch_vals
-
-if "ECON, kt" in display_tbl.columns and "IASnotch, kt" in display_tbl.columns:
-    econ_vals: List[str] = []
-
-    for _, row in display_tbl.iterrows():
-        sc_obj = _scenario_lookup(scenarios, str(row.get("_ScenarioName_raw", "")))
-        if sc_obj is None:
-            econ_vals.append("")
-            continue
-
-        try:
-            cur_now = _cached_current_operating_point_result(
-                sc_obj,
-                float(cfg.fuel_price_eur_per_kg),
-                float(cfg.time_cost_operational),
-                cfg,
-            )
-
-            saving_nm = float(cur_now["doc_notch_per_nm"] - cur_now["doc_econ_raw_per_nm"])
-            econ_txt, _ = _fmt_speed_pair_from_raw(
-                v_econ_disp=float(cur_now["v_econ"]),
-                v_econ_raw=float(cur_now["v_econ_raw"]),
-                v_notch=float(cur_now["v_notch"]),
-                saving_eur_per_nm=saving_nm,
-            )
-            econ_vals.append(econ_txt)
-        except Exception:
-            econ_vals.append("")
-
-    display_tbl["ECON, kt"] = econ_vals
-
-if "IASlow, kt" in display_tbl.columns:
-    vals = pd.to_numeric(display_tbl["IASlow, kt"], errors="coerce")
-    display_tbl["IASlow, kt"] = vals.map(lambda v: _fmt_speed_econ(v))
-
-if "IAShigh, kt" in display_tbl.columns:
-    vals = pd.to_numeric(display_tbl["IAShigh, kt"], errors="coerce")
-    display_tbl["IAShigh, kt"] = vals.map(lambda v: _fmt_speed_notch(v))
-
-display_tbl = display_tbl.drop(
-    columns=["BreakEven_TIME_COST_EurPerHr", "BreakEven_FUEL_PRICE_EurPerKg"],
-    errors="ignore",
-)
-
-# 6) Reorder columns: meta -> costs -> speeds/ECSR -> break-evens -> DOC per NM -> DOC per distance
-ordered_cols = [
-    "Bandymas",
-    "Aukštis, ft",
-    "Masė, kg",
-    "ISA, °C",
-    "Vėjo komponentė, kt",
-
-    "Degalų kaina, eur/kg",
-    "Laiko sąnaudos, eur/h",
-
-    "IASnotch, kt",
-    "ECON, kt",
-    "IASlow, kt",
-    "IAShigh, kt",
-    "ECSR, kt",
-
-    "Laiko sąnaudų lūžio taškas, eur/h",
-    "Degalų sąnaudų lūžio taškas, eur/kg",
-
-    "DOCmin, eur/nm",
-    "DOCnotch, eur/nm",
-]
-
-# Add distance columns next
-for d in cfg.distances_nm:
-    if int(d) == 100:
-        ordered_cols.append(f"DOCmin_{d}nm, eur")
-        ordered_cols.append(f"DOCnotch_{d}nm, eur")
-
-# Keep only columns that exist (safe if config changes)
-
-display_tbl = display_tbl.drop(
-    columns=["DOCmin_EurPerHr", "DOCnotch_EurPerHr", "DOCmin, eur/h", "DOCnotch, eur/h"],
-    errors="ignore",
-)
-
-ordered_cols = [c for c in ordered_cols if c in display_tbl.columns]
-
-# Append any remaining columns at end (optional: keep nothing extra)
-remaining = [c for c in display_tbl.columns if c not in ordered_cols]
-display_tbl = display_tbl[ordered_cols + remaining]
-
-display_tbl = display_tbl.drop(columns=["_ScenarioName_raw"], errors="ignore")
-
+display_tbl = _get_cached_display_table(summary_tbl, cfg, scenarios, fuel_ceiling)
 st.dataframe(display_tbl, use_container_width=True)
 
 col_spacer, col_btn, col_gloss = st.columns([6, 2, 2], gap="large")

@@ -1862,13 +1862,7 @@ def current_operating_point_result(
     gs_econ = float(1.0 / time_itp(np.array([v_econ], dtype=float))[0])
     gs_notch = float(1.0 / time_itp(np.array([v_notch], dtype=float))[0])
 
-    speed_ok = bool(
-        _display_speed_gap_ok(
-            np.array([v_notch], dtype=float),
-            np.array([v_econ], dtype=float),
-            float(cfg.breakpoint_speed_tol_kt),
-        )[0]
-    )
+    speed_ok = bool(float(v_notch) > float(v_econ_raw) + 1e-6)
     econ_ok = bool(
         _doc_advantage_ok(
             np.array([doc_notch], dtype=float),

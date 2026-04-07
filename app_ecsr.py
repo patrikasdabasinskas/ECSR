@@ -405,11 +405,11 @@ def _scenario_docmin_econ_kt(
     sc: Dict[str, Any],
     cfg: Config,
 ) -> float:
-    cur = current_operating_point_result(
+    cur = _cached_current_operating_point_result(
         sc,
-        fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
-        time_cost_eur_per_hr=float(cfg.time_cost_operational),
-        cfg=cfg,
+        float(cfg.fuel_price_eur_per_kg),
+        float(cfg.time_cost_operational),
+        cfg,
     )
     return float(cur["v_econ"])
 
@@ -647,11 +647,11 @@ def _build_economical_scenarios_table(
             continue
 
         try:
-            cur_now = current_operating_point_result(
+            cur_now = _cached_current_operating_point_result(
                 sc_obj,
-                fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
-                time_cost_eur_per_hr=float(cfg.time_cost_operational),
-                cfg=cfg,
+                float(cfg.fuel_price_eur_per_kg),
+                float(cfg.time_cost_operational),
+                cfg,
             )
         except Exception:
             continue
@@ -1409,6 +1409,20 @@ def _plot_doc_vs_ias_input_5d(
     ax.legend(loc="best")
     fig.tight_layout()
     return fig
+
+@st.cache_data(show_spinner=False)
+def _cached_current_operating_point_result(
+    sc: Dict[str, Any],
+    fuel_price_eur_per_kg: float,
+    time_cost_eur_per_hr: float,
+    cfg: Config,
+) -> Dict[str, Any]:
+    return current_operating_point_result(
+        sc,
+        fuel_price_eur_per_kg=float(fuel_price_eur_per_kg),
+        time_cost_eur_per_hr=float(time_cost_eur_per_hr),
+        cfg=cfg,
+    )
 
 @st.cache_data(show_spinner=False)
 def _cached_econ_vs_time_cost_interpolated(
@@ -2618,6 +2632,57 @@ def _build_interpolated_sweep_table(
 
     return pd.DataFrame(rows)
 
+def _build_interpolated_doc_sweep_table(
+    summary_tbl: pd.DataFrame,
+    *,
+    x_col: str,
+    fixed: Dict[str, Optional[float]],
+    include_x_value: Optional[float] = None,
+) -> pd.DataFrame:
+    if summary_tbl is None or summary_tbl.empty:
+        return pd.DataFrame()
+
+    x_vals = _unique_sorted(summary_tbl[x_col])
+    if include_x_value is not None and np.isfinite(float(include_x_value)):
+        x_vals = sorted(set([*x_vals, float(include_x_value)]))
+
+    if not x_vals:
+        return pd.DataFrame()
+
+    prebuilt = _ensure_summary_prebuilt_4d(summary_tbl)
+    rows: List[Dict[str, float]] = []
+
+    for x_val in x_vals:
+        zp_ft = float(x_val) if x_col == "ZP_ft" else float(fixed["ZP_ft"])
+        weight_kg = float(x_val) if x_col == "WEIGHT_kg" else float(fixed["WEIGHT_kg"])
+        isa_c = float(x_val) if x_col == "ISA_C" else float(fixed["ISA_C"])
+        wind_kt = float(x_val) if x_col == "WIND_kt" else float(fixed["WIND_kt"])
+
+        try:
+            qres = compute_quick_metrics_interpolated_from_prebuilt(
+                summary_tbl,
+                prebuilt,
+                fl_ft=zp_ft,
+                weight_kg=weight_kg,
+                isa_c=isa_c,
+                wind_kt=wind_kt,
+            )
+        except Exception:
+            continue
+
+        rows.append(
+            {
+                "ZP_ft": zp_ft,
+                "WEIGHT_kg": weight_kg,
+                "ISA_C": isa_c,
+                "WIND_kt": wind_kt,
+                "DOCmin_EurPerNM": float(qres.docmin_eur_per_nm),
+                "DOCnotch_EurPerNM": float(qres.docnotch_eur_per_nm),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
 # ------------------------- Break-even formatting (UI) -------------------------
 
 
@@ -3112,11 +3177,11 @@ if mode == "Scenarijus":
                 sc_obj = _scenario_lookup(scenarios, str(pick_scn))
                 if sc_obj is not None:
                     try:
-                        cur_sc = current_operating_point_result(
+                        cur_sc = _cached_current_operating_point_result(
                             sc_obj,
-                            fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
-                            time_cost_eur_per_hr=float(cfg.time_cost_operational),
-                            cfg=cfg,
+                            float(cfg.fuel_price_eur_per_kg),
+                            float(cfg.time_cost_operational),
+                            cfg,
                         )
                         saving_nm = float(cur_sc["doc_notch_per_nm"] - cur_sc["doc_econ_raw_per_nm"])
                         shown_value = _fmt_ecsr_from_raw(
@@ -3168,11 +3233,11 @@ if mode == "Scenarijus":
                 sc_obj = _scenario_lookup(scenarios, str(pick_scn))
                 if sc_obj is not None:
                     try:
-                        cur_sc = current_operating_point_result(
+                        cur_sc = _cached_current_operating_point_result(
                             sc_obj,
-                            fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
-                            time_cost_eur_per_hr=float(cfg.time_cost_operational),
-                            cfg=cfg,
+                            float(cfg.fuel_price_eur_per_kg),
+                            float(cfg.time_cost_operational),
+                            cfg,
                         )
                         v_min_per_nm = float(cur_sc["doc_econ_per_nm"])
                         v_notch_per_nm = float(cur_sc["doc_notch_per_nm"])
@@ -3192,11 +3257,11 @@ if mode == "Scenarijus":
                         sc_obj = _scenario_lookup(scenarios, str(pick_scn))
                         if sc_obj is not None:
                             try:
-                                cur_sc = current_operating_point_result(
+                                cur_sc = _cached_current_operating_point_result(
                                     sc_obj,
-                                    fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
-                                    time_cost_eur_per_hr=float(cfg.time_cost_operational),
-                                    cfg=cfg,
+                                    float(cfg.fuel_price_eur_per_kg),
+                                    float(cfg.time_cost_operational),
+                                    cfg,
                                 )
                                 saving_nm = float(cur_sc["doc_notch_per_nm"] - cur_sc["doc_econ_raw_per_nm"])
                                 shown_value, _ = _fmt_speed_pair_from_raw(
@@ -3219,11 +3284,11 @@ if mode == "Scenarijus":
                         sc_obj = _scenario_lookup(scenarios, str(pick_scn))
                         if sc_obj is not None:
                             try:
-                                cur_sc = current_operating_point_result(
+                                cur_sc = _cached_current_operating_point_result(
                                     sc_obj,
-                                    fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
-                                    time_cost_eur_per_hr=float(cfg.time_cost_operational),
-                                    cfg=cfg,
+                                    float(cfg.fuel_price_eur_per_kg),
+                                    float(cfg.time_cost_operational),
+                                    cfg,
                                 )
                                 saving_nm = float(cur_sc["doc_notch_per_nm"] - cur_sc["doc_econ_raw_per_nm"])
                                 _, shown_value = _fmt_speed_pair_from_raw(
@@ -3538,7 +3603,6 @@ if mode == "Scenarijus":
                     st.session_state["fig_g1"] = None
                     st.session_state["cap_g1"] = ""
                     st.session_state["err_g1"] = _normalize_ui_error(e)
-                st.rerun()
         if st.session_state.get("err_g1"):
             st.error(st.session_state["err_g1"])
         if st.session_state["fig_g1"] is not None:
@@ -3563,7 +3627,7 @@ if mode == "Scenarijus":
         err_key = f"err_{gid}"
 
         with st.expander(exp_title, expanded=st.session_state.get(open_key, False)):
-            fixed = _bp_filter_ui_scenario(gid, summary_tbl0=summary_tbl, allow_unfixed=False)
+            fixed = _bp_filter_ui_scenario(gid, summary_tbl0=summary_tbl, allow_unfixed=True)
             filtered_local = _filter_summary_by_constants(
                 summary_tbl,
                 zp_ft=fixed.get("ZP_ft"),
@@ -3613,13 +3677,16 @@ if mode == "Scenarijus":
                         scenarios=scenarios,
                         cfg=cfg,
                     )
-                    st.session_state[cap_key] = _conditions_sentence_from_filters(fixed, x_col=x_col, grouped_by=group_col)
+                    st.session_state[cap_key] = _conditions_sentence_from_filters(
+                        fixed,
+                        x_col=x_col,
+                        grouped_by=group_col,
+                    )
                     st.session_state[err_key] = ""
                 except Exception as e:
                     st.session_state[fig_key] = None
                     st.session_state[cap_key] = ""
                     st.session_state[err_key] = _normalize_ui_error(e)
-                st.rerun()
 
             if st.session_state.get(err_key):
                 st.error(st.session_state[err_key])
@@ -3644,7 +3711,6 @@ if mode == "Scenarijus":
                     st.session_state["fig_g2"] = None
                     st.session_state["cap_g2"] = ""
                     st.session_state["err_g2"] = _normalize_ui_error(e)
-                st.rerun()
         if st.session_state.get("err_g2"):
             st.error(st.session_state["err_g2"])
         if st.session_state["fig_g2"] is not None:
@@ -3668,7 +3734,6 @@ if mode == "Scenarijus":
                     st.session_state["fig_g3"] = None
                     st.session_state["cap_g3"] = ""
                     st.session_state["err_g3"] = _normalize_ui_error(e)
-                st.rerun()
         if st.session_state.get("err_g3"):
             st.error(st.session_state["err_g3"])
         if st.session_state["fig_g3"] is not None:
@@ -3705,7 +3770,6 @@ else:
                 except Exception as e:
                     st.session_state["fig_g1"] = None
                     st.session_state["err_g1"] = _normalize_ui_error(e)
-                st.rerun()
         if st.session_state.get("err_g1"):
             st.error(st.session_state["err_g1"])
         if st.session_state["fig_g1"] is not None:
@@ -3731,42 +3795,6 @@ else:
         with st.expander(exp_title, expanded=st.session_state.get(open_key, False)):
             fixed_in = _bp_filter_ui_input(gid)
 
-            ok = True
-            group_col = None
-            msg = ""
-
-            try:
-                current_x_value = {
-                    "ZP_ft": float(st.session_state.get("inputmode_" + gid + "_in_ZP_ft", st.session_state.get("in_fl", 0.0))),
-                    "WEIGHT_kg": float(st.session_state.get("inputmode_" + gid + "_in_WEIGHT_kg", st.session_state.get("in_wt", 0.0))),
-                    "ISA_C": float(st.session_state.get("inputmode_" + gid + "_in_ISA_C", st.session_state.get("in_isa", 0.0))),
-                    "WIND_kt": float(st.session_state.get("inputmode_" + gid + "_in_WIND_kt", st.session_state.get("in_wind", 0.0))),
-                }[x_col]
-
-                filtered_local = _build_interpolated_sweep_table(
-                    summary_tbl,
-                    longform_tbl,
-                    scenarios,
-                    x_col=x_col,
-                    fixed=fixed_in,
-                    include_x_value=current_x_value,
-                    cfg=cfg,
-                )
-
-                if filtered_local.empty:
-                    raise ValueError("Nepakanka duomenų interpoliuotam grafikui sudaryti.")
-
-                ok = True
-                group_col = None
-                msg = ""
-            except Exception as e:
-                ok = False
-                msg = _normalize_ui_error(e)
-                filtered_local = summary_tbl.iloc[0:0].copy()
-
-            if not ok and msg:
-                st.error(msg)
-
             cc1, cc2 = st.columns([2.2, 1.0], gap="small")
             with cc1:
                 use_distance = st.checkbox(
@@ -3785,19 +3813,35 @@ else:
                 run_graph = st.button(
                     "Generuoti grafiką",
                     key=f"btn_{gid}_doc_input",
-                    disabled=not ok,
                     use_container_width=True,
                 )
 
             if run_graph:
                 st.session_state[open_key] = True
                 try:
+                    current_x_value = {
+                        "ZP_ft": float(st.session_state.get("inputmode_" + gid + "_in_ZP_ft", st.session_state.get("in_fl", 0.0))),
+                        "WEIGHT_kg": float(st.session_state.get("inputmode_" + gid + "_in_WEIGHT_kg", st.session_state.get("in_wt", 0.0))),
+                        "ISA_C": float(st.session_state.get("inputmode_" + gid + "_in_ISA_C", st.session_state.get("in_isa", 0.0))),
+                        "WIND_kt": float(st.session_state.get("inputmode_" + gid + "_in_WIND_kt", st.session_state.get("in_wind", 0.0))),
+                    }[x_col]
+
+                    filtered_local = _build_interpolated_doc_sweep_table(
+                        summary_tbl,
+                        x_col=x_col,
+                        fixed=fixed_in,
+                        include_x_value=current_x_value,
+                    )
+
+                    if filtered_local.empty:
+                        raise ValueError("Nepakanka duomenų interpoliuotam grafikui sudaryti.")
+
                     st.session_state[fig_key] = _plot_saving_vs_grouped(
                         filtered_local,
                         x_col=x_col,
                         title=f"Sutaupymo priklausomybė nuo {x_name_lt}",
                         x_label=x_label,
-                        group_col=group_col,
+                        group_col=None,
                         show_point_labels=True,
                         distance_nm=float(saving_distance_nm),
                         scenarios=scenarios,
@@ -3813,7 +3857,6 @@ else:
                     st.session_state[fig_key] = None
                     st.session_state[cap_key] = ""
                     st.session_state[err_key] = _normalize_ui_error(e)
-                st.rerun()
 
             if st.session_state.get(err_key):
                 st.error(st.session_state[err_key])
@@ -3850,7 +3893,6 @@ else:
                 except Exception as e:
                     st.session_state["fig_g2"] = None
                     st.session_state["err_g2"] = _normalize_ui_error(e)
-                st.rerun()
         if st.session_state.get("err_g2"):
             st.error(st.session_state["err_g2"])
         if st.session_state["fig_g2"] is not None:
@@ -3886,7 +3928,6 @@ else:
                 except Exception as e:
                     st.session_state["fig_g3"] = None
                     st.session_state["err_g3"] = _normalize_ui_error(e)
-                st.rerun()
         if st.session_state.get("err_g3"):
             st.error(st.session_state["err_g3"])
         if st.session_state["fig_g3"] is not None:
@@ -3966,7 +4007,6 @@ for gid, meta in _BP_GRAPHS.items():
                     st.session_state[fig_key_fuel] = None
                     st.session_state[cap_key] = ""
                     st.session_state[err_key] = _normalize_ui_error(e)
-                st.rerun()
 
             if st.session_state.get(err_key):
                 st.error(st.session_state[err_key])
@@ -3980,69 +4020,54 @@ for gid, meta in _BP_GRAPHS.items():
         else:
             fixed_in = _bp_filter_ui_input(gid)
 
-            ok = True
-            group_col = None
-            msg = ""
-
-            try:
-                include_x_value = None
-
-                main_input_defaults = {
-                    "ZP_ft": st.session_state.get("in_fl", None),
-                    "WEIGHT_kg": st.session_state.get("in_wt", None),
-                    "ISA_C": st.session_state.get("in_isa", None),
-                    "WIND_kt": st.session_state.get("in_wind", None),
-                }
-
-                candidate_x = main_input_defaults.get(x_col, None)
-
-                if candidate_x is not None:
-                    candidate_x = float(candidate_x)
-                    bounds = _numeric_bounds(summary_tbl, x_col)
-                    if bounds is not None:
-                        lo, hi = bounds
-                        if np.isfinite(candidate_x) and lo <= candidate_x <= hi:
-                            include_x_value = candidate_x
-
-                filtered_local = _build_interpolated_sweep_table(
-                    summary_tbl,
-                    longform_tbl,
-                    scenarios,
-                    x_col=x_col,
-                    fixed=fixed_in,
-                    include_x_value=include_x_value,
-                    cfg=cfg,
-                )
-
-                if filtered_local.empty:
-                    raise ValueError("Nepakanka duomenų interpoliuotam grafikui sudaryti.")
-
-                ok = True
-                group_col = None
-                msg = ""
-            except Exception as e:
-                ok = False
-                msg = _normalize_ui_error(e)
-                filtered_local = summary_tbl.iloc[0:0].copy()
-
-            if not ok and msg:
-                st.error(msg)
-
-            if st.button("Generuoti grafikus", key=f"btn_{gid}_input", disabled=not ok):
+            if st.button("Generuoti grafikus", key=f"btn_{gid}_input", use_container_width=True):
                 st.session_state[open_key] = True
                 try:
+                    include_x_value = None
+
+                    main_input_defaults = {
+                        "ZP_ft": st.session_state.get("in_fl", None),
+                        "WEIGHT_kg": st.session_state.get("in_wt", None),
+                        "ISA_C": st.session_state.get("in_isa", None),
+                        "WIND_kt": st.session_state.get("in_wind", None),
+                    }
+
+                    candidate_x = main_input_defaults.get(x_col, None)
+
+                    if candidate_x is not None:
+                        candidate_x = float(candidate_x)
+                        bounds = _numeric_bounds(summary_tbl, x_col)
+                        if bounds is not None:
+                            lo, hi = bounds
+                            if np.isfinite(candidate_x) and lo <= candidate_x <= hi:
+                                include_x_value = candidate_x
+
+                    filtered_local = _build_interpolated_sweep_table(
+                        summary_tbl,
+                        longform_tbl,
+                        scenarios,
+                        x_col=x_col,
+                        fixed=fixed_in,
+                        include_x_value=include_x_value,
+                        cfg=cfg,
+                    )
+
+                    if filtered_local.empty:
+                        raise ValueError("Nepakanka duomenų interpoliuotam grafikui sudaryti.")
+
                     st.session_state[fig_key_time] = _plot_breakpoint_vs_grouped(
-                    filtered_local,
-                    y_col="BreakEven_TIME_COST_EurPerHr",
-                    y_label="Laiko sąnaudos (€/h)",
-                    x_col=x_col,
-                    title=f"Laiko lūžio taško priklausomybė nuo {x_name_lt}",
-                    x_label=x_label,
-                    group_col=group_col,
-                    fmt="{:.0f} €/h",
-                    show_point_labels=True,
-                    min_label_delta=40.0,
-                )
+                        filtered_local,
+                        y_col="BreakEven_TIME_COST_EurPerHr",
+                        y_label="Laiko sąnaudos (€/h)",
+                        x_col=x_col,
+                        title=f"Laiko lūžio taško priklausomybė nuo {x_name_lt}",
+                        x_label=x_label,
+                        group_col=None,
+                        fmt="{:.0f} €/h",
+                        show_point_labels=True,
+                        min_label_delta=40.0,
+                    )
+
                     st.session_state[fig_key_fuel] = _plot_breakpoint_vs_grouped(
                         filtered_local,
                         y_col="BreakEven_FUEL_PRICE_EurPerKg",
@@ -4050,7 +4075,7 @@ for gid, meta in _BP_GRAPHS.items():
                         x_col=x_col,
                         title=f"Degalų lūžio taško priklausomybė nuo {x_name_lt}",
                         x_label=x_label,
-                        group_col=group_col,
+                        group_col=None,
                         fmt="{:.2f} €/kg",
                         show_point_labels=True,
                         min_label_delta=0.05,
@@ -4067,7 +4092,6 @@ for gid, meta in _BP_GRAPHS.items():
                     st.session_state[fig_key_fuel] = None
                     st.session_state[cap_key] = ""
                     st.session_state[err_key] = _normalize_ui_error(e)
-                st.rerun()
 
             if st.session_state.get(err_key):
                 st.error(st.session_state[err_key])
@@ -4112,11 +4136,11 @@ for _, row in display_tbl.iterrows():
         continue
 
     try:
-        cur_now = current_operating_point_result(
+        cur_now = _cached_current_operating_point_result(
             sc_obj,
-            fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
-            time_cost_eur_per_hr=float(cfg.time_cost_operational),
-            cfg=cfg,
+            float(cfg.fuel_price_eur_per_kg),
+            float(cfg.time_cost_operational),
+            cfg,
         )
 
         saving_nm = float(cur_now["doc_notch_per_nm"] - cur_now["doc_econ_raw_per_nm"])
@@ -4193,11 +4217,11 @@ if "IASnotch, kt" in display_tbl.columns:
             continue
 
         try:
-            cur_now = current_operating_point_result(
+            cur_now = _cached_current_operating_point_result(
                 sc_obj,
-                fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
-                time_cost_eur_per_hr=float(cfg.time_cost_operational),
-                cfg=cfg,
+                float(cfg.fuel_price_eur_per_kg),
+                float(cfg.time_cost_operational),
+                cfg,
             )
 
             saving_nm = float(cur_now["doc_notch_per_nm"] - cur_now["doc_econ_raw_per_nm"])
@@ -4223,11 +4247,11 @@ if "ECON, kt" in display_tbl.columns and "IASnotch, kt" in display_tbl.columns:
             continue
 
         try:
-            cur_now = current_operating_point_result(
+            cur_now = _cached_current_operating_point_result(
                 sc_obj,
-                fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
-                time_cost_eur_per_hr=float(cfg.time_cost_operational),
-                cfg=cfg,
+                float(cfg.fuel_price_eur_per_kg),
+                float(cfg.time_cost_operational),
+                cfg,
             )
 
             saving_nm = float(cur_now["doc_notch_per_nm"] - cur_now["doc_econ_raw_per_nm"])

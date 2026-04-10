@@ -694,7 +694,14 @@ def _build_economical_scenarios_table(
         doc_notch_per_nm = float(cur_now["doc_notch_per_nm"])
         saving_nm = doc_notch_per_nm - doc_econ_raw_per_nm
 
-        if not bool(cur_now.get("econ_exists", 0.0)):
+        raw_speed_ok = float(v_notch) > float(v_econ_raw) + 1e-6
+        saving_ok = np.isfinite(saving_nm) and saving_nm > 0.0
+
+        money_ok = True
+        if str(cfg.breakpoint_saving_mode).strip().lower() == "per_nm":
+            money_ok = saving_nm >= float(cfg.breakpoint_saving_eur_per_nm)
+
+        if not (raw_speed_ok and saving_ok and money_ok):
             continue
 
         econ_txt, notch_txt = _fmt_speed_pair_from_raw(

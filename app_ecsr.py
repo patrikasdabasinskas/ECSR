@@ -755,13 +755,13 @@ def _build_economical_scenarios_table(
         "ΔV (kt)": delta_v_list,
         "DOC ECON (EUR/NM)": doc_econ_nm_list,
         "DOC IASnotch (EUR/NM)": doc_notch_nm_list,
-        "DOC skirtumas (EUR/NM)": doc_diff_nm_list,
+        "Sutaupymas (EUR/NM)": doc_diff_nm_list,
     }
 
     for d in dist_cols:
         out_data[f"DOC ECON {d}NM (EUR)"] = dist_doc_econ[d]
         out_data[f"DOC IASnotch {d}NM (EUR)"] = dist_doc_notch[d]
-        out_data[f"DOC skirtumas {d}NM (EUR)"] = dist_doc_diff[d]
+        out_data[f"Sutaupymas {d}NM (EUR)"] = dist_doc_diff[d]
 
     return pd.DataFrame(out_data)
 

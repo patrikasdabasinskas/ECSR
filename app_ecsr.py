@@ -2596,7 +2596,6 @@ def _plot_saving_vs_grouped(
                 marker="o",
                 markersize=4.8,
                 linestyle="-",
-                color="darkred",
                 label=_group_label(used_group, float(grp_val)),
             )
 

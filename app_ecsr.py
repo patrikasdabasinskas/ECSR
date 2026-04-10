@@ -1658,7 +1658,6 @@ def _plot_doc_vs_ias_input_5d(
     fig.tight_layout()
     return fig
 
-@st.cache_data(show_spinner=False)
 def _cached_current_operating_point_result(
     sc: Dict[str, Any],
     fuel_price_eur_per_kg: float,

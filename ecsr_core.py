@@ -632,6 +632,15 @@ def _display_speed_gap_ok(v_notch: Any, v_econ: Any, min_gap_kt: float) -> np.nd
     ve = _disp_econ_kt(v_econ)
     return np.isfinite(vn) & np.isfinite(ve) & ((vn - ve) >= float(min_gap_kt))
 
+def compute_ecsr_guaranteed_saving(docmin: float, docnotch: float, epsilon: float) -> float:
+    if not (np.isfinite(docmin) and np.isfinite(docnotch) and np.isfinite(epsilon)):
+        return float("nan")
+
+    saving = float(docnotch) - float(docmin)
+    if saving <= 0.0:
+        return 0.0
+
+    return float(saving * (1.0 - float(epsilon)))
 
 def unique_x(x: np.ndarray, a1: np.ndarray, a2: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     x = np.asarray(x).reshape(-1)
@@ -2111,6 +2120,12 @@ def build_summary_table(scenarios: List[Dict[str, Any]], cfg: Config) -> pd.Data
         docnotch = float(cur_now["doc_notch_per_nm"])
         gs_notch = float(cur_now["gs_notch_kt"])
 
+        saving_ecsr = compute_ecsr_guaranteed_saving(
+            docmin,
+            docnotch,
+            float(cfg.epsilon_break_even),
+        )
+
         docmin_per_h = float(docmin * gs_ecsr) if np.isfinite(docmin) and np.isfinite(gs_ecsr) else float("nan")
         docnotch_per_h = float(docnotch * gs_notch) if np.isfinite(docnotch) and np.isfinite(gs_notch) else float("nan")
 
@@ -2136,6 +2151,8 @@ def build_summary_table(scenarios: List[Dict[str, Any]], cfg: Config) -> pd.Data
             "DOCnotch_EurPerHr": docnotch_per_h,
             "DOCmin_EurPerNM": docmin,
             "DOCnotch_EurPerNM": docnotch,
+            "SAVING_ECSR_EurPerNM": float(saving_ecsr),
+            row[f"SAVING_ECSR_{d}NM_EUR"] = saving_ecsr * float(d)
         }
 
         for d in cfg.distances_nm:

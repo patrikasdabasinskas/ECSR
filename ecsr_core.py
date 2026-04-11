@@ -885,8 +885,8 @@ def compute_ecsr_band(sc: Dict[str, Any], tc: float, cfg: Config) -> Dict[str, f
         + float(tc) * _pchip_fn(iasu, timeu)(np.array([v_notch]))[0]
     )
 
-    saving_max = float(doc_notch - doc_min)
-
+    saving_max = float((doc_notch - doc_min) * (1.0 - float(cfg.epsilon_break_even)))
+    
     if not np.isfinite(saving_max) or saving_max <= 0.0:
         econ_speed = float(ias_grid[i_min])
         return {
@@ -894,11 +894,9 @@ def compute_ecsr_band(sc: Dict[str, Any], tc: float, cfg: Config) -> Dict[str, f
             "ECSR_high_kt": econ_speed,
             "DOC_min_EurPerNM": doc_min,
         }
-
-    saving_grid = doc_notch - doc_grid
-    saving_threshold = saving_max * (1.0 - float(cfg.epsilon_break_even))
-
-    ok = np.isfinite(saving_grid) & (saving_grid >= saving_threshold)
+    
+    saving_grid = (doc_notch - doc_grid) * (1.0 - float(cfg.epsilon_break_even))
+    ok = np.isfinite(saving_grid) & (saving_grid > 0.0)
 
     if not np.any(ok):
         low = high = float(ias_grid[i_min])
@@ -1901,24 +1899,21 @@ def current_operating_point_result(
         )[0]
     )
 
+    saving_nm = (float(doc_notch) - float(doc_econ)) * (1.0 - float(cfg.epsilon_break_even))
+
     money_ok = True
     if _use_money_gate(cfg):
         mode = str(cfg.breakpoint_saving_mode).strip().lower()
-
+    
         if mode == "per_nm":
-            money_ok = bool((doc_notch - doc_econ) >= float(cfg.breakpoint_saving_eur_per_nm))
-
+            money_ok = bool(saving_nm >= float(cfg.breakpoint_saving_eur_per_nm))
+    
         elif mode == "per_hour_trip":
-            delta_val = float(
-                _delta_doc_trip_avg_per_hour(
-                    doc_notch_per_nm=np.array([doc_notch], dtype=float),
-                    doc_min_per_nm=np.array([doc_econ], dtype=float),
-                    gs_notch_kt=np.array([gs_notch], dtype=float),
-                    gs_econ_kt=np.array([gs_econ], dtype=float),
-                    trip_distance_nm=float(cfg.breakpoint_trip_distance_nm),
-                )[0]
-            )
-            money_ok = bool(delta_val >= float(cfg.breakpoint_saving_eur_per_hour))
+            trip_distance_nm = float(cfg.breakpoint_trip_distance_nm)
+            saving_total_trip = saving_nm * trip_distance_nm
+            time_econ_h = trip_distance_nm / float(gs_econ) if np.isfinite(gs_econ) and gs_econ > 0.0 else float("nan")
+            delta_val = saving_total_trip / time_econ_h if np.isfinite(time_econ_h) and time_econ_h > 0.0 else float("nan")
+            money_ok = bool(np.isfinite(delta_val) and delta_val >= float(cfg.breakpoint_saving_eur_per_hour))
 
     econ_exists = bool(speed_ok and econ_ok and money_ok)
 
@@ -2152,9 +2147,11 @@ def build_summary_table(scenarios: List[Dict[str, Any]], cfg: Config) -> pd.Data
             "DOCmin_EurPerNM": docmin,
             "DOCnotch_EurPerNM": docnotch,
             "SAVING_ECSR_EurPerNM": float(saving_ecsr),
-            row[f"SAVING_ECSR_{d}NM_EUR"] = saving_ecsr * float(d)
         }
 
+        for d in cfg.distances_nm:
+            row[f"SAVING_ECSR_{d}NM_EUR"] = saving_ecsr * float(d)
+        
         for d in cfg.distances_nm:
             if int(d) == 100:
                 row[f"DOCmin_{d}NM_EUR"] = docmin * float(d)

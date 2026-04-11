@@ -271,7 +271,7 @@ def _scenario_is_economical(
     ):
         return False
 
-    saving_nm = float(doc_notch_per_nm) - float(doc_econ_raw_per_nm)
+    saving_nm = (float(doc_notch_per_nm) - float(doc_econ_raw_per_nm)) * (1.0 - float(cfg.epsilon_break_even))
     if saving_nm <= 0.0:
         return False
 
@@ -692,7 +692,7 @@ def _build_economical_scenarios_table(
         v_notch = float(cur_now["v_notch"])
         doc_econ_raw_per_nm = float(cur_now["doc_econ_raw_per_nm"])
         doc_notch_per_nm = float(cur_now["doc_notch_per_nm"])
-        saving_nm = doc_notch_per_nm - doc_econ_raw_per_nm
+        saving_nm = (doc_notch_per_nm - doc_econ_raw_per_nm) * (1.0 - float(cfg.epsilon_break_even))
 
         raw_speed_ok = float(v_notch) > float(v_econ_raw) + 1e-6
         saving_ok = np.isfinite(saving_nm) and saving_nm > 0.0
@@ -738,7 +738,7 @@ def _build_economical_scenarios_table(
         for d in dist_cols:
             econ_total = doc_econ_raw_per_nm * float(d)
             notch_total = doc_notch_per_nm * float(d)
-            diff_total = notch_total - econ_total
+            diff_total = (notch_total - econ_total) * (1.0 - float(cfg.epsilon_break_even))
 
             dist_doc_econ[d].append(f"{econ_total:.1f}")
             dist_doc_notch[d].append(f"{notch_total:.1f}")
@@ -808,7 +808,7 @@ def _build_display_table(
                 float(cfg.time_cost_operational),
                 cfg,
             )
-            saving_nm = float(cur_now["doc_notch_per_nm"] - cur_now["doc_econ_raw_per_nm"])
+            saving_nm = float(cur_now["doc_notch_per_nm"] - cur_now["doc_econ_raw_per_nm"]) * (1.0 - float(cfg.epsilon_break_even))
             ecsr_txt = _fmt_ecsr_from_raw(
                 lo=float(pd.to_numeric(row.get("ECSR_low_kt", np.nan), errors="coerce")),
                 hi=float(pd.to_numeric(row.get("ECSR_high_kt", np.nan), errors="coerce")),
@@ -875,7 +875,7 @@ def _build_display_table(
                     float(cfg.time_cost_operational),
                     cfg,
                 )
-                saving_nm = float(cur_now["doc_notch_per_nm"] - cur_now["doc_econ_raw_per_nm"])
+                saving_nm = float(cur_now["doc_notch_per_nm"] - cur_now["doc_econ_raw_per_nm"]) * (1.0 - float(cfg.epsilon_break_even))
                 _, notch_txt = _fmt_speed_pair_from_raw(
                     v_econ_disp=float(cur_now["v_econ"]),
                     v_econ_raw=float(cur_now["v_econ_raw"]),
@@ -901,7 +901,7 @@ def _build_display_table(
                     float(cfg.time_cost_operational),
                     cfg,
                 )
-                saving_nm = float(cur_now["doc_notch_per_nm"] - cur_now["doc_econ_raw_per_nm"])
+                saving_nm = float(cur_now["doc_notch_per_nm"] - cur_now["doc_econ_raw_per_nm"]) * (1.0 - float(cfg.epsilon_break_even))
                 econ_txt, _ = _fmt_speed_pair_from_raw(
                     v_econ_disp=float(cur_now["v_econ"]),
                     v_econ_raw=float(cur_now["v_econ_raw"]),
@@ -1889,13 +1889,15 @@ def _econ_exists_from_interpolated_row(
     else:
         doc_econ_nm = float(docmin_nm)
 
-    econ_ok = np.isfinite(docnotch_nm) and np.isfinite(doc_econ_nm) and (float(docnotch_nm) > float(doc_econ_nm) + 1e-12)
+    saving_nm = (float(docnotch_nm) - float(doc_econ_nm)) * (1.0 - float(cfg.epsilon_break_even))
 
+    econ_ok = np.isfinite(saving_nm) and (saving_nm > 1e-12)
+    
     money_ok = True
     mode = str(getattr(cfg, "breakpoint_saving_mode", "default")).strip().lower()
     if mode == "per_nm":
-        money_ok = (float(docnotch_nm) - float(doc_econ_nm)) >= float(getattr(cfg, "breakpoint_saving_eur_per_nm", 0.0))
-
+        money_ok = saving_nm >= float(getattr(cfg, "breakpoint_saving_eur_per_nm", 0.0))
+    
     return bool(speed_ok and econ_ok and money_ok)
 
 
@@ -2564,7 +2566,8 @@ def _plot_saving_vs_grouped(
     dist_nm = max(float(distance_nm), 0.0)
 
     raw_saving = (df["DOCnotch_EurPerNM"] - df["DOCmin_EurPerNM"]).clip(lower=0.0)
-    df["Saving_Eur"] = raw_saving * dist_nm
+    saving_ecsr = raw_saving * (1.0 - float(cfg.epsilon_break_even))
+    df["Saving_Eur"] = saving_ecsr.clip(lower=0.0) * dist_nm
 
     used_group = None
     if group_col and group_col in df.columns:
@@ -3444,7 +3447,7 @@ with quick_view_container:
                                 float(cfg.time_cost_operational),
                                 cfg,
                             )
-                            saving_nm = float(cur_sc["doc_notch_per_nm"] - cur_sc["doc_econ_raw_per_nm"])
+                            saving_nm = float(cur_sc["doc_notch_per_nm"] - cur_sc["doc_econ_raw_per_nm"]) * (1.0 - float(cfg.epsilon_break_even))
                             shown_value = _fmt_ecsr_from_raw(
                                 lo=float(pd.to_numeric(row.get("ECSR_low_kt", np.nan), errors="coerce")),
                                 hi=float(pd.to_numeric(row.get("ECSR_high_kt", np.nan), errors="coerce")),
@@ -3508,7 +3511,7 @@ with quick_view_container:
                             pass
 
                     if np.isfinite(v_min_per_nm) and np.isfinite(v_notch_per_nm) and np.isfinite(dist):
-                        diff_total = max(0.0, float((v_notch_per_nm - v_min_per_nm) * dist))
+                        diff_total = max(0.0, float((v_notch_per_nm - v_min_per_nm) * (1.0 - float(cfg.epsilon_break_even)) * dist))
                     else:
                         diff_total = float("nan")
                 else:
@@ -3524,7 +3527,7 @@ with quick_view_container:
                                         float(cfg.time_cost_operational),
                                         cfg,
                                     )
-                                    saving_nm = float(cur_sc["doc_notch_per_nm"] - cur_sc["doc_econ_raw_per_nm"])
+                                    saving_nm = float(cur_sc["doc_notch_per_nm"] - cur_sc["doc_econ_raw_per_nm"]) * (1.0 - float(cfg.epsilon_break_even))
                                     shown_value, _ = _fmt_speed_pair_from_raw(
                                         v_econ_disp=float(cur_sc["v_econ"]),
                                         v_econ_raw=float(cur_sc["v_econ_raw"]),
@@ -3551,7 +3554,7 @@ with quick_view_container:
                                         float(cfg.time_cost_operational),
                                         cfg,
                                     )
-                                    saving_nm = float(cur_sc["doc_notch_per_nm"] - cur_sc["doc_econ_raw_per_nm"])
+                                    saving_nm = float(cur_sc["doc_notch_per_nm"] - cur_sc["doc_econ_raw_per_nm"]) * (1.0 - float(cfg.epsilon_break_even))
                                     _, shown_value = _fmt_speed_pair_from_raw(
                                         v_econ_disp=float(cur_sc["v_econ"]),
                                         v_econ_raw=float(cur_sc["v_econ_raw"]),
@@ -3659,7 +3662,7 @@ with quick_view_container:
                     cfg=cfg,
                 )
 
-                saving_per_nm = float(res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm)
+                saving_per_nm = float(res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm) * (1.0 - float(cfg.epsilon_break_even))
 
                 fuel_break_active = (
                     np.isfinite(be_fuel_input)
@@ -3743,7 +3746,7 @@ with quick_view_container:
                     docnotch_nm = float(res_in.docnotch_eur_per_nm)
 
                     if np.isfinite(docmin_nm) and np.isfinite(docnotch_nm) and np.isfinite(dist):
-                        diff_total = max(0.0, float((docnotch_nm - docmin_nm) * dist))
+                        diff_total = max(0.0, float((docnotch_nm - docmin_nm) * (1.0 - float(cfg.epsilon_break_even)) * dist))
                     else:
                         diff_total = float("nan")
                 else:

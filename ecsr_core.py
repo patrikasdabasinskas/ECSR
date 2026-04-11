@@ -885,8 +885,8 @@ def compute_ecsr_band(sc: Dict[str, Any], tc: float, cfg: Config) -> Dict[str, f
         + float(tc) * _pchip_fn(iasu, timeu)(np.array([v_notch]))[0]
     )
 
-    saving_max = float((doc_notch - doc_min) * (1.0 - float(cfg.epsilon_break_even)))
-    
+    saving_max = float(doc_notch - doc_min)
+
     if not np.isfinite(saving_max) or saving_max <= 0.0:
         econ_speed = float(ias_grid[i_min])
         return {
@@ -894,9 +894,11 @@ def compute_ecsr_band(sc: Dict[str, Any], tc: float, cfg: Config) -> Dict[str, f
             "ECSR_high_kt": econ_speed,
             "DOC_min_EurPerNM": doc_min,
         }
-    
-    saving_grid = (doc_notch - doc_grid) * (1.0 - float(cfg.epsilon_break_even))
-    ok = np.isfinite(saving_grid) & (saving_grid > 0.0)
+
+    saving_grid = doc_notch - doc_grid
+    saving_threshold = saving_max * (1.0 - float(cfg.epsilon_break_even))
+
+    ok = np.isfinite(saving_grid) & (saving_grid >= saving_threshold)
 
     if not np.any(ok):
         low = high = float(ias_grid[i_min])
@@ -912,7 +914,6 @@ def compute_ecsr_band(sc: Dict[str, Any], tc: float, cfg: Config) -> Dict[str, f
     low = min(low, high)
 
     return {"ECSR_low_kt": low, "ECSR_high_kt": high, "DOC_min_EurPerNM": doc_min}
-
 
 # ========================= SUMMARY INTERPOLATION (ECSR calculator + input quick view) =========================
 
@@ -1891,7 +1892,13 @@ def current_operating_point_result(
     gs_econ = float(1.0 / time_itp(np.array([v_econ], dtype=float))[0])
     gs_notch = float(1.0 / time_itp(np.array([v_notch], dtype=float))[0])
 
-    speed_ok = bool(float(v_notch) > float(v_econ_raw) + 1e-6)
+    speed_ok = bool(
+        _display_speed_gap_ok(
+            np.array([v_notch], dtype=float),
+            np.array([v_econ], dtype=float),
+            float(cfg.breakpoint_speed_tol_kt),
+        )[0]
+    )
     econ_ok = bool(
         _doc_advantage_ok(
             np.array([doc_notch], dtype=float),

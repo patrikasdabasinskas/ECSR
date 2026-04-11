@@ -869,9 +869,28 @@ def compute_ecsr_band(sc: Dict[str, Any], tc: float, cfg: Config) -> Dict[str, f
 
     i_min = int(np.nanargmin(doc_grid))
     doc_min = float(doc_grid[i_min])
-    thr = doc_min * (1.0 + cfg.epsilon_break_even)
 
-    ok = doc_grid <= thr
+    v_notch = float(sc["V_notch"])
+    doc_notch = float(
+        cfg.fuel_price_eur_per_kg * _pchip_fn(iasu, fuelu)(np.array([v_notch]))[0]
+        + float(tc) * _pchip_fn(iasu, timeu)(np.array([v_notch]))[0]
+    )
+
+    saving_max = float(doc_notch - doc_min)
+
+    if not np.isfinite(saving_max) or saving_max <= 0.0:
+        econ_speed = float(ias_grid[i_min])
+        return {
+            "ECSR_low_kt": econ_speed,
+            "ECSR_high_kt": econ_speed,
+            "DOC_min_EurPerNM": doc_min,
+        }
+
+    saving_grid = doc_notch - doc_grid
+    saving_threshold = saving_max * (1.0 - float(cfg.epsilon_break_even))
+
+    ok = np.isfinite(saving_grid) & (saving_grid >= saving_threshold)
+
     if not np.any(ok):
         low = high = float(ias_grid[i_min])
     else:
@@ -881,6 +900,9 @@ def compute_ecsr_band(sc: Dict[str, Any], tc: float, cfg: Config) -> Dict[str, f
         i_high = int(right[-1]) if right.size else i_min
         low = float(ias_grid[i_low])
         high = float(ias_grid[i_high])
+
+    high = min(high, v_notch)
+    low = min(low, high)
 
     return {"ECSR_low_kt": low, "ECSR_high_kt": high, "DOC_min_EurPerNM": doc_min}
 

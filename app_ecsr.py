@@ -26,8 +26,6 @@ from ecsr_core import (
     build_summary_interpolators_4d,
     compute_doc_curve_interpolated_from_cloud,
     compute_doc_curve_pchip,
-    compute_econ_vs_fuel_price_interpolated,
-    compute_econ_vs_time_cost_interpolated,
     compute_ecsr_band_interpolated,
     compute_quick_metrics_interpolated,
     compute_quick_metrics_interpolated_from_prebuilt,
@@ -1254,7 +1252,7 @@ def _plot_doc_vs_ias(sc: Dict[str, Any], cfg: Config, time_cost_eur_per_hr: floa
     econ_kt = _safe_display_econ_kt(float(cur["IAS_opt"]), float(cur["IAS_notch"]))
     notch_kt = _disp_notch_kt(float(cur["IAS_notch"]))
 
-    same = (float(cur["IAS_opt"]) >= (float(cur["IAS_notch"]) - 1.0))
+    same = (float(cur["IAS_opt"]) >= (float(cur["IAS_notch"]) - float(cfg.breakpoint_speed_tol_kt)))
 
     if same:
         econ_color = "black"
@@ -1318,21 +1316,45 @@ def _plot_doc_vs_ias(sc: Dict[str, Any], cfg: Config, time_cost_eur_per_hr: floa
 # ------------------------- Graph 2/3 helpers (unchanged) -------------------------
 
 
-def _plot_econ_vs_time_cost(longform_tbl: pd.DataFrame, summary_tbl: pd.DataFrame, scenario_name: str, *, tc_operational: float):
+def _plot_econ_vs_time_cost(
+    longform_tbl: pd.DataFrame,
+    summary_tbl: pd.DataFrame,
+    scenarios: List[Dict[str, Any]],
+    scenario_name: str,
+    *,
+    tc_operational: float,
+    cfg: Config,
+):
     fig, ax = _mpl_academic_fig(figsize=(9.0, 4.8))
 
     lf = longform_tbl.loc[longform_tbl["ScenarioName"] == scenario_name].copy()
     if lf.empty:
         raise ValueError("Nėra longform duomenų pasirinktam scenarijui.")
-
+    
+    sc = _scenario_lookup(scenarios, scenario_name)
+    if sc is None:
+        raise ValueError("Nerastas pasirinktas scenarijus.")
+    
     lf["TIME_COST"] = pd.to_numeric(lf["TIME_COST"], errors="coerce")
-    lf["IASopt"] = pd.to_numeric(lf["IASopt"], errors="coerce")
-    lf = lf.loc[np.isfinite(lf["TIME_COST"]) & np.isfinite(lf["IASopt"])].sort_values("TIME_COST")
-    if lf.shape[0] < 2:
+    lf = lf.loc[np.isfinite(lf["TIME_COST"])].sort_values("TIME_COST")
+    
+    rows: List[Tuple[float, float]] = []
+    for tc in lf["TIME_COST"].to_numpy(float):
+        cur = _cached_current_operating_point_result(
+            sc,
+            float(cfg.fuel_price_eur_per_kg),
+            float(tc),
+            cfg,
+        )
+        v_econ = float(cur["v_econ"])
+        if np.isfinite(v_econ):
+            rows.append((float(tc), v_econ))
+    
+    if len(rows) < 2:
         raise ValueError("Per mažai taškų ECON kreivei (reikia bent 2).")
-
-    x = lf["TIME_COST"].to_numpy(float)
-    y = lf["IASopt"].to_numpy(float)
+    
+    x = np.array([r[0] for r in rows], dtype=float)
+    y = np.array([r[1] for r in rows], dtype=float)
 
     c_curve = "darkred"
     c_be = "purple"
@@ -1402,6 +1424,7 @@ def _plot_econ_vs_fuel_price(
     scenario_name: str,
     *,
     fuel_price_operational: float,
+    cfg: Config,
 ):
     fig, ax = _mpl_academic_fig(figsize=(9.0, 4.8))
 
@@ -1409,17 +1432,27 @@ def _plot_econ_vs_fuel_price(
     if not sc:
         raise ValueError("Nerastas scenarijus fuel sweep duomenims.")
 
-    fp = np.asarray(sc.get("fuelPriceVec", []), float).reshape(-1)
-    econ = np.asarray(sc.get("IAS_opt_kt_fp", []), float).reshape(-1)
-    ok = np.isfinite(fp) & np.isfinite(econ)
-    fp = fp[ok]
-    econ = econ[ok]
-    if fp.size < 2:
+    fp_vec = np.asarray(sc.get("fuelPriceVec", []), float).reshape(-1)
+    fp_vec = fp_vec[np.isfinite(fp_vec)]
+    fp_vec = np.sort(fp_vec, kind="mergesort")
+    
+    rows: List[Tuple[float, float]] = []
+    for fp_val in fp_vec.tolist():
+        cur = _cached_current_operating_point_result(
+            sc,
+            float(fp_val),
+            float(cfg.time_cost_operational),
+            cfg,
+        )
+        v_econ = float(cur["v_econ"])
+        if np.isfinite(v_econ):
+            rows.append((float(fp_val), v_econ))
+    
+    if len(rows) < 2:
         raise ValueError("Per mažai taškų ECON kreivei pagal degalų kainą (reikia bent 2).")
-
-    order = np.argsort(fp, kind="mergesort")
-    fp = fp[order]
-    econ = econ[order]
+    
+    fp = np.array([r[0] for r in rows], dtype=float)
+    econ = np.array([r[1] for r in rows], dtype=float)
 
     ax.plot(fp, econ, linewidth=2.4, color="darkred", label="ECON kreivė", zorder=2)
 
@@ -1606,7 +1639,7 @@ def _plot_doc_vs_ias_input_5d(
         )
     v_notch = float(qres.v_notch_kt)
 
-    same = (v_opt >= (v_notch - 1.0))
+    same = (v_opt >= (v_notch - float(cfg.breakpoint_speed_tol_kt)))
 
     fig, ax = _mpl_academic_fig()
     ax.plot(x, y, linewidth=2.2, color="darkred", label="DOC kreivė (5D)")
@@ -1674,35 +1707,191 @@ def _cached_current_operating_point_result(
 @st.cache_data(show_spinner=False)
 def _cached_econ_vs_time_cost_interpolated(
     longform_tbl: pd.DataFrame,
+    summary_tbl: pd.DataFrame,
     fl_ft: float,
     wt_kg: float,
     isa_c: float,
     wind_kt: float,
+    fuel_price_eur_per_kg: float,
+    speed_tol_kt: float,
+    cfg: Config,
 ) -> pd.DataFrame:
-    return compute_econ_vs_time_cost_interpolated(
-        longform_tbl,
+    need = ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt", "TIME_COST", "IASopt", "DOCmin", "DOCnotch"]
+    df = longform_tbl.copy()
+    for c in need:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=need)
+
+    rows: List[Dict[str, float]] = []
+    q = np.array([[float(fl_ft), float(wt_kg), float(isa_c), float(wind_kt)]], dtype=float)
+
+    v_notch = _interp_input_v_notch(
+        summary_tbl,
         fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
+        wt_kg=float(wt_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
     )
+
+    for tc, sub in df.groupby("TIME_COST", sort=True):
+        if sub.shape[0] < 8:
+            continue
+
+        pts = np.column_stack(
+            [
+                pd.to_numeric(sub["ZP_ft"], errors="coerce").to_numpy(float),
+                pd.to_numeric(sub["WEIGHT_kg"], errors="coerce").to_numpy(float),
+                pd.to_numeric(sub["ISA_C"], errors="coerce").to_numpy(float),
+                pd.to_numeric(sub["WIND_kt"], errors="coerce").to_numpy(float),
+            ]
+        ).astype(float)
+
+        y_ias = pd.to_numeric(sub["IASopt"], errors="coerce").to_numpy(float)
+        y_docmin = pd.to_numeric(sub["DOCmin"], errors="coerce").to_numpy(float)
+        y_docnotch = pd.to_numeric(sub["DOCnotch"], errors="coerce").to_numpy(float)
+
+        ok = (
+            np.all(np.isfinite(pts), axis=1)
+            & np.isfinite(y_ias)
+            & np.isfinite(y_docmin)
+            & np.isfinite(y_docnotch)
+        )
+        pts = pts[ok]
+        y_ias = y_ias[ok]
+        y_docmin = y_docmin[ok]
+        y_docnotch = y_docnotch[ok]
+
+        if pts.shape[0] < 8:
+            continue
+
+        itp_ias = LinearNDInterpolator(pts, y_ias, fill_value=np.nan)
+        itp_docmin = LinearNDInterpolator(pts, y_docmin, fill_value=np.nan)
+        itp_docnotch = LinearNDInterpolator(pts, y_docnotch, fill_value=np.nan)
+
+        v_docmin_raw = float(itp_ias(q)[0])
+        docmin_nm = float(itp_docmin(q)[0])
+        docnotch_nm = float(itp_docnotch(q)[0])
+
+        if not (np.isfinite(v_docmin_raw) and np.isfinite(docmin_nm) and np.isfinite(docnotch_nm)):
+            continue
+
+        econ_exists = _econ_exists_from_interpolated_row(
+            v_docmin_raw=float(v_docmin_raw),
+            v_notch=float(v_notch),
+            docmin_nm=float(docmin_nm),
+            docnotch_nm=float(docnotch_nm),
+            cfg=cfg,
+        )
+
+        v_econ = _econ_from_docmin_with_notch_rule(
+            float(v_docmin_raw),
+            float(v_notch),
+            min_gap_kt=float(speed_tol_kt),
+        )
+        if not econ_exists:
+            v_econ = float(v_notch)
+
+        rows.append({"TIME_COST": float(tc), "IASopt": float(v_econ)})
+
+    out = pd.DataFrame(rows)
+    if out.shape[0] < 2:
+        raise ValueError("Nepakanka taškų ECON priklausomybei nuo laiko sąnaudų sudaryti.")
+    return out.sort_values("TIME_COST").reset_index(drop=True)
 
 
 @st.cache_data(show_spinner=False)
 def _cached_econ_vs_fuel_price_interpolated(
     fuel_longform_tbl: pd.DataFrame,
+    summary_tbl: pd.DataFrame,
     fl_ft: float,
     wt_kg: float,
     isa_c: float,
     wind_kt: float,
+    time_cost_eur_per_hr: float,
+    speed_tol_kt: float,
+    cfg: Config,
 ) -> pd.DataFrame:
-    return compute_econ_vs_fuel_price_interpolated(
-        fuel_longform_tbl,
+    need = ["ZP_ft", "WEIGHT_kg", "ISA_C", "WIND_kt", "FUEL_PRICE", "IASopt", "DOCmin", "DOCnotch"]
+    df = fuel_longform_tbl.copy()
+    for c in need:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=need)
+
+    rows: List[Dict[str, float]] = []
+    q = np.array([[float(fl_ft), float(wt_kg), float(isa_c), float(wind_kt)]], dtype=float)
+
+    v_notch = _interp_input_v_notch(
+        summary_tbl,
         fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
+        wt_kg=float(wt_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
     )
+
+    for fp, sub in df.groupby("FUEL_PRICE", sort=True):
+        if sub.shape[0] < 8:
+            continue
+
+        pts = np.column_stack(
+            [
+                pd.to_numeric(sub["ZP_ft"], errors="coerce").to_numpy(float),
+                pd.to_numeric(sub["WEIGHT_kg"], errors="coerce").to_numpy(float),
+                pd.to_numeric(sub["ISA_C"], errors="coerce").to_numpy(float),
+                pd.to_numeric(sub["WIND_kt"], errors="coerce").to_numpy(float),
+            ]
+        ).astype(float)
+
+        y_ias = pd.to_numeric(sub["IASopt"], errors="coerce").to_numpy(float)
+        y_docmin = pd.to_numeric(sub["DOCmin"], errors="coerce").to_numpy(float)
+        y_docnotch = pd.to_numeric(sub["DOCnotch"], errors="coerce").to_numpy(float)
+
+        ok = (
+            np.all(np.isfinite(pts), axis=1)
+            & np.isfinite(y_ias)
+            & np.isfinite(y_docmin)
+            & np.isfinite(y_docnotch)
+        )
+        pts = pts[ok]
+        y_ias = y_ias[ok]
+        y_docmin = y_docmin[ok]
+        y_docnotch = y_docnotch[ok]
+
+        if pts.shape[0] < 8:
+            continue
+
+        itp_ias = LinearNDInterpolator(pts, y_ias, fill_value=np.nan)
+        itp_docmin = LinearNDInterpolator(pts, y_docmin, fill_value=np.nan)
+        itp_docnotch = LinearNDInterpolator(pts, y_docnotch, fill_value=np.nan)
+
+        v_docmin_raw = float(itp_ias(q)[0])
+        docmin_nm = float(itp_docmin(q)[0])
+        docnotch_nm = float(itp_docnotch(q)[0])
+
+        if not (np.isfinite(v_docmin_raw) and np.isfinite(docmin_nm) and np.isfinite(docnotch_nm)):
+            continue
+
+        econ_exists = _econ_exists_from_interpolated_row(
+            v_docmin_raw=float(v_docmin_raw),
+            v_notch=float(v_notch),
+            docmin_nm=float(docmin_nm),
+            docnotch_nm=float(docnotch_nm),
+            cfg=cfg,
+        )
+
+        v_econ = _econ_from_docmin_with_notch_rule(
+            float(v_docmin_raw),
+            float(v_notch),
+            min_gap_kt=float(speed_tol_kt),
+        )
+        if not econ_exists:
+            v_econ = float(v_notch)
+
+        rows.append({"FUEL_PRICE": float(fp), "IASopt": float(v_econ)})
+
+    out = pd.DataFrame(rows)
+    if out.shape[0] < 2:
+        raise ValueError("Nepakanka taškų ECON priklausomybei nuo degalų kainos sudaryti.")
+    return out.sort_values("FUEL_PRICE").reset_index(drop=True)
 
 @st.cache_data(show_spinner=False)
 def _cached_time_operating_curve_interpolated(
@@ -1890,14 +2079,14 @@ def _econ_exists_from_interpolated_row(
         doc_econ_nm = float(docmin_nm)
 
     saving_nm = (float(docnotch_nm) - float(doc_econ_nm)) * (1.0 - float(cfg.epsilon_break_even))
-
     econ_ok = np.isfinite(saving_nm) and (saving_nm > 1e-12)
-    
+
     money_ok = True
     mode = str(getattr(cfg, "breakpoint_saving_mode", "default")).strip().lower()
+
     if mode == "per_nm":
         money_ok = saving_nm >= float(getattr(cfg, "breakpoint_saving_eur_per_nm", 0.0))
-    
+
     return bool(speed_ok and econ_ok and money_ok)
 
 
@@ -2018,10 +2207,14 @@ def _plot_econ_vs_time_cost_input_4d(
 
     curve = _cached_econ_vs_time_cost_interpolated(
         longform_tbl,
+        summary_tbl,
         fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
+        wt_kg=float(wt_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
+        fuel_price_eur_per_kg=float(cfg.fuel_price_eur_per_kg),
+        speed_tol_kt=float(cfg.breakpoint_speed_tol_kt),
+        cfg=cfg,
     )
 
     x = pd.to_numeric(curve["TIME_COST"], errors="coerce").to_numpy(float)
@@ -2138,10 +2331,14 @@ def _plot_econ_vs_fuel_price_input_4d(
 
     curve = _cached_econ_vs_fuel_price_interpolated(
         fuel_longform_tbl,
+        summary_tbl,
         fl_ft=float(fl_ft),
-        weight_kg=float(wt_kg),
+        wt_kg=float(wt_kg),
         isa_c=float(isa_c),
         wind_kt=float(wind_kt),
+        time_cost_eur_per_hr=float(cfg.time_cost_operational),
+        speed_tol_kt=float(cfg.breakpoint_speed_tol_kt),
+        cfg=cfg,
     )
 
     x = pd.to_numeric(curve["FUEL_PRICE"], errors="coerce").to_numpy(float)
@@ -3664,13 +3861,21 @@ with quick_view_container:
 
                 saving_per_nm = float(res_in.docnotch_eur_per_nm - res_in.docmin_eur_per_nm) * (1.0 - float(cfg.epsilon_break_even))
 
+                time_break_active = (
+                    np.isfinite(be_time_input)
+                    and np.isfinite(float(cfg.time_cost_operational))
+                    and float(cfg.time_cost_operational) >= float(be_time_input)
+                )
+                
                 fuel_break_active = (
                     np.isfinite(be_fuel_input)
                     and np.isfinite(float(cfg.fuel_price_eur_per_kg))
                     and float(cfg.fuel_price_eur_per_kg) < float(be_fuel_input)
                 )
-
-                if fuel_break_active:
+                
+                econ_inactive = bool(time_break_active or fuel_break_active)
+                
+                if econ_inactive:
                     saving_per_nm = 0.0
                     res_in = InterpQuickResult(
                         fl_ft=float(res_in.fl_ft),
@@ -3883,7 +4088,6 @@ if mode == "Scenarijus":
             if st.button("Generuoti grafiką", key="btn_g1s", use_container_width=True):
                 _close_all_graph_expanders()
                 st.session_state["open_g1"] = True
-                st.session_state["open_g1"] = True
                 try:
                     sc = _scenario_lookup(scenarios, g1_scn)
                     if sc is None:
@@ -3997,7 +4201,14 @@ if mode == "Scenarijus":
                 _close_all_graph_expanders()
                 st.session_state["open_g2"] = True
                 try:
-                    st.session_state["fig_g2"] = _plot_econ_vs_time_cost(longform_tbl, summary_tbl, g2_scn, tc_operational=float(cfg.time_cost_operational))
+                    st.session_state["fig_g2"] = _plot_econ_vs_time_cost(
+                        longform_tbl,
+                        summary_tbl,
+                        scenarios,
+                        g2_scn,
+                        tc_operational=float(cfg.time_cost_operational),
+                        cfg=cfg,
+                    )
                     row0 = summary_tbl.loc[summary_tbl["ScenarioName"] == g2_scn]
                     st.session_state["cap_g2"] = _conditions_sentence_from_row_with_costs(row0.iloc[0], cfg) if not row0.empty else ""
                     st.session_state["err_g2"] = ""
@@ -4021,7 +4232,13 @@ if mode == "Scenarijus":
                 _close_all_graph_expanders()
                 st.session_state["open_g3"] = True
                 try:
-                    st.session_state["fig_g3"] = _plot_econ_vs_fuel_price(scenarios, summary_tbl, g3_scn, fuel_price_operational=float(cfg.fuel_price_eur_per_kg))
+                    st.session_state["fig_g3"] = _plot_econ_vs_fuel_price(
+                        scenarios,
+                        summary_tbl,
+                        g3_scn,
+                        fuel_price_operational=float(cfg.fuel_price_eur_per_kg),
+                        cfg=cfg,
+                    )
                     row0 = summary_tbl.loc[summary_tbl["ScenarioName"] == g3_scn]
                     st.session_state["cap_g3"] = _conditions_sentence_from_row_with_costs(row0.iloc[0], cfg) if not row0.empty else ""
                     st.session_state["err_g3"] = ""

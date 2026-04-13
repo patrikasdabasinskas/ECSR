@@ -2860,7 +2860,7 @@ def _plot_saving_vs_grouped(
                 for x0, y0 in zip(xs.tolist(), ys.tolist()):
                     if np.isfinite(x0) and np.isfinite(y0):
                         label_candidates.append(
-                            (float(x0), float(y0), f"{float(y0):.4f}", str(grp_val))
+                            (float(x0), float(y0), f"{float(y0):.2f}", str(grp_val))
                         )
 
         if show_point_labels and label_candidates:
@@ -2913,7 +2913,7 @@ def _plot_saving_vs_grouped(
                 ax,
                 xs,
                 ys,
-                fmt="{:.4f}",
+                fmt="{:.2f}",
                 y_offset_pts=6,
                 fontsize=7,
                 color="black",

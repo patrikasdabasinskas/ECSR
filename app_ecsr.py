@@ -2771,35 +2771,50 @@ def _plot_saving_vs_grouped(
             line, = ax.plot(
                 xs,
                 ys,
-                linewidth=2.6,
+                linewidth=2.2,
                 marker="o",
                 markersize=4.8,
                 label=_group_label(used_group, float(grp_val)),
                 zorder=5,
             )
-        
+            
             line_color = line.get_color()
-        
-            ys_lifted = ys.copy()
-            ys_lifted[np.isclose(ys_lifted, 0.0, atol=1e-12)] = 0.0008
-        
-            ax.plot(
-                xs,
-                ys_lifted,
-                linewidth=3.4,
-                color=line_color,
-                alpha=0.95,
-                solid_capstyle="round",
-                zorder=6,
-                label="_nolegend_",
-            )
-        
-            ax.scatter(xs, ys_lifted, s=26, color=line_color, zorder=7, label="_nolegend_")
-        
-            y_all.extend(ys_lifted.tolist())
-        
+            ax.scatter(xs, ys, s=26, color=line_color, zorder=6, label="_nolegend_")
+            
+            zero_mask = np.isclose(ys, 0.0, atol=1e-12)
+            
+            start = None
+            for i, is_zero in enumerate(zero_mask):
+                if is_zero and start is None:
+                    start = i
+                elif not is_zero and start is not None:
+                    if i - start >= 2:
+                        ax.plot(
+                            xs[start:i],
+                            ys[start:i],
+                            linewidth=4.2,
+                            color=line_color,
+                            solid_capstyle="round",
+                            zorder=7,
+                            label="_nolegend_",
+                        )
+                    start = None
+            
+            if start is not None and len(xs) - start >= 2:
+                ax.plot(
+                    xs[start:],
+                    ys[start:],
+                    linewidth=4.2,
+                    color=line_color,
+                    solid_capstyle="round",
+                    zorder=7,
+                    label="_nolegend_",
+                )
+            
+            y_all.extend(ys.tolist())
+            
             if show_point_labels:
-                for x0, y0 in zip(xs.tolist(), ys_lifted.tolist()):
+                for x0, y0 in zip(xs.tolist(), ys.tolist()):
                     if np.isfinite(x0) and np.isfinite(y0):
                         label_candidates.append(
                             (float(x0), float(y0), f"{float(y0):.4f}", str(grp_val))

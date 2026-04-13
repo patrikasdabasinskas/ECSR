@@ -1114,8 +1114,12 @@ def _add_axis_arrows(ax) -> None:
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_visible(True)
     ax.spines["bottom"].set_visible(True)
-    ax.spines["bottom"].set_linewidth(1.0)
-    ax.spines["bottom"].set_zorder(20)
+
+    ax.spines["left"].set_linewidth(1.6)
+    ax.spines["bottom"].set_linewidth(2.4)
+
+    ax.spines["left"].set_zorder(30)
+    ax.spines["bottom"].set_zorder(30)
 
     ax.annotate(
         "",
@@ -1123,9 +1127,9 @@ def _add_axis_arrows(ax) -> None:
         xytext=(0.0, 0.0),
         xycoords=("axes fraction", "axes fraction"),
         textcoords=("axes fraction", "axes fraction"),
-        arrowprops={"arrowstyle": "->", "linewidth": 1.2, "color": "black"},
+        arrowprops={"arrowstyle": "->", "linewidth": 2.4, "color": "black"},
         clip_on=False,
-        zorder=20,
+        zorder=30,
     )
     ax.annotate(
         "",
@@ -1133,10 +1137,10 @@ def _add_axis_arrows(ax) -> None:
         xytext=(0.0, 0.0),
         xycoords=("axes fraction", "axes fraction"),
         textcoords=("axes fraction", "axes fraction"),
-        arrowprops={"arrowstyle": "->", "linewidth": 1.2, "color": "black"},
+        arrowprops={"arrowstyle": "->", "linewidth": 1.6, "color": "black"},
         clip_on=False,
+        zorder=30,
     )
-
 
 def _annotate_tiny_above(
     ax,
@@ -2777,11 +2781,10 @@ def _plot_saving_vs_grouped(
                 ys,
                 linewidth=2.2,
                 marker="o",
-                markersize=4.8,
-                linestyle="-",
-                label=_group_label(used_group, float(grp_val)),
+                color="darkred",
                 zorder=5,
             )
+            ax.scatter(xs, ys, s=26, color="darkred", zorder=6)
 
             y_all.extend(ys.tolist())
 

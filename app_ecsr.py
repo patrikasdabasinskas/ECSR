@@ -1114,6 +1114,8 @@ def _add_axis_arrows(ax) -> None:
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_visible(True)
     ax.spines["bottom"].set_visible(True)
+    ax.spines["bottom"].set_linewidth(1.0)
+    ax.spines["bottom"].set_zorder(20)
 
     ax.annotate(
         "",
@@ -1123,6 +1125,7 @@ def _add_axis_arrows(ax) -> None:
         textcoords=("axes fraction", "axes fraction"),
         arrowprops={"arrowstyle": "->", "linewidth": 1.2, "color": "black"},
         clip_on=False,
+        zorder=20,
     )
     ax.annotate(
         "",
@@ -2777,6 +2780,7 @@ def _plot_saving_vs_grouped(
                 markersize=4.8,
                 linestyle="-",
                 label=_group_label(used_group, float(grp_val)),
+                zorder=5,
             )
 
             y_all.extend(ys.tolist())

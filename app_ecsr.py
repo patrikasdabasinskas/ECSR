@@ -2610,11 +2610,13 @@ def _label_points_global_dedup(
     color: str = "black",
 ) -> None:
     """
-    Deduplicate labels across groups at the same x-position.
+    Place labels point-by-point instead of suppressing whole groups.
 
-    If two groups have at least one shared x where their y-values differ by
-    <= close_y_delta, they are considered part of the same family. Only one
-    representative group from that family keeps labels.
+    Rules:
+    - compare only points that share the same x-position
+    - if two labels at same x are too close in y (<= close_y_delta), keep only one
+    - labels that remain at same x get vertically stacked to avoid bbox overlap
+    - final bbox overlap filter is still applied globally
     """
     if not candidates:
         return
@@ -2631,14 +2633,84 @@ def _label_points_global_dedup(
     if not rows:
         return
 
-    group_points: Dict[str, List[Tuple[float, float, str]]] = {}
-    for x, y, txt, grp in rows:
-        group_points.setdefault(grp, []).append((x, y, txt))
+    rows = sorted(rows, key=lambda r: (r[0], -r[1], r[3]))
 
-    for grp in group_points:
-        group_points[grp] = sorted(group_points[grp], key=lambda r: r[0])
+    # group points by same x
+    x_groups: List[List[Tuple[float, float, str, str]]] = []
+    current_group: List[Tuple[float, float, str, str]] = []
 
-    groups = list(group_points.keys())
+    for row in rows:
+        if not current_group:
+            current_group.append(row)
+            continue
+
+        if abs(float(row[0]) - float(current_group[-1][0])) <= float(same_x_tol):
+            current_group.append(row)
+        else:
+            x_groups.append(current_group)
+            current_group = [row]
+
+    if current_group:
+        x_groups.append(current_group)
+
+    # keep only sufficiently separated labels inside each x-cluster
+    kept_rows: List[Tuple[float, float, str, str, int]] = []
+
+    for group in x_groups:
+        group = sorted(group, key=lambda r: float(r[1]), reverse=True)
+
+        accepted: List[Tuple[float, float, str, str]] = []
+        for row in group:
+            _, y0, _, _ = row
+            too_close = any(abs(float(y0) - float(y1)) <= float(close_y_delta) for _, y1, _, _ in accepted)
+            if not too_close:
+                accepted.append(row)
+
+        # stack labels vertically at the same x
+        # nearest label gets default offset, next ones get extra offset
+        for i, row in enumerate(accepted):
+            extra_offset = int(y_offset_pts + i * 12)
+            kept_rows.append((row[0], row[1], row[2], row[3], extra_offset))
+
+    kept_bboxes: List[Any] = []
+
+    for x0, y0, txt, _grp, yoff in kept_rows:
+        ann = ax.annotate(
+            txt,
+            xy=(x0, y0),
+            xycoords="data",
+            xytext=(0, int(yoff)),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=int(fontsize),
+            color=color,
+            arrowprops={
+                "arrowstyle": "-",
+                "linewidth": 0.8,
+                "color": color,
+                "shrinkA": 1,
+                "shrinkB": 0,
+            },
+            bbox={
+                "boxstyle": "round,pad=0.08",
+                "facecolor": "white",
+                "edgecolor": "none",
+                "alpha": 0.80,
+            },
+            clip_on=False,
+            zorder=50,
+        )
+
+        fig.canvas.draw()
+        bb = ann.get_window_extent(renderer=renderer)
+
+        too_close_bbox = any(_bbox_overlap_frac(bb, bb2) >= float(overlap_frac) for bb2 in kept_bboxes)
+        if too_close_bbox:
+            ann.remove()
+            continue
+
+        kept_bboxes.append(bb)
 
     def _groups_are_close(grp_a: str, grp_b: str) -> bool:
         pts_a = group_points[grp_a]

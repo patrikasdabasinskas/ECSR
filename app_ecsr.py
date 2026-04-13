@@ -1115,6 +1115,12 @@ def _add_axis_arrows(ax) -> None:
     ax.spines["left"].set_visible(True)
     ax.spines["bottom"].set_visible(True)
 
+    ax.spines["left"].set_linewidth(1.6)
+    ax.spines["bottom"].set_linewidth(1.2)
+
+    ax.spines["left"].set_zorder(20)
+    ax.spines["bottom"].set_zorder(50)
+
     ax.annotate(
         "",
         xy=(1.02, 0.0),
@@ -1123,6 +1129,7 @@ def _add_axis_arrows(ax) -> None:
         textcoords=("axes fraction", "axes fraction"),
         arrowprops={"arrowstyle": "->", "linewidth": 1.2, "color": "black"},
         clip_on=False,
+        zorder=60,
     )
     ax.annotate(
         "",
@@ -1132,7 +1139,55 @@ def _add_axis_arrows(ax) -> None:
         textcoords=("axes fraction", "axes fraction"),
         arrowprops={"arrowstyle": "->", "linewidth": 1.2, "color": "black"},
         clip_on=False,
+        zorder=60,
     )
+
+
+def _draw_bold_zero_segments(
+    ax,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    *,
+    color: str,
+    base_linewidth: float = 2.2,
+    zero_linewidth: float = 4.2,
+    atol: float = 1e-12,
+) -> None:
+    xs = np.asarray(xs, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+
+    if xs.size < 2 or ys.size < 2:
+        return
+
+    zero_mask = np.isclose(ys, 0.0, atol=float(atol))
+
+    start: Optional[int] = None
+    for i, is_zero in enumerate(zero_mask):
+        if is_zero and start is None:
+            start = i
+        elif not is_zero and start is not None:
+            if i - start >= 2:
+                ax.plot(
+                    xs[start:i],
+                    ys[start:i],
+                    linewidth=float(max(zero_linewidth, base_linewidth)),
+                    color=color,
+                    solid_capstyle="round",
+                    zorder=30,
+                    label="_nolegend_",
+                )
+            start = None
+
+    if start is not None and (len(xs) - start) >= 2:
+        ax.plot(
+            xs[start:],
+            ys[start:],
+            linewidth=float(max(zero_linewidth, base_linewidth)),
+            color=color,
+            solid_capstyle="round",
+            zorder=30,
+            label="_nolegend_",
+        )
 
 def _annotate_tiny_above(
     ax,
@@ -2767,7 +2822,7 @@ def _plot_saving_vs_grouped(
             sub = sub.sort_values(x_col)
             xs = sub[x_col].to_numpy(float)
             ys = sub["Saving"].to_numpy(float)
-        
+
             line, = ax.plot(
                 xs,
                 ys,
@@ -2775,44 +2830,32 @@ def _plot_saving_vs_grouped(
                 marker="o",
                 markersize=4.8,
                 label=_group_label(used_group, float(grp_val)),
-                zorder=5,
+                zorder=10,
             )
-            
+
             line_color = line.get_color()
-            ax.scatter(xs, ys, s=26, color=line_color, zorder=6, label="_nolegend_")
-            
-            zero_mask = np.isclose(ys, 0.0, atol=1e-12)
-            
-            start = None
-            for i, is_zero in enumerate(zero_mask):
-                if is_zero and start is None:
-                    start = i
-                elif not is_zero and start is not None:
-                    if i - start >= 2:
-                        ax.plot(
-                            xs[start:i],
-                            ys[start:i],
-                            linewidth=4.2,
-                            color=line_color,
-                            solid_capstyle="round",
-                            zorder=7,
-                            label="_nolegend_",
-                        )
-                    start = None
-            
-            if start is not None and len(xs) - start >= 2:
-                ax.plot(
-                    xs[start:],
-                    ys[start:],
-                    linewidth=4.2,
-                    color=line_color,
-                    solid_capstyle="round",
-                    zorder=7,
-                    label="_nolegend_",
-                )
-            
+
+            _draw_bold_zero_segments(
+                ax,
+                xs,
+                ys,
+                color=line_color,
+                base_linewidth=2.2,
+                zero_linewidth=4.2,
+                atol=1e-12,
+            )
+
+            ax.scatter(
+                xs,
+                ys,
+                s=26,
+                color=line_color,
+                zorder=11,
+                label="_nolegend_",
+            )
+
             y_all.extend(ys.tolist())
-            
+
             if show_point_labels:
                 for x0, y0 in zip(xs.tolist(), ys.tolist()):
                     if np.isfinite(x0) and np.isfinite(y0):
@@ -2843,14 +2886,26 @@ def _plot_saving_vs_grouped(
         xs = g[x_col].to_numpy(float)
         ys = g["Saving"].to_numpy(float)
 
-        ax.plot(
+        line, = ax.plot(
             xs,
             ys,
             linewidth=2.2,
             marker="o",
             color="darkred",
+            zorder=10,
         )
-        ax.scatter(xs, ys, s=26, color="darkred")
+
+        _draw_bold_zero_segments(
+            ax,
+            xs,
+            ys,
+            color=line.get_color(),
+            base_linewidth=2.2,
+            zero_linewidth=4.2,
+            atol=1e-12,
+        )
+
+        ax.scatter(xs, ys, s=26, color=line.get_color(), zorder=11)
         y_all.extend(ys.tolist())
 
         if show_point_labels:
@@ -2858,7 +2913,7 @@ def _plot_saving_vs_grouped(
                 ax,
                 xs,
                 ys,
-                fmt="{:.3f}",
+                fmt="{:.4f}",
                 y_offset_pts=6,
                 fontsize=7,
                 color="black",

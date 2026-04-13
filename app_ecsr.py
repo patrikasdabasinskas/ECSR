@@ -1115,21 +1115,14 @@ def _add_axis_arrows(ax) -> None:
     ax.spines["left"].set_visible(True)
     ax.spines["bottom"].set_visible(True)
 
-    ax.spines["left"].set_linewidth(1.6)
-    ax.spines["bottom"].set_linewidth(2.4)
-
-    ax.spines["left"].set_zorder(30)
-    ax.spines["bottom"].set_zorder(30)
-
     ax.annotate(
         "",
         xy=(1.02, 0.0),
         xytext=(0.0, 0.0),
         xycoords=("axes fraction", "axes fraction"),
         textcoords=("axes fraction", "axes fraction"),
-        arrowprops={"arrowstyle": "->", "linewidth": 2.4, "color": "black"},
+        arrowprops={"arrowstyle": "->", "linewidth": 1.2, "color": "black"},
         clip_on=False,
-        zorder=30,
     )
     ax.annotate(
         "",
@@ -1137,9 +1130,8 @@ def _add_axis_arrows(ax) -> None:
         xytext=(0.0, 0.0),
         xycoords=("axes fraction", "axes fraction"),
         textcoords=("axes fraction", "axes fraction"),
-        arrowprops={"arrowstyle": "->", "linewidth": 1.6, "color": "black"},
+        arrowprops={"arrowstyle": "->", "linewidth": 1.2, "color": "black"},
         clip_on=False,
-        zorder=30,
     )
 
 def _annotate_tiny_above(
@@ -2775,21 +2767,39 @@ def _plot_saving_vs_grouped(
             sub = sub.sort_values(x_col)
             xs = sub[x_col].to_numpy(float)
             ys = sub["Saving"].to_numpy(float)
-
-            ax.plot(
+        
+            line, = ax.plot(
                 xs,
                 ys,
-                linewidth=2.2,
+                linewidth=2.6,
                 marker="o",
-                color="darkred",
+                markersize=4.8,
+                label=_group_label(used_group, float(grp_val)),
                 zorder=5,
             )
-            ax.scatter(xs, ys, s=26, color="darkred", zorder=6)
-
-            y_all.extend(ys.tolist())
-
+        
+            line_color = line.get_color()
+        
+            ys_lifted = ys.copy()
+            ys_lifted[np.isclose(ys_lifted, 0.0, atol=1e-12)] = 0.0008
+        
+            ax.plot(
+                xs,
+                ys_lifted,
+                linewidth=3.4,
+                color=line_color,
+                alpha=0.95,
+                solid_capstyle="round",
+                zorder=6,
+                label="_nolegend_",
+            )
+        
+            ax.scatter(xs, ys_lifted, s=26, color=line_color, zorder=7, label="_nolegend_")
+        
+            y_all.extend(ys_lifted.tolist())
+        
             if show_point_labels:
-                for x0, y0 in zip(xs.tolist(), ys.tolist()):
+                for x0, y0 in zip(xs.tolist(), ys_lifted.tolist()):
                     if np.isfinite(x0) and np.isfinite(y0):
                         label_candidates.append(
                             (float(x0), float(y0), f"{float(y0):.4f}", str(grp_val))

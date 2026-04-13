@@ -2668,8 +2668,8 @@ def _label_points_global_dedup(
 
         # stack labels vertically at the same x
         # nearest label gets default offset, next ones get extra offset
-        for i, row in enumerate(accepted):
-            extra_offset = int(y_offset_pts + i * 12)
+        for row in accepted:
+            extra_offset = int(y_offset_pts)
             kept_rows.append((row[0], row[1], row[2], row[3], extra_offset))
 
     kept_bboxes: List[Any] = []

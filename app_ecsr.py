@@ -2780,7 +2780,7 @@ def _plot_saving_vs_grouped(
                 markersize=4.8,
                 linestyle="-",
                 label=_group_label(used_group, float(grp_val)),
-                zorder=10,
+                zorder=5,
             )
 
             y_all.extend(ys.tolist())

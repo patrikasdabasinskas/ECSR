@@ -2551,7 +2551,7 @@ def _label_points_with_overlap_avoidance(
     *,
     fmt: str,
     y_offset_pts: int = 6,
-    fontsize: int = 7,
+    fontsize: int = 11,
     color: str = "black",
 ) -> None:
     xs = np.asarray(xs, float).reshape(-1)
@@ -2574,6 +2574,7 @@ def _label_points_with_overlap_avoidance(
             ha="center",
             va=va,
             fontsize=int(fontsize),
+            fontweight="bold",
             color=color,
             arrowprops={
                 "arrowstyle": "-",
@@ -2658,7 +2659,7 @@ def _label_points_global_dedup(
     *,
     overlap_frac: float = 0.80,
     y_offset_pts: int = 6,
-    fontsize: int = 7,
+    fontsize: int = 11,
     same_x_tol: float = 1e-9,
     close_y_delta: float = 0.1,
     color: str = "black",
@@ -2738,6 +2739,7 @@ def _label_points_global_dedup(
             ha="center",
             va="bottom",
             fontsize=int(fontsize),
+            fontweight="bold",
             color=color,
             arrowprops={
                 "arrowstyle": "-",
@@ -2869,7 +2871,7 @@ def _plot_saving_vs_grouped(
                 label_candidates,
                 overlap_frac=0.80,
                 y_offset_pts=6,
-                fontsize=7,
+                fontsize=11,
                 color="black",
             )
 
@@ -2915,7 +2917,7 @@ def _plot_saving_vs_grouped(
                 ys,
                 fmt="{:.2f}",
                 y_offset_pts=6,
-                fontsize=7,
+                fontsize=11,
                 color="black",
             )
 
@@ -3000,7 +3002,7 @@ def _plot_breakpoint_vs_grouped(
                 label_candidates,
                 overlap_frac=0.80,
                 y_offset_pts=6,
-                fontsize=7,
+                fontsize=11,
                 close_y_delta=float(min_label_delta),
             )
 
@@ -3031,7 +3033,7 @@ def _plot_breakpoint_vs_grouped(
                 single_candidates,
                 overlap_frac=0.80,
                 y_offset_pts=6,
-                fontsize=7,
+                fontsize=11,
                 close_y_delta=float(min_label_delta),
             )
 

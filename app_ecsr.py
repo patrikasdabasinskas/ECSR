@@ -2551,7 +2551,7 @@ def _label_points_with_overlap_avoidance(
     *,
     fmt: str,
     y_offset_pts: int = 6,
-    fontsize: int = 11,
+    fontsize: int = 9,
     color: str = "black",
 ) -> None:
     xs = np.asarray(xs, float).reshape(-1)
@@ -2659,7 +2659,7 @@ def _label_points_global_dedup(
     *,
     overlap_frac: float = 0.80,
     y_offset_pts: int = 6,
-    fontsize: int = 11,
+    fontsize: int = 9,
     same_x_tol: float = 1e-9,
     close_y_delta: float = 0.1,
     color: str = "black",
@@ -2871,7 +2871,7 @@ def _plot_saving_vs_grouped(
                 label_candidates,
                 overlap_frac=0.80,
                 y_offset_pts=6,
-                fontsize=11,
+                fontsize=9,
                 color="black",
             )
 
@@ -2917,7 +2917,7 @@ def _plot_saving_vs_grouped(
                 ys,
                 fmt="{:.2f}",
                 y_offset_pts=6,
-                fontsize=11,
+                fontsize=9,
                 color="black",
             )
 
@@ -3002,7 +3002,7 @@ def _plot_breakpoint_vs_grouped(
                 label_candidates,
                 overlap_frac=0.80,
                 y_offset_pts=6,
-                fontsize=11,
+                fontsize=9,
                 close_y_delta=float(min_label_delta),
             )
 
@@ -3033,7 +3033,7 @@ def _plot_breakpoint_vs_grouped(
                 single_candidates,
                 overlap_frac=0.80,
                 y_offset_pts=6,
-                fontsize=11,
+                fontsize=9,
                 close_y_delta=float(min_label_delta),
             )
 

@@ -2078,7 +2078,7 @@ def build_summary_table(scenarios: List[Dict[str, Any]], cfg: Config) -> pd.Data
         }
 
         for d in cfg.distances_nm:
-            row[f"Sutaupymas{d}N_EUR"] = saving_ecsr * float(d)
+            row[f"SAVING_ECSR_{d}NM_EUR"] = saving_ecsr * float(d)
         
         for d in cfg.distances_nm:
             if int(d) == 100:

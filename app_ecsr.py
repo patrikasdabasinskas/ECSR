@@ -791,11 +791,13 @@ def _build_display_table(
         "ECSR_high_kt": "IAShigh, kt",
         "DOCmin_EurPerNM": "DOCmin, eur/nm",
         "DOCnotch_EurPerNM": "DOCnotch, eur/nm",
+        "SAVING_ECSR_EurPerNM": "Sutaupymas, eur/nm",
     }
 
     for d in cfg.distances_nm:
         rename_map[f"DOCmin_{d}NM_EUR"] = f"DOCmin_{d}nm, eur"
         rename_map[f"DOCnotch_{d}NM_EUR"] = f"DOCnotch_{d}nm, eur"
+        rename_map[f"SAVING_ECSR_{d}NM_EUR"] = f"Sutaupymas_{d}nm, eur"
 
     display_tbl = display_tbl.rename(columns=rename_map)
 

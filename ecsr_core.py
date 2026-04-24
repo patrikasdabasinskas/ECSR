@@ -522,7 +522,7 @@ def process_scenario_file(file_path: Path, cfg: Config) -> Tuple[Dict[str, Any],
     wind_med = stable_median(df["WIND"].to_numpy(float))
 
     base = file_path.stem + "".join(file_path.suffixes[1:])
-    scenario_name = sanitize_name(base)
+    scenario_name = str(base)
 
     outliers = build_outliers_table(
         df.loc[~valid].copy(),

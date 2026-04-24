@@ -563,9 +563,6 @@ def _normalize_ui_error(exc: Exception) -> str:
     return msg
 
 def _scenario_trial_label(name: str) -> str:
-    m = re.search(r"(\d+)", str(name))
-    if m:
-        return f"{int(m.group(1))} bandymas"
     return str(name)
 
 
@@ -4596,52 +4593,7 @@ st.header("Bendra rezultatų lentelė")
 display_tbl = _get_cached_display_table(summary_tbl, cfg, scenarios, fuel_ceiling)
 st.dataframe(display_tbl, use_container_width=True)
 
-col_spacer, col_btn, col_gloss = st.columns([6, 2, 2], gap="large")
-
-with col_btn:
-    download_name = "ECSR_results.xlsx"
-
-    if st.button("Parsisiųsti Excel", use_container_width=True):
-        try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                tmp_path = Path(tmpdir)
-
-                run_info = {
-                    "input_root_dir": str(st.session_state.get("input_root_label", "uploaded_files")),
-                    "output_dir": str(tmp_path),
-                    "n_scenarios_ok": len(scenarios),
-                    "fuel_price_eur_per_kg": cfg.fuel_price_eur_per_kg,
-                    "time_cost_operational": cfg.time_cost_operational,
-                }
-
-                outlier_rows = st.session_state.get("outliers_tbl", pd.DataFrame())
-                if not isinstance(outlier_rows, pd.DataFrame):
-                    outlier_rows = pd.DataFrame()
-
-                temp_xlsx_path = write_excel_results(
-                    out_dir=tmp_path,
-                    summary_tbl=summary_tbl,
-                    longform_tbl=longform_tbl,
-                    outlier_rows=outlier_rows,
-                    cfg=cfg,
-                    run_info=run_info,
-                )
-
-                with open(temp_xlsx_path, "rb") as f:
-                    st.session_state["excel_bytes"] = f.read()
-                st.session_state["excel_name"] = temp_xlsx_path.name
-
-        except Exception as e:
-            st.error(f"Klaida generuojant Excel: {e}")
-
-    if "excel_bytes" in st.session_state:
-        st.download_button(
-            "Parsisiųsti Excel",
-            data=st.session_state["excel_bytes"],
-            file_name=st.session_state.get("excel_name", download_name),
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
+col_spacer, col_gloss = st.columns([8, 2], gap="large")
 
 with col_gloss:
     if st.button("Trumpinių paaiškinimai", use_container_width=True):

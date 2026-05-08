@@ -772,7 +772,7 @@ def _build_display_table(
         sweep_max=float(cfg.time_cost_max),
     ).to_list()
 
-    display_tbl["Degalų sąnaudų lūžio taškas, eur/kg"] = _format_break_even_for_app_fuel(
+    display_tbl["Degalų kainos lūžio taškas, eur/kg"] = _format_break_even_for_app_fuel(
         summary_tbl=display_tbl,
         ceiling=fuel_ceiling,
     ).to_list()
@@ -885,7 +885,7 @@ def _build_display_table(
         "IAShigh, kt",
         "ECSR, kt",
         "Laiko sąnaudų lūžio taškas, eur/h",
-        "Degalų sąnaudų lūžio taškas, eur/kg",
+        "Degalų kainos lūžio taškas, eur/kg",
         "DOCmin, eur/nm",
         "DOCnotch, eur/nm",
     ]
@@ -3538,7 +3538,7 @@ metric_items: List[Tuple[str, str]] = [
     ("DOCnotch_perNM (EUR/NM)", "DOCnotch_EurPerNM"),
     ("Sutaupymas_perX (EUR)", "__SAVING_PER_X__"),
     ("Laiko sąnaudų lūžio taškas (€/h)", "__BREAK_TIME__"),
-    ("Degalų sąnaudų lūžio taškas (€/kg)", "__BREAK_FUEL__"),
+    ("Degalų kainos lūžio taškas (€/kg)", "__BREAK_FUEL__"),
 ]
 metric_map: Dict[str, str] = {k: v for k, v in metric_items}
 
